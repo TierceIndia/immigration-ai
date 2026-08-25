@@ -1,0 +1,57 @@
+# Secrets - NEVER commit
+.env
+.env.local
+.env.production
+.env.staging
+
+# Virtual environments
+myenv/
+.venv/
+venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# pytest
+.pytest_cache/
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+
+# Database files (runtime data - local SQLite)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Raw extracted data (runtime snapshots)
+raw/
+extracted/
+
+# Validation reports (generated)
+validation/*.json
+!validation/baseline_manifest.json
+!validation/phase3_baseline_manifest.json
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

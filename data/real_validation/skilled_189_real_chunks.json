@@ -1,0 +1,202 @@
+{
+  "source": "Home Affairs API",
+  "product_code": "189-63",
+  "title": "Skilled Independent visa (subclass 189)",
+  "extracted_at": "2026-08-24",
+  "chunk_count": 19,
+  "total_chars": 6089,
+  "chunks": [
+    {
+      "chunk_id": 13,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Overview",
+      "order_index": 13,
+      "raw_text": "This visa lets invited workers with skills we need, to live and work permanently anywhere in Australia.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 19,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Unique Features",
+      "order_index": 19,
+      "raw_text": "You don't need a sponsor or nominator You must be invited to apply You must be under 45 to be invited",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 18,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Overview > You Must",
+      "order_index": 18,
+      "raw_text": "have an occupation on the relevant skilled occupation list have a suitable skills assessment for the occupation be invited to apply for this visa satisfy the points test Help with your visa If you are getting help with your visa, before you pay someone, read information on Who can help with your visa application.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 17,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Overview > With This Visa",
+      "order_index": 17,
+      "raw_text": "work and study anywhere in Australia sponsor eligible relatives for permanent residence if eligible, become an Australian citizen",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 16,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Overview > Visa Stay",
+      "order_index": 16,
+      "raw_text": "Permanently",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 15,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Overview > Visa Cost",
+      "order_index": 15,
+      "raw_text": "From (concessions apply in limited circumstances) Cost Concession From 1 July 2026, a lower visa cost applies to eligible Pacific Island and Timor-Leste citizens who lodge a valid visa application. See About this visa. To work out what your visa will cost, use the Visa Pricing Estimator. The estimator does not take into account any other costs.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 14,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Overview > Processing Time",
+      "order_index": 14,
+      "raw_text": "For an indication of processing times for this visa, use the visa processing time guide tool. This will show the processing times for recently decided applications. It is a guide only and not specific to your application.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 7,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Have this visa",
+      "order_index": 7,
+      "raw_text": "If you are in Australia at the time you apply, you must hold one of the following: a substantive visa Bridging visa A - BVA - (subclass 010) Bridging visa B - BVB - (subclass 020) Bridging visa C - BVC - (subclass 030) If you currently hold, or your last substantive visa held was either: Skilled Work Regional (Provisional) (subclass 491); or Skilled Employer Sponsored Regional (Provisional) (subclass 494) You must have held that visa for at least 3 years at the time you apply.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 2,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Be invited to apply",
+      "order_index": 2,
+      "raw_text": "You can only apply for this visa if we invite you to. See before you apply. Submit an expression of interest (EOI) to let us know you would like to apply for the visa. After you have submitted an EOI, you will be ranked against other intending applicants and might be invited to apply for the visa. Invitations are issued regularly through SkillSelect.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 4,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Have a suitable skills assessment",
+      "order_index": 4,
+      "raw_text": "For your application to be valid, you must declare that you have a suitable skills assessment at the time of invitation. Delegates of the Minister will now accept a suitable skills assessment for an applicant’s nominated skilled occupation which has been obtained within the 60 day invitation period. This change of approach is made as a result of the decision of Thapa v Minister for Immigration, Citizenship, Migrant Services and Multicultural Affairs [2021] FCCA 686 ( Thapa ). The Minister will administer the Migration Regulations 1994 in accordance with the decision in Thapa, but the Minister reserves the right to make submissions in a Court that Thapa was wrongly decided. You will need to provide a copy of this skills assessment with your application. For medical and legal practitioners, we also accept the following as proof of a skills assessment: full or unconditional or general medical registration with the Australian Health Practitioner Regulation Agency conditional specialist registration with the Australian Health Practitioner Regulation Agency. This only allows you to practise in your speciality. You need no further training or supervision admission to practice law in the relevant state or territory Your skills assessment must have been obtained in the 3 years before the date of your invitation. If the assessment was for a shorter period, that period must not have passed. If your skills were assessed on the basis of a qualification you got in Australia when you held a student visa, the qualification must be from studying a course registered on CRICOS.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 3,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Be this age",
+      "order_index": 3,
+      "raw_text": "You must be aged under 45 when we invite you to apply for the visa. You can still apply for the visa if you turn 45 after we invite you to apply. If you turn 45 after you submit your EOI but before we invite you to apply, you will not be invited to apply.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 1,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Be able to score 65 points or more",
+      "order_index": 1,
+      "raw_text": "This is a points-tested visa. When you submit your EOI in SkillSelect you will be given an indicative points score based on the claims you have made. If you do not obtain a score of 65 points you will not be invited to apply for this visa. If we do invite you to apply for the visa, your invitation will state the number of points that you must score when we assess your application for grant of the visa (this score may be higher than 65 points, depending on your claims in the EOI). When you lodge your application you must provide evidence supporting your claims. To calculate how many points you may score use the points calculator.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 6,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Have this level of English language",
+      "order_index": 6,
+      "raw_text": "At the time of invitation, you must have at least competent English.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 10,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Meet the skills requirement",
+      "order_index": 10,
+      "raw_text": "Your occupation must be on the relevant list of eligible skilled occupations for the Skilled Independent visa (subclass 189) Point-Tested stream.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 9,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Meet our health requirement",
+      "order_index": 9,
+      "raw_text": "You and any family who apply for the visa with you must meet our health requirement. If requested, family members not accompanying you to Australia might also need to meet our health requirement.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 8,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Meet our character requirement",
+      "order_index": 8,
+      "raw_text": "You and family members aged 16 years and over who apply for the visa with you must meet our character requirement. Family members not accompanying you to Australia must also meet the character requirement.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 5,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Have paid back your debt to the Australian government",
+      "order_index": 5,
+      "raw_text": "If you or any family members (including those who do not apply for the visa with you) owe the Australian Government money, you or they must have paid it back or arranged to pay it back.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 12,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Sign the Australian values statement",
+      "order_index": 12,
+      "raw_text": "If you are 18 years of age or older, you must: have read, or had explained to you, the Life in Australia booklet and confirm you will respect the Australian way of life and obey Australian laws when you sign or accept the Australian Values Statement.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    },
+    {
+      "chunk_id": 11,
+      "chunk_type": "PARAGRAPH",
+      "heading_path": "Eligibility > Not have had a visa cancelled or a previous application refused",
+      "order_index": 11,
+      "raw_text": "We will consider your immigration history when we make a decision on your application, which means you might not be eligible for this visa if you have had a visa cancelled or refused. In some circumstances you may still apply for a permanent visa if you have had a visa cancelled or an application refused see Limitations on applications in Australia. If applying for a visa from outside Australia see Can I go to Australia. If you want immigration assistance, see Who can help with your visa application.",
+      "page_number": 1,
+      "card_id": "189-63",
+      "card_title": "Points tested stream"
+    }
+  ],
+  "id_scheme": "sorted_heading_index",
+  "id_description": "Deterministic integer: 1-based index of heading_path in sorted order. Same heading always gets same ID."
+}

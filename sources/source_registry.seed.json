@@ -1,0 +1,137 @@
+{
+  "_meta": {
+    "verified_on": "2026-08-19",
+    "verification_method": "web_search against immi.homeaffairs.gov.au and legislation.gov.au",
+    "note": "URLs are re-validated by the fetcher on every run (HTTP status is logged in fetch_log). Update this file if the department restructures its site."
+  },
+  "countries": [
+    { "country_id": "AU", "name": "Australia", "iso_code": "AUS" }
+  ],
+  "immigration_programs": [
+    { "program_id": "SKILLED_189", "country_id": "AU", "visa_category": "SKILLED", "subclass_code": "189", "name": "Skilled Independent visa (subclass 189)", "status": "ACTIVE" },
+    { "program_id": "SKILLED_190", "country_id": "AU", "visa_category": "SKILLED", "subclass_code": "190", "name": "Skilled Nominated visa (subclass 190)", "status": "ACTIVE" },
+    { "program_id": "SKILLED_491", "country_id": "AU", "visa_category": "SKILLED", "subclass_code": "491", "name": "Skilled Work Regional (Provisional) visa (subclass 491)", "status": "ACTIVE" },
+    { "program_id": "LEGISLATION_MIGRATION_REGS", "country_id": "AU", "visa_category": "LEGISLATION", "subclass_code": null, "name": "Migration Regulations 1994 (governs all AU visa subclasses)", "status": "ACTIVE" }
+  ],
+  "government_sources": [
+    {
+      "source_id": "SRC-AU-189-MAIN",
+      "country_id": "AU",
+      "program_id": "SKILLED_189",
+      "visa_category": "SKILLED",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/skilled-independent-189",
+      "source_type": "HTML",
+      "source_subtype": "PROGRAM_OVERVIEW",
+      "priority": "PRIMARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "DAILY"
+    },
+    {
+      "source_id": "SRC-AU-189-POINTS-STREAM",
+      "country_id": "AU",
+      "program_id": "SKILLED_189",
+      "visa_category": "SKILLED",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/skilled-independent-189/points-tested",
+      "source_type": "HTML",
+      "source_subtype": "ELIGIBILITY_GUIDANCE",
+      "priority": "PRIMARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "DAILY"
+    },
+    {
+      "source_id": "SRC-AU-189-POINTS-TABLE",
+      "country_id": "AU",
+      "program_id": "SKILLED_189",
+      "visa_category": "SKILLED",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/skilled-independent-189/points-table",
+      "source_type": "HTML",
+      "source_subtype": "POINTS_TABLE",
+      "priority": "PRIMARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "WEEKLY"
+    },
+    {
+      "source_id": "SRC-AU-190-MAIN",
+      "country_id": "AU",
+      "program_id": "SKILLED_190",
+      "visa_category": "SKILLED",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/skilled-nominated-190",
+      "source_type": "HTML",
+      "source_subtype": "PROGRAM_OVERVIEW",
+      "priority": "PRIMARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "DAILY"
+    },
+    {
+      "source_id": "SRC-AU-190-POINTS-TABLE",
+      "country_id": "AU",
+      "program_id": "SKILLED_190",
+      "visa_category": "SKILLED",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/skilled-nominated-190/points-table",
+      "source_type": "HTML",
+      "source_subtype": "POINTS_TABLE",
+      "priority": "PRIMARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "WEEKLY"
+    },
+    {
+      "source_id": "SRC-AU-491-MAIN",
+      "country_id": "AU",
+      "program_id": "SKILLED_491",
+      "visa_category": "SKILLED",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/skilled-work-regional-provisional-491",
+      "source_type": "HTML",
+      "source_subtype": "PROGRAM_OVERVIEW",
+      "priority": "PRIMARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "DAILY"
+    },
+    {
+      "source_id": "SRC-AU-491-POINTS-TABLE",
+      "country_id": "AU",
+      "program_id": "SKILLED_491",
+      "visa_category": "SKILLED",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/skilled-work-regional-provisional-491/points-table",
+      "source_type": "HTML",
+      "source_subtype": "POINTS_TABLE",
+      "priority": "PRIMARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "WEEKLY"
+    },
+    {
+      "source_id": "SRC-AU-SKILLSELECT-EOI",
+      "country_id": "AU",
+      "program_id": "SKILLED_189",
+      "visa_category": "SKILLED",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/working-in-australia/skillselect/expression-of-interest",
+      "source_type": "HTML",
+      "source_subtype": "PROCESS_GUIDANCE",
+      "priority": "SECONDARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "WEEKLY",
+      "notes": "Shared EOI process page for 189/190/491 - linked to 189 as primary program for FK purposes; applies to all three."
+    },
+    {
+      "source_id": "SRC-AU-MIGRATION-REGS-1994",
+      "country_id": "AU",
+      "program_id": "LEGISLATION_MIGRATION_REGS",
+      "visa_category": "LEGISLATION",
+      "authority": "Federal Register of Legislation (Office of Parliamentary Counsel)",
+      "url": "https://www.legislation.gov.au/F1996B03551/latest/text",
+      "source_type": "HTML",
+      "source_subtype": "LEGISLATION_TEXT",
+      "priority": "PRIMARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "WEEKLY",
+      "notes": "Highest-authority source (binding regulation). Governs Schedule 2 criteria for subclasses 189/190/491 among others."
+    }
+  ]
+}

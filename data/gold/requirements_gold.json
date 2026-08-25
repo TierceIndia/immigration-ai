@@ -1,0 +1,202 @@
+{
+  "_meta": {
+    "source_document": "DOC-AU-189-MAIN",
+    "source_version": 1,
+    "source_fixture": "tests/fixtures/skilled_189_gold_source.html",
+    "curated_by": "manual (this audit)",
+    "curated_on": "2026-08-20",
+    "important_caveat": "This fixture is a SYNTHETIC document written to mirror the real structure/content areas of the Home Affairs subclass 189 page (age, work experience, skills assessment, occupation, English, points, health, character, invitation, nomination, validity, fee, family, legislative basis, documents). It is NOT scraped verbatim government text - this sandbox has no live network access to the real page (see validation/phase1_audit_2026-08-20.md). It exists solely to let the Phase 2 pipeline (chunk selection, extraction, schema validation, evidence validation, normalization, dedup, persistence, review, gold-set evaluation) be built and measured end-to-end. Real production gold-set curation MUST be redone from the live-fetched government page before any of these numbers are treated as representing real-world extraction quality.",
+    "item_count": 26
+  },
+  "items": [
+    {
+      "gold_id": "GOLD-001", "chunk_id": 6, "category": "AGE",
+      "requirement": "Age must be under 45 at time of invitation",
+      "expected": {"field": "applicant.age", "operator": "LT", "value": 45, "unit": "years", "mandatory": true},
+      "evidence_text": "Applicants must be under 45 years of age at the time of invitation.",
+      "criticality": "CRITICAL", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-002", "chunk_id": 8, "category": "WORK_EXPERIENCE",
+      "requirement": "At least 3 years relevant full-time work experience",
+      "expected": {"field": "applicant.work_experience_years", "operator": "GTE", "value": 3, "unit": "years", "mandatory": true},
+      "evidence_text": "Applicants must have at least three (3) years of relevant full-time work experience in a nominated skilled occupation.",
+      "criticality": "IMPORTANT", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-003", "chunk_id": 10, "category": "SKILLS_ASSESSMENT",
+      "requirement": "Suitable skills assessment required for nominated occupation",
+      "expected": {"field": "applicant.skills_assessment", "operator": "REQUIRED", "value": null, "unit": null, "mandatory": true},
+      "evidence_text": "Applicants must have a suitable skills assessment for a nominated skilled occupation on the relevant skilled occupation list.",
+      "criticality": "CRITICAL", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-004", "chunk_id": 11, "category": "SKILLS_ASSESSMENT",
+      "requirement": "Skills assessment must be current/valid at time of invitation, with an exception",
+      "expected": {"field": "applicant.skills_assessment_validity", "operator": "REQUIRED", "value": null, "unit": null, "mandatory": true},
+      "evidence_text": "The skills assessment must be current and valid at the time of invitation, unless the assessing authority states otherwise.",
+      "criticality": "IMPORTANT", "content_kind": "REQUIREMENT",
+      "expected_exception": "unless the assessing authority states otherwise"
+    },
+    {
+      "gold_id": "GOLD-005", "chunk_id": 13, "category": "OCCUPATION",
+      "requirement": "Nominated occupation must be on the Medium and Long-term Strategic Skills List",
+      "expected": {"field": "applicant.occupation", "operator": "IN", "value": "MLTSSL", "unit": null, "mandatory": true},
+      "evidence_text": "The nominated occupation must be on the Medium and Long-term Strategic Skills List at the time of invitation.",
+      "criticality": "CRITICAL", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-006", "chunk_id": 15, "category": "ENGLISH_LANGUAGE",
+      "requirement": "Competent English or approved equivalent test required",
+      "expected": {"field": "applicant.english_test_result", "operator": "REQUIRED", "value": null, "unit": null, "mandatory": true},
+      "evidence_text": "Applicants must have competent English or an approved equivalent test result.",
+      "criticality": "CRITICAL", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-007", "chunk_id": 16, "category": "ENGLISH_LANGUAGE",
+      "requirement": "English requirement exemption for specified passport holders",
+      "expected": {"field": "applicant.english_test_result", "operator": "NOT_REQUIRED", "value": null, "unit": null, "mandatory": false},
+      "evidence_text": "Applicants may be exempt from the English language requirement if they hold a passport from the United Kingdom, the United States, Canada, New Zealand or Ireland.",
+      "criticality": "IMPORTANT", "content_kind": "EXCEPTION"
+    },
+    {
+      "gold_id": "GOLD-008", "chunk_id": 18, "category": "POINTS",
+      "requirement": "Minimum 65 points on the points test",
+      "expected": {"field": "applicant.points_score", "operator": "GTE", "value": 65, "unit": "points", "mandatory": true},
+      "evidence_text": "You must score at least 65 points on the points test to be eligible to submit an expression of interest.",
+      "criticality": "CRITICAL", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-009", "chunk_id": 19, "category": "POINTS",
+      "requirement": "Points table (age band 25-32 = 30 points)",
+      "expected": {"field": null, "operator": "UNKNOWN", "value": null, "unit": "points", "mandatory": null},
+      "evidence_text": "Age 25-32 | 30",
+      "criticality": "NORMAL", "content_kind": "FACT"
+    },
+    {
+      "gold_id": "GOLD-010", "chunk_id": 19, "category": "POINTS",
+      "requirement": "Points table (age band 33-39 = 25 points)",
+      "expected": {"field": null, "operator": "UNKNOWN", "value": null, "unit": "points", "mandatory": null},
+      "evidence_text": "Age 33-39 | 25",
+      "criticality": "NORMAL", "content_kind": "FACT"
+    },
+    {
+      "gold_id": "GOLD-011", "chunk_id": 19, "category": "ENGLISH_LANGUAGE",
+      "requirement": "Points table (proficient English = 10 points)",
+      "expected": {"field": null, "operator": "UNKNOWN", "value": null, "unit": "points", "mandatory": null},
+      "evidence_text": "Proficient English | 10",
+      "criticality": "NORMAL", "content_kind": "FACT"
+    },
+    {
+      "gold_id": "GOLD-012", "chunk_id": 21, "category": "HEALTH",
+      "requirement": "Applicant and included family members must meet health requirement",
+      "expected": {"field": "applicant.health_clearance", "operator": "REQUIRED", "value": null, "unit": null, "mandatory": true},
+      "evidence_text": "Applicants and their family members included in the application must meet the health requirement.",
+      "criticality": "CRITICAL", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-013", "chunk_id": 23, "category": "CHARACTER",
+      "requirement": "Character requirement incl. penal clearance certificates",
+      "expected": {"field": "applicant.character_clearance", "operator": "REQUIRED", "value": null, "unit": null, "mandatory": true},
+      "evidence_text": "Applicants must satisfy the character requirement, including providing a penal clearance certificate for each country lived in for 12 months or more in the last 10 years.",
+      "criticality": "CRITICAL", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-014", "chunk_id": 25, "category": "INVITATION",
+      "requirement": "Cannot apply without an invitation",
+      "expected": {"field": "applicant.invited", "operator": "REQUIRED", "value": null, "unit": null, "mandatory": true},
+      "evidence_text": "Applicants cannot apply for this visa unless they have been invited to apply by the Department.",
+      "criticality": "CRITICAL", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-015", "chunk_id": 26, "category": "INVITATION",
+      "requirement": "Invitation valid for 60 days from issue",
+      "expected": {"field": "invitation.validity_days", "operator": "EQ", "value": 60, "unit": "days", "mandatory": true},
+      "evidence_text": "An invitation is valid for 60 days from the date it is issued.",
+      "criticality": "IMPORTANT", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-016", "chunk_id": 28, "category": "NOMINATION",
+      "requirement": "No state/territory nomination required for 189 (contrast with 190)",
+      "expected": {"field": "nomination.required", "operator": "NOT_REQUIRED", "value": null, "unit": null, "mandatory": null},
+      "evidence_text": "This subclass does not require state or territory nomination, unlike the Skilled Nominated visa (subclass 190).",
+      "criticality": "IMPORTANT", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-017", "chunk_id": 30, "category": "VISA_STATUS",
+      "requirement": "Permanent visa, 5-year travel validity",
+      "expected": {"field": "visa.travel_validity_years", "operator": "EQ", "value": 5, "unit": "years", "mandatory": null},
+      "evidence_text": "This is a permanent visa. Once granted, holders can travel to and from Australia for five years from the date of grant.",
+      "criticality": "NORMAL", "content_kind": "INFORMATIONAL"
+    },
+    {
+      "gold_id": "GOLD-018", "chunk_id": 32, "category": "FINANCIAL",
+      "requirement": "Application fee applies, additional per family member (no fixed AUD figure given)",
+      "expected": {"field": "application.fee", "operator": "UNKNOWN", "value": null, "unit": "AUD", "mandatory": true},
+      "evidence_text": "The base application charge for the main applicant is subject to the fee schedule published by the Department, and additional charges apply for each family member included in the application.",
+      "criticality": "NORMAL", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-019", "chunk_id": 34, "category": "FAMILY",
+      "requirement": "Partner/dependent children may be included, subject to health/character",
+      "expected": {"field": "family_member.public_interest_criteria", "operator": "REQUIRED", "value": null, "unit": null, "mandatory": null},
+      "evidence_text": "Applicants may include a partner and dependent children in the application, subject to the family member meeting public interest criteria including health and character requirements.",
+      "criticality": "NORMAL", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-020", "chunk_id": 36, "category": "OTHER",
+      "requirement": "Legal basis - Schedule 2, Subclass 189 of the Migration Regulations 1994",
+      "expected": {"field": null, "operator": "UNKNOWN", "value": null, "unit": null, "mandatory": null},
+      "evidence_text": "The criteria for this subclass are set out in Schedule 2, Subclass 189 of the Migration Regulations 1994, and applicants must satisfy the criteria applicable at the time of invitation and the time of decision, subject to any transitional arrangements prescribed in the Regulations.",
+      "criticality": "IMPORTANT", "content_kind": "CROSS_REFERENCE",
+      "expected_reference": {"reference_type": "LEGAL_CROSS_REFERENCE", "target_text": "Schedule 2, Subclass 189 of the Migration Regulations 1994", "status": "UNRESOLVED"}
+    },
+    {
+      "gold_id": "GOLD-021", "chunk_id": 38, "category": "DOCUMENT",
+      "requirement": "Required documents list",
+      "expected": {"field": "applicant.documents", "operator": "REQUIRED", "value": null, "unit": null, "mandatory": true},
+      "evidence_text": "- Valid passport\n- Skills assessment\n- English test result\n- Evidence of work experience\n- Police clearance certificates",
+      "criticality": "IMPORTANT", "content_kind": "REQUIREMENT"
+    },
+    {
+      "gold_id": "GOLD-022", "chunk_id": 4, "category": "APPLICATION",
+      "requirement": "Must be invited to apply (restated) and meet basic requirements",
+      "expected": {"field": "applicant.invited", "operator": "REQUIRED", "value": null, "unit": null, "mandatory": true},
+      "evidence_text": "To apply for this visa you must be invited to apply. You must also meet the basic requirements below.",
+      "criticality": "NORMAL", "content_kind": "REQUIREMENT",
+      "note": "Near-duplicate of GOLD-014 (same field/semantic key) - used to test COMPLEMENTARY dedup, not a distinct new requirement."
+    },
+    {
+      "gold_id": "GOLD-023", "chunk_id": 2, "category": "OTHER",
+      "requirement": "Program overview - not itself an eligibility requirement",
+      "expected": null,
+      "evidence_text": "This visa is for invited workers and New Zealand citizens with skills we need, to live and work permanently anywhere in Australia.",
+      "criticality": "INFORMATIONAL", "content_kind": "INFORMATIONAL",
+      "note": "NEGATIVE example: this sentence must NOT be extracted as a REQUIREMENT. Used to measure false-positive/precision."
+    },
+    {
+      "gold_id": "GOLD-024", "chunk_id": 1, "category": "OTHER",
+      "requirement": "Page title heading - no extractable content",
+      "expected": null,
+      "evidence_text": "Skilled Independent visa (subclass 189)",
+      "criticality": "INFORMATIONAL", "content_kind": "INFORMATIONAL",
+      "note": "NEGATIVE example: a heading alone must never itself become a requirement row."
+    },
+    {
+      "gold_id": "GOLD-025", "chunk_id": 5, "category": "OTHER",
+      "requirement": "Section heading 'Age requirement' - no extractable content by itself",
+      "expected": null,
+      "evidence_text": "Age requirement",
+      "criticality": "INFORMATIONAL", "content_kind": "INFORMATIONAL",
+      "note": "NEGATIVE example, same reason as GOLD-024."
+    },
+    {
+      "gold_id": "GOLD-026", "chunk_id": 3, "category": "OTHER",
+      "requirement": "Section heading 'Eligibility' - no extractable content by itself",
+      "expected": null,
+      "evidence_text": "Eligibility",
+      "criticality": "INFORMATIONAL", "content_kind": "INFORMATIONAL",
+      "note": "NEGATIVE example, same reason as GOLD-024."
+    }
+  ]
+}

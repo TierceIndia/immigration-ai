@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://immigration-knowledge.local/schema/requirements.schema.json",
+  "title": "Requirement Extraction Output (LLM output contract, v1)",
+  "description": "Structured JSON the extraction LLM must return for one supplied chunk/context window. Validated deterministically before anything touches the database.",
+  "type": "object",
+  "required": ["requirements"],
+  "additionalProperties": false,
+  "properties": {
+    "requirements": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/requirement" }
+    }
+  },
+  "definitions": {
+    "category": {
+      "type": "string",
+      "enum": [
+        "AGE", "OCCUPATION", "SKILLS_ASSESSMENT", "EDUCATION", "WORK_EXPERIENCE",
+        "ENGLISH_LANGUAGE", "POINTS", "INVITATION", "NOMINATION", "STATE_REQUIREMENT",
+        "REGIONAL_REQUIREMENT", "HEALTH", "CHARACTER", "IDENTITY", "VISA_STATUS",
+        "DOCUMENT", "FAMILY", "FINANCIAL", "APPLICATION", "OTHER",
+        "DEBT", "VALUES_STATEMENT", "VISA_HISTORY"
+      ]
+    },
+    "operator": {
+      "type": "string",
+      "enum": ["EQ", "NEQ", "LT", "LTE", "GT", "GTE", "IN", "NOT_IN", "BETWEEN",
+                "REQUIRED", "NOT_REQUIRED", "UNKNOWN"]
+    },
+    "content_kind": {
+      "type": "string",
+      "enum": ["REQUIREMENT", "FACT", "INFORMATIONAL", "PROCEDURE", "EXCEPTION", "CROSS_REFERENCE"],
+      "description": "Distinguishes an eligibility requirement from a fact/data point, general info, a process step, an exception, or a cross-reference. Not every sentence is a REQUIREMENT."
+    },
+    "criticality": {
+      "type": "string",
+      "enum": ["CRITICAL", "IMPORTANT", "NORMAL", "INFORMATIONAL"]
+    },
+    "value": {
+      "description": "The threshold/value for the field. Use null/UNKNOWN operator when the source does not establish a concrete value - never guess.",
+      "type": ["number", "string", "boolean", "array", "null"]
+    },
+    "condition": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "field": { "type": "string" },
+        "operator": { "$ref": "#/definitions/operator" },
+        "value": { "$ref": "#/definitions/value" },
+        "description": { "type": "string" }
+      }
+    },
+    "exception": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "condition": { "$ref": "#/definitions/condition" }
+      },
+      "required": ["description"]
+    },
+    "evidence_type": {
+      "type": "string",
+      "enum": ["DIRECT_TEXT", "TABLE", "LIST", "CROSS_REFERENCE", "MULTI_CHUNK"]
+    },
+    "evidence_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chunk_id", "evidence_text", "evidence_type"],
+      "properties": {
+        "chunk_id": {
+          "description": "MUST be one of the chunk_id values supplied in the input context. Never invented.",
+          "type": "integer"
+        },
+        "evidence_text": {
+          "description": "MUST be an exact substring of that chunk's raw_text. Never paraphrased or invented.",
+          "type": "string",
+          "minLength": 3
+        },
+        "evidence_type": { "$ref": "#/definitions/evidence_type" }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference_type", "target_text", "status"],
+      "properties": {
+        "reference_type": {
+          "type": "string",
+          "enum": ["LEGAL_CROSS_REFERENCE", "GUIDANCE_CROSS_REFERENCE", "EXTERNAL_DOCUMENT"]
+        },
+        "target_text": { "type": "string" },
+        "status": { "type": "string", "enum": ["UNRESOLVED", "NEEDS_REVIEW"] }
+      }
+    },
+    "requirement": {
+      "type": "object",
+      "required": ["category", "name", "content_kind", "operator", "mandatory",
+                    "criticality", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "category": { "$ref": "#/definitions/category" },
+        "name": { "type": "string", "minLength": 3 },
+        "description": { "type": "string" },
+        "content_kind": { "$ref": "#/definitions/content_kind" },
+        "field": {
+          "description": "Dotted fact identifier this requirement evaluates, e.g. 'applicant.age'. Null for non-REQUIREMENT content_kind.",
+          "type": ["string", "null"]
+        },
+        "operator": { "$ref": "#/definitions/operator" },
+        "value": { "$ref": "#/definitions/value" },
+        "unit": { "type": ["string", "null"] },
+        "mandatory": {
+          "description": "true/false, or null if the source text does not establish this.",
+          "type": ["boolean", "null"]
+        },
+        "condition": { "$ref": "#/definitions/condition" },
+        "exception": { "$ref": "#/definitions/exception" },
+        "applies_to": { "type": ["string", "null"] },
+        "criticality": { "$ref": "#/definitions/criticality" },
+        "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/evidence_ref" }
+        },
+        "references": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/reference" }
+        }
+      }
+    }
+  }
+}

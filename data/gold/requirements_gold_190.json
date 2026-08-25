@@ -1,0 +1,99 @@
+{
+  "_comment": "Minimal gold dataset for 190 cross-source validation. 5 positive + 1 negative.",
+  "source_file": "data/real_validation/skilled_190_real_chunks.json",
+  "program_id": "SKILLED_190",
+  "country_id": "AU",
+  "created_at": "2026-08-25",
+  "items": [
+    {
+      "gold_id": "REAL-190-NOMINATION-001",
+      "chunk_id": 3,
+      "content_kind": "REQUIREMENT",
+      "category": "NOMINATION",
+      "requirement_text": "Applicant must be nominated by an Australian state or territory government agency",
+      "expected": {
+        "field": "applicant.nominated_by_state_or_territory",
+        "operator": "REQUIRED",
+        "value": true,
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "You must have been nominated for this visa by an Australian state or territory government agency.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-190-AGE-001",
+      "chunk_id": 4,
+      "content_kind": "REQUIREMENT",
+      "category": "AGE",
+      "requirement_text": "Applicant must be aged under 45 at the time of invitation",
+      "expected": {
+        "field": "applicant.age",
+        "operator": "LT",
+        "value": 45,
+        "unit": "years",
+        "mandatory": true
+      },
+      "evidence_text": "You must be aged under 45 when we invite you to apply for the visa.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-190-POINTS-001",
+      "chunk_id": 1,
+      "content_kind": "REQUIREMENT",
+      "category": "POINTS",
+      "requirement_text": "Applicant must score at least 65 points on the points test",
+      "expected": {
+        "field": "applicant.points_score",
+        "operator": "GTE",
+        "value": 65,
+        "unit": "points",
+        "mandatory": true
+      },
+      "evidence_text": "The subclass 190 is a points-tested visa.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-190-ENGLISH-001",
+      "chunk_id": 7,
+      "content_kind": "REQUIREMENT",
+      "category": "ENGLISH_LANGUAGE",
+      "requirement_text": "Applicant must have at least competent English",
+      "expected": {
+        "field": "applicant.english_level",
+        "operator": "GTE",
+        "value": "competent",
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "At the time of invitation, you must have at least competent English.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-190-HEALTH-001",
+      "chunk_id": 10,
+      "content_kind": "REQUIREMENT",
+      "category": "HEALTH",
+      "requirement_text": "Applicant must meet health requirement",
+      "expected": {
+        "field": "applicant.health_check",
+        "operator": "REQUIRED",
+        "value": true,
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "You and any family who apply for the visa with you must meet our health requirement.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "NEG-190-OVERVIEW-001",
+      "chunk_id": 13,
+      "content_kind": "INFORMATIONAL",
+      "category": "OVERVIEW",
+      "requirement_text": "General visa description",
+      "expected": null,
+      "evidence_text": "This visa lets nominated skilled workers live and work in Australia as permanent residents.",
+      "criticality": "NONE"
+    }
+  ]
+}
