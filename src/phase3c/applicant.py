@@ -86,9 +86,13 @@ class ApplicantProfile:
         Only non-None fields are included.
         This means the rule engine will return UNKNOWN for any rule
         referencing a field that's not in this dict.
+
+        Field mapping:
+          - "program_id"  → the visa program (e.g. "SKILLED_189")
+          - "visa_subclass" → the actual subclass code (e.g. "189")
         """
         data: dict[str, Any] = {}
-        data["visa_subclass"] = self.visa.program_id
+        data["program_id"] = self.visa.program_id
         if self.age is not None:
             data["age"] = self.age
         if self.english_level is not None:
@@ -106,5 +110,5 @@ class ApplicantProfile:
         if self.has_regional_nomination is not None:
             data["has_regional_nomination"] = self.has_regional_nomination
         if self.visa_subclass is not None:
-            data["visa_subclass_detail"] = self.visa_subclass
+            data["visa_subclass"] = self.visa_subclass
         return data

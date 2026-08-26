@@ -53,9 +53,10 @@ def find_gaps(
     rules: list[Rule],
     expression: ExpressionNode,
     profile_data: dict[str, Any],
+    program_id: str = "SKILLED_189",
 ) -> list[dict]:
     """Find information gaps for an applicant."""
-    visa = VisaSelection(program_id="SKILLED_189")
+    visa = VisaSelection(program_id=program_id)
     applicant = ApplicantProfile.from_dict({"visa": visa.to_dict(), **profile_data})
     rules_by_id = {r.rule_id: r for r in rules}
     _, evaluations = evaluate_expression(expression, rules_by_id, applicant.to_rule_data())

@@ -1,0 +1,162 @@
+{
+  "phase": "3D",
+  "version": "1.0.0",
+  "created_at": "2026-08-26",
+  "git_commit": "2f4c67899705712402cadc8fe479713427068a82",
+  "python_version": "3.12.10",
+  "test_count": 707,
+  "test_status": "ALL_PASSING",
+  "database": {
+    "primary": "PostgreSQL (production)",
+    "test": "SQLite in-memory",
+    "pool_postgres": "QueuePool size=5 max_overflow=10 pool_pre_ping=True",
+    "pool_sqlite": "StaticPool check_same_thread=False"
+  },
+  "prompt_versions": {
+    "extraction": "requirement_extraction_v2"
+  },
+  "schema_versions": {
+    "requirements": "1.0"
+  },
+  "models": {
+    "primary": "gpt-4o (production)",
+    "fallback": "gemini-flash-lite",
+    "test": "mock-llm-v1"
+  },
+
+  "invariants": {
+    "rule_invariant": {
+      "name": "One Active Version Per Logical Rule",
+      "description": "For any given (program_id, field, category), at most one rule can be in ACTIVE status at any time. When a new version is activated, the previous ACTIVE rule is automatically SUPERSEDED.",
+      "enforced_in": [
+        "src/phase3/rule_activation.py:activate_rule",
+        "src/phase3/rule_repository.py:EnhancedRuleRepo.activate_rule"
+      ],
+      "tests": [
+        "tests/phase3d/test_phase3d_hardening.py::TestOneActiveVersionInvariant"
+      ]
+    },
+    "failure_invariant": {
+      "name": "Failed Update Never Removes Previous Active Rule",
+      "description": "If a government source sync fails (LLM error, compilation error, validation error), the existing ACTIVE rules remain untouched. ACTIVE/SUPERSEDED/RETIRED rules cannot be downgraded to DRAFT.",
+      "enforced_in": [
+        "src/phase3/rule_repository.py:upsert_from_compiled (ACTIVE protection)",
+        "src/orchestration/government_sync.py:sync_source (try/except wrapper)"
+      ],
+      "tests": [
+        "tests/phase3d/test_e2e_pipeline_lifecycle.py::TestFailureSafe",
+        "tests/test_e2e_scenarios.py::TestScenario5_LLMFailure",
+        "tests/test_e2e_scenarios.py::TestScenario7_CompilerFailure"
+      ]
+    },
+    "historical_invariant": {
+      "name": "Assessment Uses Rule Version Captured at Assessment Time",
+      "description": "Each AssessmentRuleResult stores the specific rule_version that was active when the assessment was created. Historical assessments are never updated when new rule versions become active.",
+      "enforced_in": [
+        "src/services/assessment_service.py:run_assessment (rule_version_map)",
+        "src/db/models.py:AssessmentRuleResult.rule_version"
+      ],
+      "tests": [
+        "tests/test_e2e_scenarios.py::TestScenario8_HistoricalAssessment"
+      ]
+    },
+    "applicant_invariant": {
+      "name": "Assessment Uses Immutable Applicant Snapshot",
+      "description": "Each assessment stores a frozen copy of the applicant profile (applicant_snapshot) at assessment time. Changing the applicant profile after assessment does not affect historical assessment results.",
+      "enforced_in": [
+        "src/services/assessment_service.py:run_assessment (snapshot capture)",
+        "src/db/models.py:Assessment.applicant_snapshot"
+      ],
+      "tests": [
+        "tests/test_e2e_scenarios.py::TestScenario9_ApplicantSnapshot",
+        "tests/test_api.py::TestApplicantSnapshot"
+      ]
+    },
+    "evidence_invariant": {
+      "name": "Every Active Rule Has Traceable Government Evidence",
+      "description": "Every ACTIVE rule stores provenance: source_id, document_id, document_version, chunk_id, and evidence_text. This chain traces back to the original government document.",
+      "enforced_in": [
+        "src/db/models.py:Rule (provenance columns)",
+        "src/phase3/rule_repository.py:EnhancedRuleRepo.create"
+      ],
+      "tests": [
+        "tests/phase3d/test_phase3d_hardening.py::TestProvenanceChain"
+      ]
+    },
+    "eligibility_invariant": {
+      "name": "Eligibility Engine Does Not Use LLM Reasoning",
+      "description": "The eligibility engine (Phase 3C) is 100% deterministic. It evaluates rule expressions using comparison operators only. No LLM calls are made during assessment.",
+      "enforced_in": [
+        "src/phase3c/assessment.py:assess_eligibility",
+        "src/phase3/engine.py:RuleEngine"
+      ],
+      "tests": [
+        "tests/phase3c/test_assessment.py",
+        "tests/phase3/test_rule_engine.py"
+      ]
+    },
+    "pipeline_run_invariant": {
+      "name": "PipelineRun Status Is Strictly Forward-Only",
+      "description": "PipelineRun transitions: RUNNING to COMPLETED|FAILED|PARTIAL only. Terminal states cannot transition to any other state.",
+      "enforced_in": [
+        "src/pipeline_run_activation.py:validate_run_transition",
+        "src/db/repositories.py:PipelineRunRepo._transition"
+      ],
+      "tests": [
+        "tests/phase3d/test_e2e_pipeline_lifecycle.py::TestPipelineRunStateMachine"
+      ]
+    },
+    "ruleset_hash_invariant": {
+      "name": "Assessment Records Deterministic Ruleset Fingerprint",
+      "description": "Each assessment stores a SHA-256 hash of all ACTIVE rule versions used. This provides a compact audit trail: Assessment A used SKILLED_189_RULESET_<hash>.",
+      "enforced_in": [
+        "src/services/assessment_service.py:_compute_ruleset_hash",
+        "src/db/models.py:Assessment.ruleset_hash"
+      ],
+      "tests": [
+        "tests/test_e2e_scenarios.py::TestRulesetHash"
+      ]
+    }
+  },
+
+  "rule_fixture_summary": {
+    "operators_supported": 12,
+    "operators": ["EQ", "NEQ", "LT", "LTE", "GT", "GTE", "IN", "NOT_IN", "CONTAINS", "NOT_CONTAINS", "EXISTS", "NOT_EXISTS"],
+    "expression_types": ["AND", "OR", "NOT", "IF_THEN", "UNLESS", "REQUIRES"],
+    "rule_statuses": ["DRAFT", "VALIDATED", "APPROVED", "ACTIVE", "SUPERSEDED", "RETIRED", "REJECTED"],
+    "pipeline_statuses": ["RUNNING", "COMPLETED", "FAILED", "PARTIAL"]
+  },
+
+  "e2e_scenarios": {
+    "scenario_1": "Initial source -> first active rule",
+    "scenario_2": "No change -> no new rules",
+    "scenario_3": "Requirement change -> v1 SUPERSEDED, v2 ACTIVE",
+    "scenario_4": "Irrelevant document change -> rules unchanged",
+    "scenario_5": "LLM failure -> old rule remains active",
+    "scenario_6": "Invalid extraction -> rule not activated",
+    "scenario_7": "Compiler failure -> old rule remains active",
+    "scenario_8": "Historical assessment uses old rule version",
+    "scenario_9": "Applicant profile change -> assessment snapshot frozen",
+    "scenario_10": "Multi-user isolation",
+    "test_file": "tests/test_e2e_scenarios.py"
+  },
+
+  "architecture_boundary": {
+    "knowledge_system": {
+      "input": "Government sources (Phase 1)",
+      "processing": "LLM extraction (Phase 2) -> Rule compilation (Phase 3B)",
+      "output": "ACTIVE rule set",
+      "audit": "PipelineRun tracking"
+    },
+    "eligibility_system": {
+      "input": "ACTIVE rule set + Applicant profile",
+      "processing": "Phase 3C deterministic assessment",
+      "output": "Assessment (ELIGIBLE/INELIGIBLE/INCOMPLETE) + Gaps",
+      "guarantees": [
+        "Historical reproducibility via rule_version",
+        "Applicant snapshot immutability",
+        "Ruleset hash fingerprinting"
+      ]
+    }
+  }
+}

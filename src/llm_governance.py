@@ -70,12 +70,22 @@ class ResponseCache:
         self._cache: dict[str, tuple[Any, float]] = {}
 
     @staticmethod
-    def _key(model: str, messages: list[dict]) -> str:
-        raw = json.dumps({"model": model, "messages": messages}, sort_keys=True)
+    def _key(model: str, messages: list[dict],
+             prompt_version: str = "", schema_version: str = "",
+             temperature: float = 0.0) -> str:
+        raw = json.dumps({
+            "model": model,
+            "messages": messages,
+            "prompt_version": prompt_version,
+            "schema_version": schema_version,
+            "temperature": temperature,
+        }, sort_keys=True)
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
-    def get(self, model: str, messages: list[dict]) -> Any | None:
-        key = self._key(model, messages)
+    def get(self, model: str, messages: list[dict],
+            prompt_version: str = "", schema_version: str = "",
+            temperature: float = 0.0) -> Any | None:
+        key = self._key(model, messages, prompt_version, schema_version, temperature)
         if key in self._cache:
             value, ts = self._cache[key]
             if time.monotonic() - ts < self.max_age:
@@ -83,8 +93,10 @@ class ResponseCache:
             del self._cache[key]
         return None
 
-    def set(self, model: str, messages: list[dict], value: Any) -> None:
-        key = self._key(model, messages)
+    def set(self, model: str, messages: list[dict], value: Any,
+            prompt_version: str = "", schema_version: str = "",
+            temperature: float = 0.0) -> None:
+        key = self._key(model, messages, prompt_version, schema_version, temperature)
         if len(self._cache) >= self.max_size:
             oldest = min(self._cache, key=lambda k: self._cache[k][1])
             del self._cache[oldest]
@@ -270,12 +282,15 @@ class LLMGovernance:
         self.usage_log = usage_log or UsageLog()
 
     def pre_request(self, key: str, model: str,
-                    messages: list[dict]) -> dict[str, Any]:
+                    messages: list[dict],
+                    prompt_version: str = "",
+                    schema_version: str = "",
+                    temperature: float = 0.0) -> dict[str, Any]:
         """Check cache, rate limits, budget before making an LLM call.
         Returns metadata dict with {cached, cached_response, blocked, reason}.
         """
         # 1. Cache lookup
-        cached = self.cache.get(model, messages)
+        cached = self.cache.get(model, messages, prompt_version, schema_version, temperature)
         if cached is not None:
             return {"cached": True, "cached_response": cached,
                     "blocked": False, "reason": None}
@@ -297,13 +312,16 @@ class LLMGovernance:
                      messages: list[dict], response: Any,
                      tokens_in: int, tokens_out: int,
                      latency_ms: float, retries: int = 0,
-                     error: str | None = None) -> UsageMetrics:
+                     error: str | None = None,
+                     prompt_version: str = "",
+                     schema_version: str = "",
+                     temperature: float = 0.0) -> UsageMetrics:
         """Record usage, update cache and budget after an LLM call."""
         cost = estimate_cost(model, tokens_in, tokens_out)
         self.budget.record(key, tokens_in, tokens_out, cost)
 
         if error is None:
-            self.cache.set(model, messages, response)
+            self.cache.set(model, messages, response, prompt_version, schema_version, temperature)
 
         entry = UsageMetrics(
             model=model, tokens_in=tokens_in, tokens_out=tokens_out,

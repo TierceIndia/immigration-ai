@@ -17,7 +17,10 @@ End-to-end deterministic immigration eligibility system for Australian skilled m
 | 2 | Knowledge Extraction (LLM requirement extraction, evidence validation, human review) | COMPLETE |
 | 3 | Deterministic Rule Engine (operators, expressions, IF/THEN, exceptions, dependencies, versioning) | COMPLETE |
 | 3C | Eligibility + Gap Engine (applicant model, applicability, assessment, gap detection, questions) | COMPLETE |
-| 4+ | RAG, Recommendations, User Product | NOT STARTED |
+| 3D | Government Knowledge Activation (req→rule bridge, status machine, admin approval, e2e) | COMPLETE |
+| API | FastAPI service layer (auth, CRUD, admin review, assessments) | COMPLETE |
+| Infra | DB abstraction, Docker, LLM governance, structured logging | COMPLETE |
+| 4+ | RAG, Recommendations, User Product, Scheduler, Multi-country | NOT STARTED |
 
 ---
 
@@ -44,7 +47,7 @@ SOURCE REGISTRY (seed JSON)
 CHANGE DETECTION ── hash comparison → NEW / UNCHANGED / CHANGED
         │
         ▼
-   SQLITE METADATA STORE ── sources, documents, versions, chunks, fetch_log
+   SQLITE METADATA STORE  ── sources, documents, versions, chunks, fetch_log
 ```
 
 No LLM. No rules. Pure data engineering.
@@ -194,7 +197,7 @@ Inverts PASS ↔ FAIL. UNKNOWN and NOT_APPLICABLE stay unchanged.
 
 ### Versioning
 
-Rules have `version` (int) and `status` (DRAFT/ACTIVE/SUPERSEDED/RETIRED). When policy changes:
+Rules have `version` (int) and `status` (DRAFT/VALIDATED/APPROVED/ACTIVE/SUPERSEDED/RETIRED). When policy changes:
 1. Create v2 with ACTIVE status
 2. Mark v1 as SUPERSEDED
 3. Historical assessments still reference v1
@@ -204,12 +207,166 @@ Verified by `TestHistoricalAssessmentReproducibility` (3 tests).
 
 ---
 
-## 4. Phase 3C — Eligibility + Gap Engine
+## 4. Phase 3D — Government Knowledge Activation Pipeline
+
+### Overview
+
+Connects Phase 2 approved requirements to active, persistent rules in the database through a human-in-the-loop approval workflow.
+
+### Pipeline Flow
+
+```
+Government Source
+    │
+    ▼ Phase 1 & 2
+Approved Requirement (status=APPROVED)
+    │
+    ▼ compile_approved_requirements()
+Rule Dict (compiled from requirement)
+    │
+    ▼ EnhancedRuleRepo.save()
+Rule Version (status=DRAFT)
+    │
+    ▼ Admin: POST /validate
+Rule Version (status=VALIDATED)
+    │
+    ▼ Admin: POST /approve
+Rule Version (status=APPROVED)
+    │
+    ▼ Admin: POST /activate
+Rule Version (status=ACTIVE)
+    │
+    ▼ (if v2) Transactional supersession
+    │   v1 status: ACTIVE → SUPERSEDED
+    │   v2 status: APPROVED → ACTIVE
+```
+
+### Status Machine
+
+```
+RuleLifecycleStatus:
+    DRAFT → VALIDATED → APPROVED → ACTIVE → SUPERSEDED → RETIRED
+                                   ↓
+                               REJECTED (from any pre-active state)
+```
+
+**Illegal transitions raise `RuleActivationError`:**
+- DRAFT → ACTIVE (bypasses VALIDATED/APPROVED)
+- ACTIVE → DRAFT (no backwards)
+- SUPERSEDED → ACTIVE (no resurrection)
+- RETIRED → anything
+
+### EnhancedRuleRepo
+
+```python
+class EnhancedRuleRepo:
+    """Full CRUD + status transitions + transactional activation + version snapshots."""
+
+    def save(self, rule_dict: dict, created_by: str) -> RuleVersion
+    def get(self, rule_id: str) -> Rule | None
+    def list(self, status: str | None = None) -> list[Rule]
+    def activate(self, rule_id: str, rule_version_id: str, activated_by: str) -> None
+    """Transactional: supersede v1 → activate v2. Never two ACTIVE for same logical key."""
+
+    def get_active_version(self, rule_id: str) -> RuleVersion | None
+    def get_all_versions(self, rule_id: str) -> list[RuleVersion]
+```
+
+**Version auto-increment**: `version_number` is computed as `max(existing version_numbers for this rule_id) + 1`, preventing UNIQUE constraint collisions on `rule_versions(rule_id, version_number)`.
+
+### Requirement → Rule Bridge
+
+```python
+def compile_approved_requirements(session) -> list[dict]:
+    """Load all approved requirements, compile each to a rule dict.
+    Re-compiles existing ACTIVE requirements too (they get reset to DRAFT)."""
+
+def _load_requirement_dict(req: Requirement) -> dict:
+    """Load requirement with evidence into a compilation-ready dict."""
+```
+
+### Orchestrator
+
+```python
+sync_source(session, source_id, dry_run=False, trigger_type="ON_DEMAND") → SyncResult
+# Creates PipelineRun at start, updates on completion/failure
+# Steps: detect_change → compile rules → record_change
+
+sync_all_sources(session, dry_run=False, trigger_type="ON_DEMAND") → [SyncResult]
+# Syncs all ACTIVE sources, one PipelineRun per source
+```
+
+Every sync execution tracked via `PipelineRun` (trigger_type: SCHEDULED/MANUAL/ON_DEMAND).
+
+### Admin API
+
+```python
+# /api/v1/admin/rules
+GET  /queue               → Review queue (DRAFT + VALIDATED + APPROVED rules)
+GET  /                    → List all rules, optional ?status filter
+GET  /{id}                → Get single rule with version history
+POST /{id}/validate       → DRAFT → VALIDATED
+POST /{id}/approve        → VALIDATED → APPROVED
+POST /{id}/activate       → APPROVED → ACTIVE (transactional supersession)
+POST /{id}/reject         → Any pre-active → REJECTED
+POST /{id}/retire         → SUPERSEDED/RETIRED → RETIRED
+POST /batch/activate      → Bulk activate multiple rules
+```
+
+### Pipeline Run API
+
+```python
+# /api/v1/admin/runs
+GET  /                    → List all runs (newest first, paginated)
+GET  /summary             → Aggregate counts by status
+GET  /{id}                → Get single run details
+GET  /source/{id}         → List runs for a specific source
+```
+
+### PipelineRun Model
+
+```python
+PipelineRun:
+    run_id: UUID
+    source_id: FK → GovernmentSource
+    trigger_type: str          # SCHEDULED / MANUAL / ON_DEMAND
+    status: str                # RUNNING / COMPLETED / FAILED / PARTIAL
+    started_at: datetime
+    completed_at: datetime | None
+    duration_ms: int | None
+    old_hash: str | None       # content hash before sync
+    new_hash: str | None       # content hash after sync
+    requirements_extracted: int
+    requirements_approved: int
+    rules_created: int
+    errors: JSON               # list of error strings
+    metadata_json: JSON        # arbitrary metadata
+```
+
+Non-admin users: 403.
+
+### Provenance Chain (Complete)
+
+```
+RuleVersion.snapshot_json.requirement_id
+    → Requirement (Phase 2 approved)
+        → RequirementEvidence (extracted evidence)
+            → DocumentChunk.text (verbatim source)
+                → DocumentVersion (version number, hash)
+                    → GovernmentDocument (filename, visa_category)
+                        → GovernmentSource (URL, program, authority)
+```
+
+Every ACTIVE rule can answer: "Why does the system currently believe this rule exists?" with an exact chain from rule to government URL.
+
+---
+
+## 5. Phase 3C — Eligibility + Gap Engine
 
 ### Architecture
 
 ```
-APPROVED RULES (Phase 2)
+ACTIVE RULES (Phase 3D)
       +
 APPLICANT PROFILE (user input)
       │
@@ -318,32 +475,282 @@ AnswerNormalizer.normalize("english_level", "IELTS 7") → "competent"
 
 ---
 
-## 5. Data Model Summary
+## 6. API Layer
+
+### Application Factory
+
+```python
+from api.main import create_app, app
+# create_app() → FastAPI instance (used by uvicorn)
+# app is the module-level singleton
+
+# Lifespan handler:
+#   - Sets up structured logging (INFO, JSON output)
+#   - Initializes DB engine from DATABASE_URL
+#   - Stores engine in app.state.db_engine
+```
+
+### CORS Configuration
+
+```python
+# main.py
+_cors_origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+_cors_origins = [o.strip() for o in _cors_origins_str.split(",") if o.strip()]
+# Explicitly NOT allow_origins=["*"] — browser security risk with credentials
+```
+
+### Request Middleware
+
+```python
+# Every request gets:
+#   - X-Request-ID (from header or auto-generated UUID)
+#   - Structured logging context with request_id
+#   - Response header X-Request-ID echoed back
+```
+
+### Route Registry
+
+```
+/health                      — GET health check (no auth)
+/api/v1/auth/register        — POST (no auth)
+/api/v1/auth/login           — POST (no auth)
+/api/v1/auth/me              — GET (JWT required)
+/api/v1/applicants/          — POST, GET (JWT required)
+/api/v1/applicants/{id}      — GET, PATCH (JWT required)
+/api/v1/admin/rules/         — GET, POST (admin only)
+/api/v1/admin/rules/{id}     — GET, POST (admin only)
+/api/v1/assessments/         — POST, GET (JWT required)
+/api/v1/assessments/{id}     — GET, POST (JWT required)
+```
+
+### Error Responses
+
+```json
+{"detail": "User already exists"}       // 409 duplicate email
+{"detail": "Not authenticated"}         // 401 no token
+{"detail": "Not an admin"}              // 403 non-admin on admin route
+{"detail": "Rule not found"}            // 404
+{"detail": "Invalid status transition"} // 422 bad activation
+```
+
+---
+
+## 7. Authentication
+
+### JWT Flow
+
+```
+POST /register  →  bcrypt(password) → UserORM → 201
+POST /login     →  verify(password) → jwt.encode({sub: user_id, role}) → 200
+GET /me         →  Authorization: Bearer <token>
+                    jwt.decode(token) → UserORM → 200
+```
+
+### Secret Management
+
+```python
+def _get_jwt_secret() -> str:
+    """Fail-fast in production if JWT_SECRET_KEY not set."""
+    secret = os.getenv("JWT_SECRET_KEY")
+    if not secret:
+        environment = os.getenv("ENVIRONMENT", "development")
+        if environment == "production":
+            raise ValueError(
+                "JWT_SECRET_KEY environment variable is required in production. "
+                "Set a strong, random secret in your environment."
+            )
+        logger.warning("JWT_SECRET_KEY not set, using development default")
+        return "dev-secret-change-me"
+    return secret
+```
+
+### Password Hashing
+
+- bcrypt 4.2.1 (pinned to avoid passlib incompatibility)
+- `passlib.context.CryptContext(schemes=["bcrypt"])`
+- Duplicate email → 409 Conflict
+
+---
+
+## 8. Database
+
+### ORM Models (25+ tables)
+
+```
+countries
+immigration_programs
+government_sources          (NOT NULL visa_category)
+government_documents        (NOT NULL visa_category, raw_path, retrieved_at)
+document_versions
+document_chunks             (NOT NULL version_id FK)
+fetch_log
+
+requirements                (NOT NULL status, extracted_at)
+requirement_evidence
+requirement_versions
+requirement_references
+extraction_runs
+requirement_review
+
+rules
+rule_versions               (UNIQUE rule_id + version_number)
+
+applicant_profiles
+assessments
+assessment_rule_results
+gaps
+
+audit_log
+llm_usage
+llm_budget_log
+llm_cache
+
+pipeline_runs
+```
+
+### Database Abstraction
+
+```python
+# db/connection.py
+get_engine(url) → Engine
+get_session_factory(engine) → sessionmaker
+session_scope(session_factory) → contextmanager
+init_db(engine) → create_all()
+
+# db/repositories.py — 20+ repository classes
+# Each wraps a single table with typed CRUD operations
+```
+
+### PostgreSQL vs SQLite
+
+| Feature | PostgreSQL (production) | SQLite (tests) |
+|---------|------------------------|----------------|
+| UUIDs | Native UUID type | `String(36)` |
+| JSON | JSONB | JSON |
+| Timestamps | TIMESTAMPTZ | DATETIME |
+| Pool | StaticPool + async | StaticPool + check_same_thread=False |
+| Migrations | Alembic | Manual |
+
+### Indexes
+
+```sql
+idx_sources_program        ON government_sources(program_id)
+idx_rule_versions_rule     ON rule_versions(rule_id)
+uq_rule_version            ON rule_versions(rule_id, version_number)
+uq_doc_version             ON document_versions(document_id, version_number)
+idx_chunks_document        ON document_chunks(document_id, version_id)
+idx_fetchlog_source        ON fetch_log(source_id, fetched_at)
+```
+
+---
+
+## 9. LLM Governance
+
+### Components
+
+```
+RateLimiter        — Per-model request throttling (sliding window)
+RetryPolicy        — Exponential backoff with max delay cap
+ResponseCache      — SHA256-keyed LRU cache with TTL
+BudgetTracker      — Daily/monthly token budget limits
+UsageLog           — Per-request cost tracking
+LLMGovernance      — Facade orchestrating all components
+```
+
+### Cache Key Design
+
+```python
+cache_key = SHA256(
+    content_hash + model_name + temperature + system_prompt_hash
+)
+```
+
+### Usage Tracking
+
+```python
+request_id       → str (UUID)
+model            → str ("gpt-4o")
+input_tokens     → int
+output_tokens    → int
+estimated_cost   → float
+cached           → bool
+latency_ms       → int
+created_at       → datetime
+```
+
+---
+
+## 10. Structured Logging
+
+### Features
+
+- JSON output format for log aggregation
+- Request-scoped context (request_id, user_id)
+- PII redaction: date of birth, passport, email never logged
+- Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+### PII Filters
+
+```python
+# Patterns automatically redacted from log output:
+# - Date of birth (various formats)
+# - Passport numbers
+# - Email addresses
+# - User IDs in sensitive contexts
+```
+
+---
+
+## 11. Docker Deployment
+
+### Dockerfile
+
+```dockerfile
+FROM python:3.12-slim
+# Installs requirements, copies src/, runs uvicorn
+# CMD: uvicorn src.api.main:create_app --factory --host 0.0.0.0 --port 8000
+```
+
+### docker-compose.yml
+
+```yaml
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: immigration
+      POSTGRES_USER: immigration
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  api:
+    build: .
+    depends_on: [db]
+    environment:
+      DATABASE_URL: postgresql://immigration:${DB_PASSWORD}@db:5432/immigration
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+    command: >
+      sh -c "alembic upgrade head && uvicorn src.api.main:create_app --factory"
+```
+
+---
+
+## 12. Data Model Summary
 
 ### Core Entity Chain
 
 ```
-Source → Document → Document Version → Document Chunk → Requirement → Rule
-                                                                          │
-                                                              ┌───────────┤
-                                                              ▼           ▼
-                                                     Expression Tree   Applicant
-                                                     (AND/OR/NOT/     Profile
-                                                      IF_THEN/         │
-                                                      EXCEPTION/       ▼
-                                                      DEPENDENCY)  Eligibility
-                                                                    Assessment
-                                                                          │
-                                                                    ┌─────┴─────┐
-                                                                    ▼           ▼
-                                                              ELIGIBLE    INCOMPLETE
-                                                              INELIGIBLE      │
-                                                                    │         ▼
-                                                                    │    Gap Engine
-                                                                    │         │
-                                                                    └────┬────┘
-                                                                         ▼
-                                                                   Final Result
+Government Source
+    → Government Document
+        → Document Version
+            → Document Chunk
+                → Requirement (+ Evidence)
+                    → Rule Version (snapshot_json)
+                        → Expression Tree
+                            → Eligibility Assessment
+                                → ELIGIBLE / INELIGIBLE / INCOMPLETE
+                                    → Gap Engine → Questions
 ```
 
 ### Phase 1 Tables
@@ -354,13 +761,17 @@ Source → Document → Document Version → Document Chunk → Requirement → 
 
 `requirements` `requirement_evidence` `requirement_versions` `requirement_references` `extraction_runs` `requirement_review`
 
-### Phase 3C Models (in-memory, not database)
+### Phase 3D Tables
+
+`rules` `rule_versions` (with `snapshot_json` containing full compiled rule + evidence text)
+
+### Phase 3C Models (in-memory)
 
 `ApplicantProfile` `VisaSelection` `Rule` `Provenance` `RuleEvaluation` `EligibilityOutcome` `Gap` `QuestionDefinition`
 
 ---
 
-## 6. Test Inventory
+## 13. Test Inventory
 
 ### Phase 3 Core (192 tests)
 
@@ -387,6 +798,17 @@ Source → Document → Document Version → Document Chunk → Requirement → 
 | test_gap_engine.py | 14 | Gap detection, dedup, priority, linkage |
 | test_questions.py | 27 | Question definitions, validation, normalization |
 
+### Phase 3D Activation (89 tests)
+
+| File | Tests | Coverage |
+|------|-------|----------|
+| test_rule_activation.py | 10 | Status machine, illegal transitions |
+| test_rule_repository.py | 17 | EnhancedRuleRepo CRUD, versioning, activation |
+| test_requirement_to_rule.py | 16 | Requirement→rule bridge, compile_approved_requirements |
+| test_admin_rules_api.py | 12 | Admin API endpoints, auth, validation, activate |
+| test_e2e_pipeline.py | 7 | Full pipeline: v1→ACTIVE→v2→SUPERSEDED |
+| test_phase3d_hardening.py | 27 | One-active invariant, transactional activation, provenance, retirement, E2E lifecycle, failure safety, compilation safety |
+
 ### Phase 2 (51 tests)
 
 | File | Tests | Coverage |
@@ -399,11 +821,25 @@ Source → Document → Document Version → Document Chunk → Requirement → 
 | test_integration.py | 4 | Full pipeline integration |
 | test_gold_dataset.py | 3 | Gold standard evaluation |
 
-### Total: 340 tests, all passing, 0 warnings
+### Infrastructure
+
+| File | Tests | Coverage |
+|------|-------|----------|
+| test_db_models.py | 12 | ORM model constraints, relationships |
+| test_repositories.py | 10 | Repository CRUD, query filters |
+| test_logging.py | 17 | Structured logging, PII redaction |
+| test_api.py | 18 | API routes: health, applicants, assessments (real), middleware |
+| test_auth.py | 11 | JWT, register/login, bcrypt, duplicate email |
+| test_llm_governance.py | 30 | Rate limiter, cache, budget, retry |
+| test_security.py | 40 | JWT secrets, PII redaction, CORS, authorization, password security, token claims |
+| test_scheduler.py | 7 | APScheduler start/stop, manual sync trigger |
+| test_pipeline_runs.py | 42 | PipelineRun model, repo CRUD, API endpoints, orchestrator integration |
+
+### Total: 616 tests, all passing, 0 failures
 
 ---
 
-## 7. Key Files
+## 14. Key Files
 
 ### Phase 3
 
@@ -413,6 +849,9 @@ Source → Document → Document Version → Document Chunk → Requirement → 
 - `src/phase3/rule_compiler.py` — Phase 2 requirement → Phase 3 rule
 - `src/phase3/rule_engine.py` — Single rule + aggregate evaluation
 - `src/phase3/explanations.py` — Human-readable evaluation explanations
+- `src/phase3/rule_activation.py` — Status machine (DRAFT→ACTIVE lifecycle)
+- `src/phase3/rule_repository.py` — EnhancedRuleRepo (CRUD, versioning, activation)
+- `src/phase3/requirement_to_rule.py` — Approved requirement → rule compilation bridge
 
 ### Phase 3C
 
@@ -422,6 +861,33 @@ Source → Document → Document Version → Document Chunk → Requirement → 
 - `src/phase3c/gap_engine.py` — Missing field detection + prioritization
 - `src/phase3c/questions.py` — Deterministic question templates + validation
 
+### API & Auth
+
+- `src/api/main.py` — FastAPI app factory, CORS, middleware, lifespan
+- `src/api/routes/auth.py` — Register/login/me
+- `src/api/routes/applicants.py` — Applicant CRUD (JWT-protected)
+- `src/api/routes/admin_rules.py` — Admin review/approve/activate
+- `src/api/routes/assessments.py` — Assessment stubs (501)
+- `src/services/auth_service.py` — JWT, bcrypt, secret management
+
+### Infrastructure
+
+- `src/db/models.py` — 25+ ORM models
+- `src/db/connection.py` — Engine, session factory, session_scope
+- `src/db/repositories.py` — 20+ repository classes
+- `src/llm_governance.py` — RateLimiter, RetryPolicy, ResponseCache, BudgetTracker
+- `src/logging_config.py` — Structured logging, PII redaction
+- `src/orchestration/government_sync.py` — Source sync orchestrator (on-demand)
+
+### Configuration
+
+- `.env.example` — CORS_ORIGINS, JWT_SECRET_KEY, all config placeholders
+- `alembic.ini` — Alembic migration config
+- `Dockerfile` — Python 3.12-slim
+- `docker-compose.yml` — postgres:16-alpine + api service
+- `requirements.txt` — bcrypt==4.2.1 pinned
+- `conftest.py` — Root conftest, adds `src/` to sys.path
+
 ### Baselines
 
 - `validation/phase3_baseline_manifest.json` — Phase 3 frozen checkpoint
@@ -429,7 +895,7 @@ Source → Document → Document Version → Document Chunk → Requirement → 
 
 ---
 
-## 8. Design Principles
+## 15. Design Principles
 
 1. **Declarative rules only**: No lambdas, no dynamic code execution. Rules are data. Engine interprets generically.
 
@@ -446,3 +912,45 @@ Source → Document → Document Version → Document Chunk → Requirement → 
 7. **Four-state is necessary**: PASS/FAIL is insufficient. UNKNOWN ("we don't know your points") must not become FAIL ("you don't have enough points"). NOT_APPLICABLE ("189 rules don't apply to 190 applicants") must not pollute AND/OR.
 
 8. **Gap priority from metadata**: CRITICAL/HIGH/MEDIUM/LOW comes from rule `critical`/`mandatory` flags, not arbitrary UI logic.
+
+9. **Transactional activation**: Activating v2 atomically supersedes v1 for the same logical key. Never two ACTIVE for same field.
+
+10. **Fail-fast in production**: JWT secret must be set. CORS wildcard is blocked. Database errors surface immediately.
+
+---
+
+## 16. Production Readiness Assessment
+
+### Strengths
+
+- 616/616 tests passing with comprehensive coverage
+- Strong domain separation (LLM extraction vs deterministic rules)
+- Complete provenance chain from rule to government URL
+- Structured logging with PII redaction
+- JWT authentication with production secret fail-fast
+- Versioned rule lifecycle with transactional activation
+- Docker deployment with PostgreSQL
+- LLM governance (rate limiting, caching, budget tracking)
+- Real assessment API (ACTIVE rules → Phase 3C → persist)
+- Automatic source sync scheduler (APScheduler)
+- 40 security tests (auth, PII, CORS, passwords, authorization)
+- PipelineRun audit trail for every sync execution (42 tests)
+
+### Gaps
+
+| Gap | Priority | Status | Description |
+|-----|----------|--------|-------------|
+| ~~Assessment API stubbed~~ | P0 | DONE | `POST /assessments` and `POST /assessments/evaluate` now real |
+| ~~No scheduler~~ | P1 | DONE | APScheduler with configurable interval, manual trigger endpoint |
+| PostgreSQL untested in prod | P1 | OPEN | DB abstraction exists but not validated on production PostgreSQL |
+| ~~No PipelineRun tracking~~ | P2 | DONE | Full audit trail: model, repo, API, orchestrator integration |
+| ~~No security test suite~~ | P2 | DONE | 40 tests covering auth, PII, CORS, passwords, authorization |
+| Multi-country deferred | P3 | OPEN | Australia only, NZ/Canada/etc. later |
+| 491 real-world coverage | P3 | OPEN | Partial real scenario validation |
+
+### Next Milestones
+
+1. PostgreSQL-native production validation (UUID, JSONB, TIMESTAMPTZ)
+2. Multi-country support (NZ, Canada, UK)
+3. 491 real-world scenario coverage
+4. RAG & Recommendations (LLM explains rules, suggests pathways)

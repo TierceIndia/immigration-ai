@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from api.routes.auth import get_current_user
-from db.connection import get_session
+from db.connection import get_session, get_db_engine
 from db.models import Rule as RuleORM, RuleVersion
 from logging_config import get_logger
 from phase3.rule_repository import EnhancedRuleRepo
@@ -103,7 +103,8 @@ def review_queue(
 ):
     """Get the review queue — all rules grouped by status."""
     _require_admin(current_user)
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         from orchestration.government_sync import get_review_queue
         return get_review_queue(session, program_id)
 
@@ -117,7 +118,8 @@ def list_rules(
 ):
     """List rules, optionally filtered by status and program."""
     _require_admin(current_user)
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         if status:
             objs = repo.list_by_status(status, program_id)
@@ -138,7 +140,8 @@ def get_rule(
     current_user: dict = Depends(get_current_user),
 ):
     """Get a single rule by ID."""
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         obj = repo.get(rule_id)
         if not obj:
@@ -155,7 +158,8 @@ def validate_rule(
 ):
     """DRAFT → VALIDATED (admin confirms automated validation passed)."""
     _require_admin(current_user)
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         try:
             obj = repo.validate_rule(rule_id, actor=body.actor)
@@ -174,7 +178,8 @@ def approve_rule(
 ):
     """VALIDATED → APPROVED (human review passes)."""
     _require_admin(current_user)
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         try:
             obj = repo.approve_rule(rule_id, actor=body.actor)
@@ -193,7 +198,8 @@ def reject_rule(
 ):
     """Any pre-active status → REJECTED."""
     _require_admin(current_user)
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         try:
             obj = repo.reject_rule(rule_id, actor=body.actor)
@@ -212,7 +218,8 @@ def activate_rule(
 ):
     """APPROVED → ACTIVE. Transactionally supersedes any existing active version."""
     _require_admin(current_user)
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         try:
             obj = repo.activate_rule(rule_id, actor=body.actor)
@@ -230,7 +237,8 @@ def retire_rule(
 ):
     """SUPERSEDED/ACTIVE → RETIRED."""
     _require_admin(current_user)
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         try:
             obj = repo.retire_rule(rule_id, actor=body.actor)
@@ -248,7 +256,8 @@ def batch_validate(
 ):
     """Batch DRAFT → VALIDATED."""
     _require_admin(current_user)
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         results = []
         for rule_id in body.rule_ids:
@@ -270,7 +279,8 @@ def batch_approve(
 ):
     """Batch VALIDATED → APPROVED."""
     _require_admin(current_user)
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         results = []
         for rule_id in body.rule_ids:
@@ -292,7 +302,8 @@ def batch_activate(
 ):
     """Batch APPROVED → ACTIVE (each transactionally supersedes old version)."""
     _require_admin(current_user)
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         results = []
         for rule_id in body.rule_ids:

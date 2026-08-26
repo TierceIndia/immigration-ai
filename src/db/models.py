@@ -383,6 +383,8 @@ class Assessment(Base, TimestampMixin):
     not_applicable_count = Column(Integer, nullable=False)
     evaluated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     request_id = Column(String(36))  # correlation ID for request tracing
+    applicant_snapshot = Column(JSON)  # frozen applicant profile at assessment time
+    ruleset_hash = Column(String(64))  # hash of all ACTIVE rule versions used in this assessment
 
     __table_args__ = (
         Index("idx_assessment_applicant", "applicant_id"),
@@ -424,6 +426,38 @@ class Gap(Base, TimestampMixin):
     source_chunk_ids = Column(JSON, default=list)
 
     __table_args__ = (Index("idx_gap_assessment", "assessment_id"),)
+
+
+# ===========================================================================
+#  PRODUCTION — Pipeline Run Tracking
+# ===========================================================================
+
+class PipelineRun(Base, TimestampMixin):
+    """Audit trail for government source sync executions."""
+    __tablename__ = "pipeline_runs"
+    run_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    source_id = Column(String(32), ForeignKey("government_sources.source_id"), nullable=False)
+    trigger_type = Column(String(16), nullable=False)  # SCHEDULED/MANUAL/ON_DEMAND
+    status = Column(String(16), nullable=False, default="RUNNING")  # RUNNING/COMPLETED/FAILED/PARTIAL
+    started_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    completed_at = Column(DateTime(timezone=True))
+    duration_ms = Column(Integer)
+    old_hash = Column(String(64))
+    new_hash = Column(String(64))
+    requirements_extracted = Column(Integer, nullable=False, default=0)
+    requirements_approved = Column(Integer, nullable=False, default=0)
+    rules_created = Column(Integer, nullable=False, default=0)
+    rules_validated = Column(Integer, nullable=False, default=0)
+    rules_approved = Column(Integer, nullable=False, default=0)
+    rules_activated = Column(Integer, nullable=False, default=0)
+    errors = Column(JSON, default=list)
+    metadata_json = Column(JSON, default=dict)
+
+    __table_args__ = (
+        Index("idx_pipeline_run_source", "source_id"),
+        Index("idx_pipeline_run_status", "status"),
+        Index("idx_pipeline_run_started", "started_at"),
+    )
 
 
 # ===========================================================================

@@ -177,7 +177,7 @@ class TestProfileToRuleData:
         assert d["english_level"] == "proficient"
         assert d["points"] == 70
         assert d["skills_assessment_status"] == "VALID"
-        assert d["visa_subclass"] == "SKILLED_189"
+        assert d["program_id"] == "SKILLED_189"
 
     def test_to_rule_data_missing_fields_absent(self):
         """Missing fields are absent from rule data, not None."""

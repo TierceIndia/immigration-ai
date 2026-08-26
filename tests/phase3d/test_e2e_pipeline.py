@@ -251,7 +251,7 @@ class TestEndToEndPipeline:
 
 # === STEP 6: Compile new requirement → DRAFT ===
         results = compile_approved_requirements(session, program_id="SKILLED_189")
-        # Both requirements compile: v1 (still ACTIVE with APPROVED req) and v2 (newly compiled)
+        # Both requirements compile: v1 (ACTIVE, preserved by upsert_from_compiled) and v2 (newly created)
         assert len(results) == 2
         # Only the new one (REQ-AGE-v2) should be newly created
         newly_created = [r for r in results if r["requirement_id"] == "REQ-AGE-v2"]
@@ -261,10 +261,7 @@ class TestEndToEndPipeline:
         rule_v2_orm = repo.get(rule_v2_id)
         assert rule_v2_orm.status == "DRAFT"
 
-        # v1 is still ACTIVE (compile re-created it as DRAFT, reset it)
-        repo.validate_rule(rule_v1_id, actor="system")
-        repo.approve_rule(rule_v1_id, actor="system")
-        repo.activate_rule(rule_v1_id, actor="system")
+        # v1 stays ACTIVE — upsert_from_compiled protects ACTIVE rules from downgrade
         assert repo.get(rule_v1_id).status == "ACTIVE"
 
         # === STEP 7: Admin reviews and approves ===
@@ -444,11 +441,8 @@ class TestEndToEndPipeline:
             document_id="DOC-1", chunk_id=100,
         )
         compile_approved_requirements(session, program_id="SKILLED_189")
-        # v1's requirement is still APPROVED, so compile re-creates it as DRAFT.
-        # Reset v1 to ACTIVE so it can be superseded by v2 later.
-        repo.validate_rule(rule_v1_id, actor="system")
-        repo.approve_rule(rule_v1_id, actor="system")
-        repo.activate_rule(rule_v1_id, actor="system")
+        # v1 stays ACTIVE — upsert_from_compiled protects ACTIVE rules from downgrade
+        # Now activate v2 (supersedes v1 automatically)
         repo.validate_rule("RULE-REQ-AGE-v2", actor="admin1")
         repo.approve_rule("RULE-REQ-AGE-v2", actor="admin1")
         repo.activate_rule("RULE-REQ-AGE-v2", actor="admin1")

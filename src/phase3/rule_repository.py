@@ -248,7 +248,9 @@ class EnhancedRuleRepo:
     def upsert_from_compiled(self, rule_id: str, compiled_rule: Rule,
                              requirement_id: str) -> RuleORM:
         """Create or update a rule from a compiled Phase 3 Rule dataclass.
-        If the rule already exists, update its fields. Always starts as DRAFT."""
+        If the rule already exists, update its fields.
+        Rules in ACTIVE/SUPERSEDED/RETIRED status are NEVER downgraded to DRAFT.
+        This is the failure-safe invariant: recompilation never destroys active rules."""
         existing = self.get(rule_id)
         prov = compiled_rule.provenance
         data = dict(
@@ -273,6 +275,14 @@ class EnhancedRuleRepo:
             current_version=1,
         )
         if existing:
+            protected_statuses = {"ACTIVE", "SUPERSEDED", "RETIRED"}
+            if existing.status in protected_statuses:
+                for k, v in data.items():
+                    if k == "status":
+                        continue
+                    setattr(existing, k, v)
+                self._s.flush()
+                return existing
             for k, v in data.items():
                 setattr(existing, k, v)
             self._s.flush()

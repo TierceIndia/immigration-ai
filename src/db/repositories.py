@@ -31,6 +31,7 @@ from db.models import (
     GovernmentSource,
     ImmigrationProgram,
     LlmUsage,
+    PipelineRun,
     Requirement,
     RequirementEvidence,
     Rule,
@@ -420,3 +421,76 @@ class LlmUsageRepo:
         if provider:
             stmt = stmt.where(LlmUsage.provider == provider)
         return float(self._s.execute(stmt).scalar())
+
+
+class PipelineRunRepo:
+    def __init__(self, session: Session):
+        self._s = session
+
+    def create(self, source_id: str, trigger_type: str, **kwargs) -> PipelineRun:
+        obj = PipelineRun(source_id=source_id, trigger_type=trigger_type, **kwargs)
+        self._s.add(obj)
+        self._s.flush()
+        return obj
+
+    def get(self, run_id: str) -> PipelineRun | None:
+        return self._s.get(PipelineRun, run_id)
+
+    def _transition(self, obj: PipelineRun, new_status: str, error: str | None = None, **metrics) -> PipelineRun:
+        from pipeline_run_activation import validate_run_transition
+        validate_run_transition(obj.status, new_status)
+        obj.status = new_status
+        obj.completed_at = datetime.now(timezone.utc)
+        if obj.started_at:
+            delta = obj.completed_at - obj.started_at
+            obj.duration_ms = int(delta.total_seconds() * 1000)
+        if error is not None:
+            existing = obj.errors or []
+            existing.append(error)
+            obj.errors = existing
+        for k, v in metrics.items():
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        self._s.flush()
+        return obj
+
+    def complete(self, run_id: str, **metrics) -> PipelineRun:
+        obj = self._s.get(PipelineRun, run_id)
+        if not obj:
+            raise ValueError(f"PipelineRun {run_id} not found")
+        return self._transition(obj, "COMPLETED", **metrics)
+
+    def fail(self, run_id: str, error: str) -> PipelineRun:
+        obj = self._s.get(PipelineRun, run_id)
+        if not obj:
+            raise ValueError(f"PipelineRun {run_id} not found")
+        return self._transition(obj, "FAILED", error=error)
+
+    def partial(self, run_id: str, error: str, **metrics) -> PipelineRun:
+        """Mark run as PARTIAL (completed with some errors)."""
+        obj = self._s.get(PipelineRun, run_id)
+        if not obj:
+            raise ValueError(f"PipelineRun {run_id} not found")
+        return self._transition(obj, "PARTIAL", error=error, **metrics)
+
+    def list_all(self, limit: int = 50, offset: int = 0) -> list[PipelineRun]:
+        stmt = (
+            select(PipelineRun)
+            .order_by(PipelineRun.started_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return list(self._s.execute(stmt).scalars())
+
+    def list_for_source(self, source_id: str, limit: int = 20) -> list[PipelineRun]:
+        stmt = (
+            select(PipelineRun)
+            .where(PipelineRun.source_id == source_id)
+            .order_by(PipelineRun.started_at.desc())
+            .limit(limit)
+        )
+        return list(self._s.execute(stmt).scalars())
+
+    def count_by_status(self) -> dict[str, int]:
+        stmt = select(PipelineRun.status, func.count()).group_by(PipelineRun.status)
+        return {row[0]: row[1] for row in self._s.execute(stmt)}

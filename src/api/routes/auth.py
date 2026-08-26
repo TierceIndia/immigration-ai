@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 
 from api.schemas.models import RegisterResponse, TokenResponse, UserCreate, UserResponse
-from db.connection import get_session
+from db.connection import get_session, get_db_engine
 from logging_config import get_logger
 from services.auth_service import AuthService, decode_access_token
 
@@ -25,7 +25,8 @@ def get_current_user(request: Request) -> dict:
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token payload")
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         svc = AuthService(session)
         user = svc.get_current_user(token)
         if not user:
@@ -50,7 +51,8 @@ def get_current_user_id(request: Request) -> str:
 
 @router.post("/register", response_model=RegisterResponse, status_code=201)
 def register(body: UserCreate, request: Request):
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         svc = AuthService(session)
         try:
             result = svc.register(body.email, body.password, body.full_name)
@@ -69,7 +71,8 @@ def register(body: UserCreate, request: Request):
 
 @router.post("/login", response_model=TokenResponse)
 def login(body: UserCreate, request: Request):
-    with get_session(request.app.state.db_engine) as session:
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
         svc = AuthService(session)
         result = svc.login(body.email, body.password)
         if not result:

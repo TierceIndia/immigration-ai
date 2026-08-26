@@ -115,6 +115,8 @@ class AssessmentResponse(BaseModel):
     unknown_count: int
     not_applicable_count: int
     evaluated_at: datetime | None = None
+    applicant_snapshot: dict[str, Any] | None = None
+    ruleset_hash: str | None = None
     rule_results: list[RuleResultResponse] = []
     gaps: list[GapResponse] = []
 

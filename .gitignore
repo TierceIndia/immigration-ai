@@ -1,5 +1,6 @@
 # Secrets - NEVER commit
 .env
+.env.example
 .env.local
 .env.production
 .env.staging
@@ -38,6 +39,7 @@ extracted/
 validation/*.json
 !validation/baseline_manifest.json
 !validation/phase3_baseline_manifest.json
+!validation/phase3d_baseline_manifest.json
 
 # Logs
 *.log
