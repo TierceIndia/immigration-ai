@@ -1,10 +1,13 @@
-"""SQLite connection + schema bootstrap for the Phase-1 source registry / document metadata store."""
+"""Database package — PostgreSQL via SQLAlchemy (production) + SQLite compatibility (legacy tests)."""
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# ---------------------------------------------------------------------------
+# Legacy SQLite helpers (backward compat for Phase 1/2 tests)
+# ---------------------------------------------------------------------------
+ROOT = Path(__file__).resolve().parent.parent.parent
 DB_PATH = ROOT / "immigration.db"
 SCHEMA_PATH = ROOT / "schema" / "schema.sql"
 PHASE2_SCHEMA_PATH = ROOT / "schema" / "phase2_requirements.sql"
@@ -28,14 +31,3 @@ def init_schema(conn: sqlite3.Connection | None = None, db_path: Path = DB_PATH)
         conn.executescript(PHASE2_SCHEMA_PATH.read_text(encoding="utf-8"))
     conn.commit()
     return conn
-
-
-if __name__ == "__main__":
-    c = init_schema()
-    print(f"Schema initialized at {DB_PATH}")
-    tables = c.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
-    ).fetchall()
-    for t in tables:
-        print(" -", t["name"])
-    c.close()
