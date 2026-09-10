@@ -9,6 +9,10 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
+# Load .env file so DATABASE_URL is available as an environment variable
+from dotenv import load_dotenv
+load_dotenv()
+
 # Ensure src/ is on the path so `db.models` resolves
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 

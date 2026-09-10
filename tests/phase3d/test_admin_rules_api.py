@@ -241,3 +241,58 @@ class TestGetRule:
     def test_get_nonexistent(self, client, admin_headers):
         resp = client.get("/api/v1/admin/rules/NOPE", headers=admin_headers)
         assert resp.status_code == 404
+
+
+class TestBatchRoutesNotShadowed:
+    """Regression: POST /batch/{action} must NOT be captured by POST
+    /{rule_id}/{action}. Starlette matches routes in registration order, so a
+    /batch/* route registered after the /{rule_id}/* family would be swallowed
+    (rule_id="batch") and fail with a 400/422 instead of batching."""
+
+    def test_batch_validate_dispatch(self, client, engine, admin_headers):
+        """An empty rule_ids list hitting the BATCH handler returns [].
+
+        If /batch/validate were shadowed by /{rule_id}/validate, the body schema
+        would be RuleActionRequest and the required field would be 'actor' only —
+        while a correctly-dispatched batch call accepts the BatchActionRequest and
+        legitimately returns [] for zero ids."""
+        resp = client.post(
+            "/api/v1/admin/rules/batch/validate",
+            json={"rule_ids": [], "actor": "admin1"},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_batch_approve_dispatch(self, client, engine, admin_headers):
+        resp = client.post(
+            "/api/v1/admin/rules/batch/approve",
+            json={"rule_ids": [], "actor": "admin1"},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_batch_activate_dispatch(self, client, engine, admin_headers):
+        resp = client.post(
+            "/api/v1/admin/rules/batch/activate",
+            json={"rule_ids": [], "actor": "admin1"},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_batch_validate_applies_transition(self, client, engine, admin_headers):
+        """Batch validate actually transitions DRAFT rules to VALIDATED."""
+        with get_session_factory(engine)() as s:
+            _create_rule(s, "R-1", status="DRAFT")
+            _create_rule(s, "R-2", status="DRAFT")
+        resp = client.post(
+            "/api/v1/admin/rules/batch/validate",
+            json={"rule_ids": ["R-1", "R-2"], "actor": "admin1"},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        results = resp.json()
+        assert {r["rule_id"] for r in results} == {"R-1", "R-2"}
+        assert all(r["status"] == "VALIDATED" for r in results)

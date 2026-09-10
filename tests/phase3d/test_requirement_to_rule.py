@@ -54,7 +54,7 @@ def _create_approved_requirement(session, req_id="REQ-AGE-001",
         document_version=1,
         model="mock",
         prompt_version="v1",
-        status="completed",
+        status="COMPLETED",
     )
     session.add(run)
     session.flush()
@@ -147,7 +147,7 @@ class TestCompileApprovedRequirements:
         run = ExtractionRun(
             run_id="RUN-BAD", document_id="DOC-001",
             document_version=1, model="mock", prompt_version="v1",
-            status="completed",
+            status="COMPLETED",
         )
         session.add(run)
         session.flush()

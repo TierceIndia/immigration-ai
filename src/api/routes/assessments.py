@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from api.helpers import parse_uuid_or_404
 from api.routes.auth import get_current_user_id
 from api.schemas.models import (
     AssessRequest,
@@ -55,6 +56,7 @@ def list_assessments(request: Request, applicant_id: str, limit: int = 20):
 
 @router.get("/{assessment_id}", response_model=AssessmentResponse)
 def get_assessment(assessment_id: str, request: Request):
+    parse_uuid_or_404(assessment_id)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         svc = AssessmentService(session)

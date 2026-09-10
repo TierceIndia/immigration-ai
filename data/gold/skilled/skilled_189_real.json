@@ -1,0 +1,349 @@
+{
+  "_comment": "Manually curated gold dataset from real Home Affairs 189 API content (frozen 2026-08-24). Every evidence_text is verbatim from the corresponding chunk. Do NOT let LLM generate this file.",
+  "source_file": "data/real_validation/skilled_189_real_chunks.json",
+  "program_id": "SKILLED_189",
+  "country_id": "AU",
+  "created_at": "2026-08-24",
+  "items": [
+    {
+      "gold_id": "REAL-189-AGE-001",
+      "chunk_id": 3,
+      "content_kind": "REQUIREMENT",
+      "category": "AGE",
+      "requirement_text": "Applicant must be aged under 45 at the time of invitation to apply",
+      "expected": {
+        "field": "applicant.age",
+        "operator": "LT",
+        "value": 45,
+        "unit": "years",
+        "mandatory": true
+      },
+      "evidence_text": "You must be aged under 45 when we invite you to apply for the visa.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-189-AGE-EXC-001",
+      "chunk_id": 3,
+      "content_kind": "EXCEPTION",
+      "category": "AGE",
+      "requirement_text": "Applicant may still apply if they turn 45 after being invited to apply",
+      "expected": {
+        "field": "applicant.age",
+        "operator": "GTE",
+        "value": 45,
+        "unit": "years",
+        "mandatory": false
+      },
+      "evidence_text": "You can still apply for the visa if you turn 45 after we invite you to apply.",
+      "criticality": "HIGH"
+    },
+    {
+      "gold_id": "REAL-189-POINTS-001",
+      "chunk_id": 1,
+      "content_kind": "REQUIREMENT",
+      "category": "POINTS",
+      "requirement_text": "Applicant must score at least 65 points on the points test to be invited",
+      "expected": {
+        "field": "applicant.points_score",
+        "operator": "GTE",
+        "value": 65,
+        "unit": "points",
+        "mandatory": true
+      },
+      "evidence_text": "If you do not obtain a score of 65 points you will not be invited to apply for this visa.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-189-POINTS-COND-001",
+      "chunk_id": 1,
+      "content_kind": "CONDITION",
+      "category": "POINTS",
+      "requirement_text": "The invitation may require a score higher than 65 points depending on EOI claims",
+      "expected": {
+        "field": "applicant.required_points",
+        "operator": "GTE",
+        "value": 65,
+        "unit": "points",
+        "mandatory": true
+      },
+      "evidence_text": "your invitation will state the number of points that you must score when we assess your application for grant of the visa (this score may be higher than 65 points, depending on your claims in the EOI).",
+      "criticality": "HIGH"
+    },
+    {
+      "gold_id": "REAL-189-ENGLISH-001",
+      "chunk_id": 6,
+      "content_kind": "REQUIREMENT",
+      "category": "ENGLISH_LANGUAGE",
+      "requirement_text": "Applicant must have at least competent English at the time of invitation",
+      "expected": {
+        "field": "applicant.english_level",
+        "operator": "GTE",
+        "value": "competent",
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "At the time of invitation, you must have at least competent English.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-189-SKILLS-OCC-001",
+      "chunk_id": 10,
+      "content_kind": "REQUIREMENT",
+      "category": "OCCUPATION",
+      "requirement_text": "Applicant's occupation must be on the relevant skilled occupations list for subclass 189",
+      "expected": {
+        "field": "applicant.occupation",
+        "operator": "IN",
+        "value": [
+          "skilled_occupations_list_189"
+        ],
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "Your occupation must be on the relevant list of eligible skilled occupations for the Skilled Independent visa (subclass 189) Point-Tested stream.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-189-SKILLS-ASSESS-001",
+      "chunk_id": 4,
+      "content_kind": "REQUIREMENT",
+      "category": "SKILLS_ASSESSMENT",
+      "requirement_text": "Applicant must declare a suitable skills assessment at the time of invitation",
+      "expected": {
+        "field": "applicant.skills_assessment",
+        "operator": "REQUIRED",
+        "value": true,
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "For your application to be valid, you must declare that you have a suitable skills assessment at the time of invitation.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-189-SKILLS-ASSESS-002",
+      "chunk_id": 4,
+      "content_kind": "CONDITION",
+      "category": "SKILLS_ASSESSMENT",
+      "requirement_text": "Skills assessment must have been obtained in the 3 years before the invitation date",
+      "expected": {
+        "field": "applicant.skills_assessment_age",
+        "operator": "LTE",
+        "value": 3,
+        "unit": "years",
+        "mandatory": true
+      },
+      "evidence_text": "Your skills assessment must have been obtained in the 3 years before the date of your invitation.",
+      "criticality": "HIGH"
+    },
+    {
+      "gold_id": "REAL-189-SKILLS-ASSESS-003",
+      "chunk_id": 4,
+      "content_kind": "CONDITION",
+      "category": "SKILLS_ASSESSMENT",
+      "requirement_text": "Skills assessment accepted if obtained within the 60-day invitation period",
+      "expected": {
+        "field": "applicant.skills_assessment_acceptance_window",
+        "operator": "LTE",
+        "value": 60,
+        "unit": "days",
+        "mandatory": false
+      },
+      "evidence_text": "Delegates of the Minister will now accept a suitable skills assessment for an applicant’s nominated skilled occupation which has been obtained within the 60 day invitation period.",
+      "criticality": "MEDIUM"
+    },
+    {
+      "gold_id": "REAL-189-INVITE-001",
+      "chunk_id": 2,
+      "content_kind": "REQUIREMENT",
+      "category": "INVITATION",
+      "requirement_text": "Applicant must be invited to apply through SkillSelect after submitting an EOI",
+      "expected": {
+        "field": "applicant.invited_to_apply",
+        "operator": "EQ",
+        "value": true,
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "You can only apply for this visa if we invite you to.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-189-HEALTH-001",
+      "chunk_id": 9,
+      "content_kind": "REQUIREMENT",
+      "category": "HEALTH",
+      "requirement_text": "Applicant and family members applying must meet the health requirement",
+      "expected": {
+        "field": "applicant.health_check",
+        "operator": "REQUIRED",
+        "value": true,
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "You and any family who apply for the visa with you must meet our health requirement.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-189-CHARACTER-001",
+      "chunk_id": 8,
+      "content_kind": "REQUIREMENT",
+      "category": "CHARACTER",
+      "requirement_text": "Applicant and family members aged 16+ applying must meet the character requirement",
+      "expected": {
+        "field": "applicant.character_check",
+        "operator": "REQUIRED",
+        "value": true,
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "You and family members aged 16 years and over who apply for the visa with you must meet our character requirement.",
+      "criticality": "CRITICAL"
+    },
+    {
+      "gold_id": "REAL-189-DEBT-001",
+      "chunk_id": 5,
+      "content_kind": "REQUIREMENT",
+      "category": "DEBT",
+      "requirement_text": "Applicant and family members must have repaid or arranged repayment of debts to the Australian Government",
+      "expected": {
+        "field": "applicant.au_govt_debt",
+        "operator": "EQ",
+        "value": false,
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "If you or any family members (including those who do not apply for the visa with you) owe the Australian Government money, you or they must have paid it back or arranged to pay it back.",
+      "criticality": "HIGH"
+    },
+    {
+      "gold_id": "REAL-189-VALUES-001",
+      "chunk_id": 12,
+      "content_kind": "REQUIREMENT",
+      "category": "VALUES_STATEMENT",
+      "requirement_text": "Applicants aged 18+ must read the Life in Australia booklet and sign the Australian Values Statement",
+      "expected": {
+        "field": "applicant.values_statement",
+        "operator": "REQUIRED",
+        "value": true,
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "If you are 18 years of age or older, you must: have read, or had explained to you, the Life in Australia booklet and confirm you will respect the Australian way of life and obey Australian laws when you sign or accept the Australian Values Statement.",
+      "criticality": "HIGH"
+    },
+    {
+      "gold_id": "REAL-189-VISASTATUS-001",
+      "chunk_id": 7,
+      "content_kind": "REQUIREMENT",
+      "category": "VISA_STATUS",
+      "requirement_text": "Applicants in Australia must hold a substantive visa or Bridging visa A/B/C at the time of application",
+      "expected": {
+        "field": "applicant.current_visa_status",
+        "operator": "IN",
+        "value": [
+          "substantive",
+          "BVA",
+          "BVB",
+          "BVC"
+        ],
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "If you are in Australia at the time you apply, you must hold one of the following: a substantive visa Bridging visa A - BVA - (subclass 010) Bridging visa B - BVB - (subclass 020) Bridging visa C - BVC - (subclass 030)",
+      "criticality": "HIGH"
+    },
+    {
+      "gold_id": "REAL-189-VISASTATUS-COND-001",
+      "chunk_id": 7,
+      "content_kind": "CONDITION",
+      "category": "VISA_STATUS",
+      "requirement_text": "Holders of subclass 491 or 494 visas must have held that visa for at least 3 years",
+      "expected": {
+        "field": "applicant.held_regional_visa_years",
+        "operator": "GTE",
+        "value": 3,
+        "unit": "years",
+        "mandatory": true
+      },
+      "evidence_text": "If you currently hold, or your last substantive visa held was either: Skilled Work Regional (Provisional) (subclass 491); or Skilled Employer Sponsored Regional (Provisional) (subclass 494) You must have held that visa for at least 3 years at the time you apply.",
+      "criticality": "HIGH"
+    },
+    {
+      "gold_id": "REAL-189-VISAHIST-001",
+      "chunk_id": 11,
+      "content_kind": "REQUIREMENT",
+      "category": "VISA_HISTORY",
+      "requirement_text": "Applicant must not have had a visa cancelled or a previous application refused (with some exceptions)",
+      "expected": {
+        "field": "applicant.visa_cancelled_or_refused",
+        "operator": "EQ",
+        "value": false,
+        "unit": null,
+        "mandatory": true
+      },
+      "evidence_text": "you might not be eligible for this visa if you have had a visa cancelled or refused.",
+      "criticality": "HIGH"
+    },
+    {
+      "gold_id": "NEG-189-OVERVIEW-001",
+      "chunk_id": 13,
+      "content_kind": "INFORMATIONAL",
+      "category": "OVERVIEW",
+      "requirement_text": "General visa description — not an eligibility requirement",
+      "expected": null,
+      "evidence_text": "This visa lets invited workers with skills we need, to live and work permanently anywhere in Australia.",
+      "criticality": "NONE"
+    },
+    {
+      "gold_id": "NEG-189-BENEFIT-001",
+      "chunk_id": 17,
+      "content_kind": "BENEFIT",
+      "category": "BENEFIT",
+      "requirement_text": "Visa benefits — not an eligibility requirement",
+      "expected": null,
+      "evidence_text": "work and study anywhere in Australia sponsor eligible relatives for permanent residence if eligible, become an Australian citizen",
+      "criticality": "NONE"
+    },
+    {
+      "gold_id": "NEG-189-COST-001",
+      "chunk_id": 15,
+      "content_kind": "INFORMATIONAL",
+      "category": "COST",
+      "requirement_text": "Cost information — not a fixed eligibility requirement (amount not specified in text)",
+      "expected": null,
+      "evidence_text": "From (concessions apply in limited circumstances)",
+      "criticality": "NONE"
+    },
+    {
+      "gold_id": "NEG-189-PROCESSING-001",
+      "chunk_id": 14,
+      "content_kind": "INFORMATIONAL",
+      "category": "PROCESSING_TIME",
+      "requirement_text": "Processing time information — not an eligibility requirement",
+      "expected": null,
+      "evidence_text": "For an indication of processing times for this visa, use the visa processing time guide tool.",
+      "criticality": "NONE"
+    },
+    {
+      "gold_id": "NEG-189-UNIQUE-001",
+      "chunk_id": 19,
+      "content_kind": "INFORMATIONAL",
+      "category": "OVERVIEW",
+      "requirement_text": "Unique features summary — references requirements defined elsewhere",
+      "expected": null,
+      "evidence_text": "You don't need a sponsor or nominator You must be invited to apply You must be under 45 to be invited",
+      "criticality": "NONE"
+    },
+    {
+      "gold_id": "NEG-189-YOUMUST-001",
+      "chunk_id": 18,
+      "content_kind": "INFORMATIONAL",
+      "category": "OVERVIEW",
+      "requirement_text": "Summary checklist — requirements defined in detail in their own eligibility chunks",
+      "expected": null,
+      "evidence_text": "have an occupation on the relevant skilled occupation list have a suitable skills assessment for the occupation be invited to apply for this visa satisfy the points test",
+      "criticality": "NONE"
+    }
+  ],
+  "visa_category": "skilled"
+}

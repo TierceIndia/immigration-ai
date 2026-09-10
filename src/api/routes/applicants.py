@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from api.helpers import parse_uuid_or_404
 from api.routes.auth import get_current_user_id
 from api.schemas.models import ApplicantCreate, ApplicantResponse, ApplicantUpdate
 from db.connection import get_session, get_db_engine
@@ -35,6 +36,7 @@ def list_applicants(request: Request, user_id: str = Depends(get_current_user_id
 
 @router.get("/{applicant_id}", response_model=ApplicantResponse)
 def get_applicant(applicant_id: str, request: Request):
+    parse_uuid_or_404(applicant_id)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         svc = ApplicantService(session)
@@ -46,6 +48,7 @@ def get_applicant(applicant_id: str, request: Request):
 
 @router.patch("/{applicant_id}", response_model=ApplicantResponse)
 def update_applicant(applicant_id: str, body: ApplicantUpdate, request: Request):
+    parse_uuid_or_404(applicant_id)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         svc = ApplicantService(session)

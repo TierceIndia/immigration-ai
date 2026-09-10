@@ -1,14 +1,23 @@
 """Scheduler — automatic government source sync via APScheduler.
 
-Runs periodic jobs to:
-1. Sync all active government sources (change detection + rule compilation)
-2. Configurable interval via GOVERNMENT_SYNC_INTERVAL_MINUTES env var
+Runs periodic jobs to sync all active government sources (change detection +
+rule compilation).
+
+Trigger selection (single source of truth):
+  * ``GOVERNMENT_SYNC_HOUR_UTC`` set       -> daily cron at that hour
+    (``GOVERNMENT_SYNC_MINUTE_UTC`` optional, default 0). This is the production
+    mode: one fixed daily run, aligned to the clock, the whole 24h cycle covered
+    by a predictable schedule.
+  * ``GOVERNMENT_SYNC_INTERVAL_MINUTES`` set -> interval every N minutes (legacy
+    mode, kept for the standalone pipeline scripts / tests).
+  * Neither set -> daily cron at the default fixed time
+    (03:00 UTC / 00 minute).
 
 Overlap protection:
   A module-level threading.Lock (_sync_lock) prevents concurrent sync executions
   from both the scheduled job and manual triggers.  APScheduler's max_instances=1
   further ensures the scheduler never starts a second scheduled run while one is
-  in flight, but _sync_now bypasses APScheduler entirely so the lock is the
+  in flight, but trigger_sync_now bypasses APScheduler entirely so the lock is the
   single source of truth.
 
 Usage in FastAPI lifespan:
@@ -28,6 +37,8 @@ from datetime import timezone as _tz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from logging_config import get_logger
 
@@ -37,6 +48,67 @@ _scheduler: BackgroundScheduler | None = None
 _sync_lock = threading.Lock()
 
 _DEFAULT_INTERVAL_MINUTES = 60
+_DEFAULT_DAILY_HOUR_UTC = 3
+_DEFAULT_DAILY_MINUTE_UTC = 0
+
+
+def _parse_int_env(name: str) -> int | None:
+    """Parse a non-negative int env var; warn + return None on garbage."""
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning(f"Invalid integer for {name}={raw!r}, ignoring")
+        return None
+
+
+def _build_trigger(
+    interval_minutes: int | None,
+    hour_utc: int | None,
+    minute_utc: int | None,
+) -> tuple[Any, str]:
+    """Return (trigger, mode_label) honoring the selection rules above."""
+    interval_env = _parse_int_env("GOVERNMENT_SYNC_INTERVAL_MINUTES")
+    hour_env = _parse_int_env("GOVERNMENT_SYNC_HOUR_UTC")
+    minute_env = _parse_int_env("GOVERNMENT_SYNC_MINUTE_UTC")
+
+    daily = False
+    if interval_minutes is None and hour_utc is None:
+        if hour_env is not None:
+            hour_utc, minute_utc = hour_env, minute_env
+            daily = True
+        elif interval_env is not None:
+            interval_minutes = interval_env
+        else:
+            hour_utc, minute_utc = (
+                _DEFAULT_DAILY_HOUR_UTC,
+                _DEFAULT_DAILY_MINUTE_UTC,
+            )
+            daily = True
+    elif interval_minutes is None and hour_utc is not None:
+        daily = True
+
+    if daily:
+        hour = hour_utc if hour_utc is not None else _DEFAULT_DAILY_HOUR_UTC
+        minute = minute_utc if minute_utc is not None else _DEFAULT_DAILY_MINUTE_UTC
+        if not 0 <= hour <= 23:
+            raise ValueError(f"GOVERNMENT_SYNC_HOUR_UTC must be 0-23, got {hour}")
+        if not 0 <= minute <= 59:
+            raise ValueError(f"GOVERNMENT_SYNC_MINUTE_UTC must be 0-59, got {minute}")
+        return (
+            CronTrigger(hour=hour, minute=minute, timezone=_tz.utc),
+            f"daily cron at {hour:02d}:{minute:02d} UTC",
+        )
+
+    minutes = interval_minutes if interval_minutes is not None else _DEFAULT_INTERVAL_MINUTES
+    if minutes < 1:
+        raise ValueError(f"Interval must be >= 1 minute, got {minutes}")
+    return (
+        IntervalTrigger(minutes=minutes, timezone=_tz.utc),
+        f"interval every {minutes} minutes",
+    )
 
 
 def _acquired_sync_lock() -> bool:
@@ -83,12 +155,21 @@ def _sync_job(engine) -> None:
         _release_sync_lock()
 
 
-def start_scheduler(engine, interval_minutes: int | None = None) -> None:
+def start_scheduler(
+    engine,
+    interval_minutes: int | None = None,
+    hour_utc: int | None = None,
+    minute_utc: int | None = None,
+) -> None:
     """Start the background scheduler.
 
     Args:
         engine: SQLAlchemy engine for DB sessions.
-        interval_minutes: Override from env or default (60 min).
+        interval_minutes: Explicit interval mode (legacy). If None, the trigger
+            is chosen from env vars (GOVERNMENT_SYNC_HOUR_UTC for daily cron,
+            GOVERNMENT_SYNC_INTERVAL_MINUTES for legacy interval) or the daily
+            cron default.
+        hour_utc / minute_utc: Explicit daily-cron time override (UTC).
     """
     global _scheduler
 
@@ -96,10 +177,7 @@ def start_scheduler(engine, interval_minutes: int | None = None) -> None:
         logger.warning("Scheduler already running")
         return
 
-    if interval_minutes is None:
-        interval_minutes = int(
-            os.getenv("GOVERNMENT_SYNC_INTERVAL_MINUTES", str(_DEFAULT_INTERVAL_MINUTES))
-        )
+    trigger, mode_label = _build_trigger(interval_minutes, hour_utc, minute_utc)
 
     jobstores = {"default": MemoryJobStore()}
     executors = {"default": ThreadPoolExecutor(max_workers=1)}
@@ -114,8 +192,7 @@ def start_scheduler(engine, interval_minutes: int | None = None) -> None:
 
     _scheduler.add_job(
         _sync_job,
-        "interval",
-        minutes=interval_minutes,
+        trigger,
         args=[engine],
         id="government_source_sync",
         name="Government Source Sync",
@@ -123,10 +200,7 @@ def start_scheduler(engine, interval_minutes: int | None = None) -> None:
     )
 
     _scheduler.start()
-    logger.info(
-        "Scheduler started",
-        extra={"interval_minutes": interval_minutes, "timezone": "UTC"},
-    )
+    logger.info("Scheduler started", extra={"trigger": mode_label, "timezone": "UTC"})
 
 
 def shutdown_scheduler() -> None:

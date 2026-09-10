@@ -69,7 +69,9 @@ class TestRegister:
             "/api/v1/auth/register",
             json={"email": "dup@example.com", "password": "pass456"},
         )
-        assert resp.status_code in (400, 409, 500)
+        # Deterministic 409 — never a raw 500 from the DB constraint.
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Email already registered"
 
 
 # ---------------------------------------------------------------------------

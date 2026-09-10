@@ -27,17 +27,53 @@ def new_run_id() -> str:
     return f"RUN-{uuid.uuid4().hex[:12]}"
 
 
+def _resolve_document_version_id(conn, document_id: str, document_version: int) -> int:
+    """Resolve the canonical immutable version row for a (document_id, document_version)
+    tuple. Every extraction run / requirement / evidence entry must anchor to the exact
+    source snapshot it was produced from — refusing to invent lineage."""
+    row = conn.execute(
+        "SELECT version_id FROM document_versions WHERE document_id = ? AND version_number = ?",
+        (document_id, document_version),
+    ).fetchone()
+    if row is None or row["version_id"] is None:
+        raise ValueError(
+            f"cannot anchor lineage: no document_versions row for "
+            f"document_id={document_id!r} document_version={document_version!r}"
+        )
+    return row["version_id"]
+
+
 def create_extraction_run(conn, document_id: str, document_version: int, model: str,
                             prompt_version: str, dry_run: bool) -> str:
+    """Create an extraction run anchored to the exact immutable document version.
+
+    Idempotent: re-running the same (document_version_id, model, prompt_version, dry_run)
+    while a prior run for it is still RUNNING or already COMPLETED reuses that run instead
+    of minting an orphan. Failed runs are never reused (a retry must get a fresh row)."""
+    document_version_id = _resolve_document_version_id(conn, document_id, document_version)
+    dry = 1 if dry_run else 0
+    existing = conn.execute(
+        """
+        SELECT run_id FROM extraction_runs
+        WHERE document_version_id = ? AND model = ? AND prompt_version = ? AND dry_run = ?
+          AND status IN ('RUNNING', 'COMPLETED')
+        LIMIT 1
+        """,
+        (document_version_id, model, prompt_version, dry),
+    ).fetchone()
+    if existing:
+        return existing["run_id"]
+
     run_id = new_run_id()
     conn.execute(
         """
         INSERT INTO extraction_runs
-            (run_id, document_id, document_version, started_at, model, prompt_version,
-             status, dry_run)
-        VALUES (?, ?, ?, ?, ?, ?, 'RUNNING', ?)
+            (run_id, document_id, document_version, document_version_id, started_at,
+             model, prompt_version, status, dry_run)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?)
         """,
-        (run_id, document_id, document_version, _now_iso(), model, prompt_version, 1 if dry_run else 0),
+        (run_id, document_id, document_version, document_version_id, _now_iso(),
+         model, prompt_version, dry),
     )
     conn.commit()
     return run_id
@@ -109,6 +145,8 @@ def persist_requirement(conn, *, program_id: str, country_id: str, requirement: 
                 "matched_requirement_id": decision.matched_requirement_id, "reason": decision.reason}
 
     now = _now_iso()
+    # Resolve the exact immutable source snapshot this batch is being extracted from.
+    document_version_id = _resolve_document_version_id(conn, document_id, document_version)
 
     if decision.relationship == "NEW":
         requirement_id = f"REQ-{program_id}-{sem_key}"
@@ -118,8 +156,8 @@ def persist_requirement(conn, *, program_id: str, country_id: str, requirement: 
                 (requirement_id, semantic_key, program_id, country_id, category, name, description,
                  field, operator, value_json, unit, mandatory, condition_json, exception_json,
                  applies_to, content_kind, confidence, criticality, status, current_version,
-                 extraction_run_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?)
+                 extraction_run_id, document_version_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?, ?)
             """,
             (
                 requirement_id, sem_key, program_id, country_id, category, name,
@@ -130,25 +168,29 @@ def persist_requirement(conn, *, program_id: str, country_id: str, requirement: 
                 json.dumps(requirement.get("exception")) if requirement.get("exception") else None,
                 requirement.get("applies_to"), requirement.get("content_kind", "REQUIREMENT"),
                 requirement.get("confidence"), requirement.get("criticality", "NORMAL"),
-                extraction_run_id, now, now,
+                extraction_run_id, document_version_id, now, now,
             ),
         )
-        _insert_evidence(conn, requirement_id, requirement["evidence"], document_id, document_version, now)
+        _insert_evidence(conn, requirement_id, requirement["evidence"], document_id, document_version,
+                         document_version_id, now)
         _insert_references(conn, requirement_id, requirement.get("references", []))
-        _insert_version(conn, requirement_id, 1, requirement, document_version, "INITIAL", now)
+        _insert_version(conn, requirement_id, 1, requirement, document_version, document_version_id,
+                        "INITIAL", now)
         conn.commit()
         return {"action": "CREATED", "requirement_id": requirement_id, "semantic_key": sem_key}
 
     if decision.relationship == "EXACT_DUPLICATE":
         requirement_id = decision.matched_requirement_id
-        _insert_evidence(conn, requirement_id, requirement["evidence"], document_id, document_version, now)
+        _insert_evidence(conn, requirement_id, requirement["evidence"], document_id, document_version,
+                         document_version_id, now)
         conn.execute("UPDATE requirements SET updated_at = ? WHERE requirement_id = ?", (now, requirement_id))
         conn.commit()
         return {"action": "EVIDENCE_ADDED", "requirement_id": requirement_id, "semantic_key": sem_key}
 
     if decision.relationship == "COMPLEMENTARY":
         requirement_id = decision.matched_requirement_id
-        _insert_evidence(conn, requirement_id, requirement["evidence"], document_id, document_version, now)
+        _insert_evidence(conn, requirement_id, requirement["evidence"], document_id, document_version,
+                         document_version_id, now)
         conn.execute("UPDATE requirements SET updated_at = ? WHERE requirement_id = ?", (now, requirement_id))
         conn.commit()
         return {"action": "COMPLEMENTARY_EVIDENCE_ADDED", "requirement_id": requirement_id,
@@ -162,8 +204,8 @@ def persist_requirement(conn, *, program_id: str, country_id: str, requirement: 
             (requirement_id, semantic_key, program_id, country_id, category, name, description,
              field, operator, value_json, unit, mandatory, condition_json, exception_json,
              applies_to, content_kind, confidence, criticality, status, current_version,
-             extraction_run_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONFLICT', 1, ?, ?, ?)
+             extraction_run_id, document_version_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONFLICT', 1, ?, ?, ?, ?)
         """,
         (
             requirement_id, sem_key, program_id, country_id, category, name,
@@ -174,7 +216,7 @@ def persist_requirement(conn, *, program_id: str, country_id: str, requirement: 
             json.dumps(requirement.get("exception")) if requirement.get("exception") else None,
             requirement.get("applies_to"), requirement.get("content_kind", "REQUIREMENT"),
             requirement.get("confidence"), requirement.get("criticality", "NORMAL"),
-            extraction_run_id, now, now,
+            extraction_run_id, document_version_id, now, now,
         ),
     )
     # also flip the pre-existing matched requirement to CONFLICT so a reviewer sees both sides
@@ -182,15 +224,18 @@ def persist_requirement(conn, *, program_id: str, country_id: str, requirement: 
         "UPDATE requirements SET status = 'CONFLICT', updated_at = ? WHERE requirement_id = ?",
         (now, decision.matched_requirement_id),
     )
-    _insert_evidence(conn, requirement_id, requirement["evidence"], document_id, document_version, now)
-    _insert_version(conn, requirement_id, 1, requirement, document_version, "CONFLICTING", now)
+    _insert_evidence(conn, requirement_id, requirement["evidence"], document_id, document_version,
+                     document_version_id, now)
+    _insert_version(conn, requirement_id, 1, requirement, document_version, document_version_id,
+                    "CONFLICTING", now)
     conn.commit()
     return {"action": "CONFLICT_RECORDED", "requirement_id": requirement_id,
             "conflicts_with": decision.matched_requirement_id, "semantic_key": sem_key,
             "reason": decision.reason}
 
 
-def _insert_evidence(conn, requirement_id, evidence_list, document_id, document_version, now):
+def _insert_evidence(conn, requirement_id, evidence_list, document_id, document_version,
+                     document_version_id, now):
     for ev in evidence_list:
         existing = conn.execute(
             """
@@ -204,12 +249,13 @@ def _insert_evidence(conn, requirement_id, evidence_list, document_id, document_
         conn.execute(
             """
             INSERT INTO requirement_evidence
-                (requirement_id, document_id, document_version, chunk_id, evidence_text,
-                 evidence_type, verified, verification_note, extraction_method, extracted_at)
-            VALUES (?, ?, ?, ?, ?, ?, 1, 'verified: exact substring match', 'LLM_EXTRACTION', ?)
+                (requirement_id, document_id, document_version, document_version_id, chunk_id,
+                 evidence_text, evidence_type, verified, verification_note, extraction_method,
+                 extracted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'verified: exact substring match', 'LLM_EXTRACTION', ?)
             """,
-            (requirement_id, document_id, document_version, ev["chunk_id"], ev["evidence_text"],
-             ev["evidence_type"], now),
+            (requirement_id, document_id, document_version, document_version_id, ev["chunk_id"],
+             ev["evidence_text"], ev["evidence_type"], now),
         )
 
 
@@ -225,13 +271,15 @@ def _insert_references(conn, requirement_id, references):
         )
 
 
-def _insert_version(conn, requirement_id, version_number, requirement, document_version, change_type, now):
+def _insert_version(conn, requirement_id, version_number, requirement, document_version,
+                    document_version_id, change_type, now):
     conn.execute(
         """
         INSERT INTO requirement_versions
-            (requirement_id, version_number, snapshot_json, document_version, change_type,
-             created_at, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, 'system')
+            (requirement_id, version_number, snapshot_json, document_version,
+             document_version_id, change_type, created_at, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'system')
         """,
-        (requirement_id, version_number, json.dumps(requirement), document_version, change_type, now),
+        (requirement_id, version_number, json.dumps(requirement), document_version,
+         document_version_id, change_type, now),
     )

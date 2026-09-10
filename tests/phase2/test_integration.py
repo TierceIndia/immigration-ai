@@ -53,6 +53,8 @@ def _setup():
             shutil.rmtree(p)
 
     init_schema()
+    import os as _os
+    _os.environ["SEED_BACKEND"] = "sqlite"  # keep the offline integration seed on SQLite
     seed_main()
     run_pipeline(source_id_filter=TEST_SOURCE_ID, offline_fixture=FIXTURE)
 

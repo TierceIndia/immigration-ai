@@ -2,7 +2,8 @@
   "_meta": {
     "verified_on": "2026-08-19",
     "verification_method": "web_search against immi.homeaffairs.gov.au and legislation.gov.au",
-    "note": "URLs are re-validated by the fetcher on every run (HTTP status is logged in fetch_log). Update this file if the department restructures its site."
+    "note": "URLs are re-validated by the fetcher on every run (HTTP status is logged in fetch_log). Update this file if the department restructures its site.",
+    "confidence_flag": "WORK_482, STUDENT_500, and VISITOR_600 are LOW-CONFIDENCE placeholder program rows added so discovered sources in those visa categories have a program to attach to. They are structural anchors only (not verified program URLs, and no government_sources rows reference them). Confirm the real subclass criteria/authoritative source before enabling live extraction for them."
   },
   "countries": [
     { "country_id": "AU", "name": "Australia", "iso_code": "AUS" }
@@ -11,7 +12,10 @@
     { "program_id": "SKILLED_189", "country_id": "AU", "visa_category": "SKILLED", "subclass_code": "189", "name": "Skilled Independent visa (subclass 189)", "status": "ACTIVE" },
     { "program_id": "SKILLED_190", "country_id": "AU", "visa_category": "SKILLED", "subclass_code": "190", "name": "Skilled Nominated visa (subclass 190)", "status": "ACTIVE" },
     { "program_id": "SKILLED_491", "country_id": "AU", "visa_category": "SKILLED", "subclass_code": "491", "name": "Skilled Work Regional (Provisional) visa (subclass 491)", "status": "ACTIVE" },
-    { "program_id": "LEGISLATION_MIGRATION_REGS", "country_id": "AU", "visa_category": "LEGISLATION", "subclass_code": null, "name": "Migration Regulations 1994 (governs all AU visa subclasses)", "status": "ACTIVE" }
+    { "program_id": "LEGISLATION_MIGRATION_REGS", "country_id": "AU", "visa_category": "SKILLED", "subclass_code": null, "name": "Migration Regulations 1994 (governs all AU visa subclasses)", "status": "ACTIVE" },
+    { "program_id": "WORK_482", "country_id": "AU", "visa_category": "WORK", "subclass_code": "482", "name": "Temporary Skill Shortage (TSS) visa (subclass 482)", "status": "ACTIVE" },
+    { "program_id": "STUDENT_500", "country_id": "AU", "visa_category": "STUDENT", "subclass_code": "500", "name": "Student visa (subclass 500)", "status": "ACTIVE" },
+    { "program_id": "VISITOR_600", "country_id": "AU", "visa_category": "VISITOR", "subclass_code": "600", "name": "Visitor visa (subclass 600)", "status": "ACTIVE" }
   ],
   "government_sources": [
     {
@@ -123,7 +127,7 @@
       "source_id": "SRC-AU-MIGRATION-REGS-1994",
       "country_id": "AU",
       "program_id": "LEGISLATION_MIGRATION_REGS",
-      "visa_category": "LEGISLATION",
+      "visa_category": "SKILLED",
       "authority": "Federal Register of Legislation (Office of Parliamentary Counsel)",
       "url": "https://www.legislation.gov.au/F1996B03551/latest/text",
       "source_type": "HTML",

@@ -554,7 +554,24 @@ class TestOrchestratorPipelineRunIntegration:
         with Session() as s:
             _seed_source(s, "src-001")
             s.commit()
-        _sync_job(engine)
+        # A source with no document would be bootstrapped with a real fetch; stub that out so
+        # the scheduler test stays offline (asserts the run is still created and tracked).
+        from unittest.mock import patch
+        from utils.fetch_document import FetchStoreOutcome
+        with patch(
+            "orchestration.government_sync.fetch_document_and_store",
+            return_value=FetchStoreOutcome(
+                source_id="src-001",
+                status="OK",
+                document_id="DOC-src-001",
+                document_version=1,
+                content_hash="hash-from-test",
+                requirements_extracted=0,
+                error=None,
+                demoted=False,
+            ),
+        ):
+            _sync_job(engine)
         with Session() as s:
             runs = s.query(PipelineRun).all()
             assert len(runs) == 1

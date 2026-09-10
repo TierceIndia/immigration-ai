@@ -31,6 +31,7 @@ def orm_to_dataclass(orm: RuleORM) -> Rule:
         chunk_id=orm.chunk_id or 0,
         requirement_id=orm.requirement_id or "",
         evidence_text=orm.evidence_text or "",
+        requirement_version_id=orm.requirement_version_id or 0,
     )
     return Rule(
         rule_id=orm.rule_id,
@@ -188,6 +189,8 @@ class EnhancedRuleRepo:
             snapshot_json=snapshot,
             change_type=change_type,
             created_by=created_by,
+            # keep version snapshots anchored to the same requirement lineage as the rule
+            requirement_version_id=obj.requirement_version_id,
         )
         self._s.add(rv)
         self._s.flush()
@@ -255,6 +258,7 @@ class EnhancedRuleRepo:
         prov = compiled_rule.provenance
         data = dict(
             requirement_id=requirement_id,
+            requirement_version_id=prov.requirement_version_id or None,
             program_id=compiled_rule.program_id,
             category=compiled_rule.category,
             field=compiled_rule.field,

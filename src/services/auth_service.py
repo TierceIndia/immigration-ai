@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -98,6 +99,10 @@ class AuthService:
         from db.repositories import UserRepo
         self._user_repo = UserRepo(session)
 
+    def email_registered(self, email: str) -> bool:
+        """True if an account with this email already exists."""
+        return self._user_repo.get_by_email(email) is not None
+
     def register(self, email: str, password: str, full_name: str | None = None) -> dict:
         hashed = hash_password(password)
         user = self._user_repo.create(email=email, password_hash=hashed, full_name=full_name)
@@ -131,6 +136,17 @@ class AuthService:
             return None
         user_id = payload.get("sub")
         if not user_id:
+            return None
+        # G17: the `sub` claim is attacker-influenceable in shape. The underlying
+        # api_users.user_id is a native UUID column on PostgreSQL; passing a malformed
+        # string to UserRepo.get() would raise a raw DataError/InvalidTextRepresentation
+        # (unhandled 500) instead of the correct 401. Validate the UUID format at the
+        # edge first, mirroring parse_uuid_or_404, but return None (this function's
+        # contract) rather than raising HTTPException.
+        try:
+            UUID(user_id)
+        except (ValueError, TypeError):
+            logger.warning("JWT sub claim is not a valid UUID", extra={"user_id": user_id})
             return None
         user = self._user_repo.get(user_id)
         if not user or not user.is_active:

@@ -13,9 +13,12 @@ from typing import Any
 
 class RuleStatus(str, Enum):
     DRAFT = "DRAFT"
+    VALIDATED = "VALIDATED"
+    APPROVED = "APPROVED"
     ACTIVE = "ACTIVE"
     SUPERSEDED = "SUPERSEDED"
     RETIRED = "RETIRED"
+    REJECTED = "REJECTED"
 
 
 class EvaluationStatus(str, Enum):
@@ -35,6 +38,9 @@ class Provenance:
     chunk_id: int
     requirement_id: str
     evidence_text: str
+    # canonical audit lineage: the exact immutable requirement_versions row the rule was
+    # compiled from (0/None when the rule predates requirement lineage tracking)
+    requirement_version_id: int = 0
 
 
 @dataclass
@@ -82,6 +88,7 @@ class Rule:
                 "chunk_id": self.provenance.chunk_id,
                 "requirement_id": self.provenance.requirement_id,
                 "evidence_text": self.provenance.evidence_text,
+                "requirement_version_id": self.provenance.requirement_version_id,
             },
             "status": self.status.value,
             "created_at": self.created_at,
@@ -112,6 +119,7 @@ class Rule:
                 chunk_id=prov["chunk_id"],
                 requirement_id=prov["requirement_id"],
                 evidence_text=prov["evidence_text"],
+                requirement_version_id=prov.get("requirement_version_id", 0),
             ),
             status=RuleStatus(d.get("status", "DRAFT")),
             created_at=d.get("created_at", datetime.now(timezone.utc).isoformat()),

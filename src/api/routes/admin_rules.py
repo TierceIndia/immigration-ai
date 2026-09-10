@@ -133,6 +133,78 @@ def list_rules(
         return [_orm_to_response(o) for o in objs]
 
 
+# NOTE: /batch/* routes MUST be registered before any /{rule_id}/* route.
+# Starlette matches in registration order, so a late /batch/validate would be
+# swallowed by POST /{rule_id}/validate with rule_id="batch". Do not reorder.
+
+@router.post("/batch/validate", response_model=list[RuleResponse])
+def batch_validate(
+    body: BatchActionRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Batch DRAFT → VALIDATED."""
+    _require_admin(current_user)
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
+        repo = EnhancedRuleRepo(session)
+        results = []
+        for rule_id in body.rule_ids:
+            try:
+                obj = repo.validate_rule(rule_id, actor=body.actor)
+                repo.save_version_snapshot(rule_id, "VALIDATED", body.actor)
+                results.append(_orm_to_response(obj))
+            except ValueError as e:
+                logger.warning("Batch validate failed for rule",
+                               extra={"rule_id": rule_id, "error": str(e)})
+        return results
+
+
+@router.post("/batch/approve", response_model=list[RuleResponse])
+def batch_approve(
+    body: BatchActionRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Batch VALIDATED → APPROVED."""
+    _require_admin(current_user)
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
+        repo = EnhancedRuleRepo(session)
+        results = []
+        for rule_id in body.rule_ids:
+            try:
+                obj = repo.approve_rule(rule_id, actor=body.actor)
+                repo.save_version_snapshot(rule_id, "APPROVED", body.actor)
+                results.append(_orm_to_response(obj))
+            except ValueError as e:
+                logger.warning("Batch approve failed for rule",
+                               extra={"rule_id": rule_id, "error": str(e)})
+        return results
+
+
+@router.post("/batch/activate", response_model=list[RuleResponse])
+def batch_activate(
+    body: BatchActionRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Batch APPROVED → ACTIVE (each transactionally supersedes old version)."""
+    _require_admin(current_user)
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
+        repo = EnhancedRuleRepo(session)
+        results = []
+        for rule_id in body.rule_ids:
+            try:
+                obj = repo.activate_rule(rule_id, actor=body.actor)
+                results.append(_orm_to_response(obj))
+            except ValueError as e:
+                logger.warning("Batch activate failed for rule",
+                               extra={"rule_id": rule_id, "error": str(e)})
+        return results
+
+
 @router.get("/{rule_id}", response_model=RuleResponse)
 def get_rule(
     rule_id: str,
@@ -246,71 +318,3 @@ def retire_rule(
             return _orm_to_response(obj)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.post("/batch/validate", response_model=list[RuleResponse])
-def batch_validate(
-    body: BatchActionRequest,
-    request: Request,
-    current_user: dict = Depends(get_current_user),
-):
-    """Batch DRAFT → VALIDATED."""
-    _require_admin(current_user)
-    engine = get_db_engine(request)
-    with get_session(engine) as session:
-        repo = EnhancedRuleRepo(session)
-        results = []
-        for rule_id in body.rule_ids:
-            try:
-                obj = repo.validate_rule(rule_id, actor=body.actor)
-                repo.save_version_snapshot(rule_id, "VALIDATED", body.actor)
-                results.append(_orm_to_response(obj))
-            except ValueError as e:
-                logger.warning("Batch validate failed for rule",
-                               extra={"rule_id": rule_id, "error": str(e)})
-        return results
-
-
-@router.post("/batch/approve", response_model=list[RuleResponse])
-def batch_approve(
-    body: BatchActionRequest,
-    request: Request,
-    current_user: dict = Depends(get_current_user),
-):
-    """Batch VALIDATED → APPROVED."""
-    _require_admin(current_user)
-    engine = get_db_engine(request)
-    with get_session(engine) as session:
-        repo = EnhancedRuleRepo(session)
-        results = []
-        for rule_id in body.rule_ids:
-            try:
-                obj = repo.approve_rule(rule_id, actor=body.actor)
-                repo.save_version_snapshot(rule_id, "APPROVED", body.actor)
-                results.append(_orm_to_response(obj))
-            except ValueError as e:
-                logger.warning("Batch approve failed for rule",
-                               extra={"rule_id": rule_id, "error": str(e)})
-        return results
-
-
-@router.post("/batch/activate", response_model=list[RuleResponse])
-def batch_activate(
-    body: BatchActionRequest,
-    request: Request,
-    current_user: dict = Depends(get_current_user),
-):
-    """Batch APPROVED → ACTIVE (each transactionally supersedes old version)."""
-    _require_admin(current_user)
-    engine = get_db_engine(request)
-    with get_session(engine) as session:
-        repo = EnhancedRuleRepo(session)
-        results = []
-        for rule_id in body.rule_ids:
-            try:
-                obj = repo.activate_rule(rule_id, actor=body.actor)
-                results.append(_orm_to_response(obj))
-            except ValueError as e:
-                logger.warning("Batch activate failed for rule",
-                               extra={"rule_id": rule_id, "error": str(e)})
-        return results

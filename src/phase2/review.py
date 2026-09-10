@@ -22,6 +22,27 @@ def _snapshot(conn, requirement_id: str) -> dict | None:
     return {k: row[k] for k in row.keys()}
 
 
+def _resolve_requirement_document_version_id(conn, requirement_id: str) -> int | None:
+    """The requirement's canonical source snapshot: prefer the requirement row's own
+    anchor, else the most recent requirement_versions row that carries one. Human edits
+    keep the same source lineage as the version they amend (NULL only if none exists)."""
+    row = conn.execute(
+        "SELECT document_version_id FROM requirements WHERE requirement_id = ?",
+        (requirement_id,),
+    ).fetchone()
+    if row and row["document_version_id"]:
+        return row["document_version_id"]
+    prev = conn.execute(
+        """
+        SELECT document_version_id FROM requirement_versions
+        WHERE requirement_id = ? AND document_version_id IS NOT NULL
+        ORDER BY version_number DESC LIMIT 1
+        """,
+        (requirement_id,),
+    ).fetchone()
+    return prev["document_version_id"] if prev else None
+
+
 def list_for_review(conn, status: str = "NEEDS_REVIEW", limit: int = 50) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM requirements WHERE status = ? ORDER BY updated_at LIMIT ?",
@@ -140,14 +161,17 @@ def edit_field(conn, requirement_id: str, reviewer: str, field_name: str, new_va
     new_state = _snapshot(conn, requirement_id)
 
     next_version = (old_state["current_version"] or 1) + 1
+    document_version_id = _resolve_requirement_document_version_id(conn, requirement_id)
     conn.execute(
         """
         INSERT INTO requirement_versions (requirement_id, version_number, snapshot_json,
-                                            document_version, change_type, created_at, created_by)
-        VALUES (?, ?, ?, ?, 'HUMAN_EDIT', ?, ?)
+                                            document_version, document_version_id, change_type,
+                                            created_at, created_by)
+        VALUES (?, ?, ?, ?, ?, 'HUMAN_EDIT', ?, ?)
         """,
         (requirement_id, next_version, json.dumps(new_state, default=str),
          0,  # document_version unknown/not-applicable for a manual edit
+         document_version_id,
          now, reviewer),
     )
     conn.execute(

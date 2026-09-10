@@ -64,9 +64,14 @@ def run_for_document(conn, document_id: str, model: str, dry_run: bool, limit: i
 
     run_id = create_extraction_run(conn, document_id, version, model, PROMPT_VERSION, dry_run)
 
-    client = get_client(model)
+    # Deterministic prompt selection: program_id → visa_category → category-specific prompt.
+    # The client loads prompts/<visa_category>/<PROMPT_VERSION>.md and falls back to the
+    # generic prompt if the category prompt is unavailable. This guarantees a Student source
+    # never uses the Skilled extraction contract.
+    visa_category = source_row["visa_category"] if source_row else doc.get("visa_category")
+    client = get_client(model, visa_category=visa_category)
     source_ctx = {"source_id": source_row["source_id"], "authority": source_row["authority"],
-                  "program_id": doc["program_id"]}
+                  "program_id": doc["program_id"], "visa_category": visa_category}
     document_ctx = {"document_id": document_id, "version": version, "title": doc["title"]}
 
     outcomes = extract_from_document(

@@ -11,6 +11,7 @@ fabricated evidence ever accepted; all CRITICAL gold items must be found).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -41,6 +42,7 @@ def _run_extraction():
             import shutil
             shutil.rmtree(p)
     conn = dbmod.init_schema()
+    os.environ["SEED_BACKEND"] = "sqlite"  # keep the standalone workflow on SQLite
     seed_main()
     run_pipeline(source_id_filter=SOURCE_ID, offline_fixture=FIXTURE)
 

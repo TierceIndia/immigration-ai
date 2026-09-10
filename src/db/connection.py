@@ -16,14 +16,12 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from config import get_database_url as _config_database_url
+
 
 def get_database_url() -> str:
-    url = os.getenv("DATABASE_URL")
-    if not url:
-        raise RuntimeError(
-            "DATABASE_URL not set. Copy .env.example to .env and configure."
-        )
-    return url
+    # Single source of truth: config loads .env and exposes DATABASE_URL.
+    return _config_database_url()
 
 
 def get_engine(url: str | None = None):

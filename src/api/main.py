@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from logging_config import get_logger, set_request_context, setup_logging
+import config as _config
 
 logger = get_logger(__name__)
 
@@ -24,38 +25,65 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     setup_logging(level="INFO", json_output=True)
 
-    # Always initialize db_engine so routes can safely access it
-    if not getattr(app.state, "db_engine", None):
-        app.state.db_engine = None
+    # In TESTING mode, never touch db_engine — tests set it themselves
+    if os.getenv("TESTING") == "true":
+        if not getattr(app.state, "db_engine", None):
+            app.state.db_engine = None
+        logger.info("Lifespan: TESTING mode — skipping DB init")
+    else:
+        # Production / dev: initialize from DATABASE_URL if not already set
+        if not getattr(app.state, "db_engine", None):
+            db_url = os.getenv("DATABASE_URL")
+            if db_url:
+                try:
+                    from db.connection import get_engine, init_db
+                    engine = get_engine(db_url)
+                    init_db(engine)
+                    app.state.db_engine = engine
+                    logger.info("Database engine initialized")
+                except Exception as e:
+                    app.state.db_error = _config.scrub_credential_string(str(e))
+                    logger.warning("Database connection failed — starting without DB",
+                                   extra={"error": app.state.db_error})
 
-    db_url = os.getenv("DATABASE_URL")
-    if db_url:
-        try:
-            from db.connection import get_engine, init_db
-            engine = get_engine(db_url)
-            init_db(engine)
-            app.state.db_engine = engine
-            logger.info("Database engine initialized")
-        except Exception as e:
-            logger.warning("Database connection failed — starting without DB",
-                           extra={"error": str(e)})
-
-    # Start scheduler if ENABLE_SCHEDULER=true
-    if os.getenv("ENABLE_SCHEDULER", "false").lower() == "true":
+        # Optional idempotent admin bootstrap: only acts when ADMIN_EMAIL and
+        # ADMIN_PASSWORD are both set in the environment. Never assumes a default
+        # admin or password (see src/create_admin.py).
         if getattr(app.state, "db_engine", None):
-            from scheduler import start_scheduler
-            start_scheduler(app.state.db_engine)
-            logger.info("Scheduler started")
-        else:
-            logger.warning("Scheduler disabled — no database connection")
+            try:
+                from create_admin import bootstrap_admin_from_env
+                result = bootstrap_admin_from_env(app.state.db_engine)
+                if result:
+                    logger.info(
+                        "Admin bootstrap",
+                        extra={
+                            "email": result["email"],
+                            "action": result["action"],
+                            "user_id": result["user_id"],
+                        },
+                    )
+            except Exception as e:
+                logger.warning("Admin bootstrap skipped",
+                               extra={"error": str(e)})
+
+    # Start scheduler if ENABLE_SCHEDULER=true (skip in TESTING mode)
+    if os.getenv("TESTING") != "true":
+        if os.getenv("ENABLE_SCHEDULER", "false").lower() == "true":
+            if getattr(app.state, "db_engine", None):
+                from scheduler import start_scheduler
+                start_scheduler(app.state.db_engine)
+                logger.info("Scheduler started")
+            else:
+                logger.warning("Scheduler disabled — no database connection")
 
     logger.info("Immigration Knowledge API starting up")
     yield
 
     # Shutdown scheduler
-    from scheduler import shutdown_scheduler
-    shutdown_scheduler()
-    logger.info("Immigration Knowledge API shutting down")
+    if os.getenv("TESTING") != "true":
+        from scheduler import shutdown_scheduler
+        shutdown_scheduler()
+        logger.info("Immigration Knowledge API shutting down")
 
 
 app = FastAPI(
@@ -64,6 +92,33 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# JWT Bearer security scheme — makes Swagger UI show the Authorize 🔒 button.
+# ---------------------------------------------------------------------------
+# Every protected endpoint depends on get_current_user(), which reads the
+# Authorization: Bearer <jwt> header manually. FastAPI's OpenAPI generator only
+# auto-detects schemes declared via Security()/HTTPBearer(), so we inject the
+# scheme into the generated schema here.
+_BEARER_SCHEME = {
+    "type": "http",
+    "scheme": "bearer",
+    "bearerFormat": "JWT",
+}
+
+_original_openapi = app.openapi
+
+
+def _openapi_with_bearer():
+    schema = _original_openapi()
+    components = schema.setdefault("components", {})
+    components.setdefault("securitySchemes", {})["BearerAuth"] = _BEARER_SCHEME
+    schema.setdefault("security", [{"BearerAuth": []}])
+    return schema
+
+
+app.openapi = _openapi_with_bearer
 
 
 # ---------------------------------------------------------------------------
@@ -108,14 +163,19 @@ async def request_id_middleware(request: Request, call_next):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs  # noqa: E402
+from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs, admin_sources, admin_requirements, admin_documents, admin_knowledge, admin_schema  # noqa: E402
 
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(applicants.router, prefix="/api/v1/applicants", tags=["applicants"])
 app.include_router(assessments.router, prefix="/api/v1/assessments", tags=["assessments"])
 app.include_router(admin_rules.router, prefix="/api/v1/admin/rules", tags=["admin-rules"])
+app.include_router(admin_sources.router, prefix="/api/v1/admin/sources", tags=["admin-sources"])
 app.include_router(pipeline_runs.router, prefix="/api/v1/admin/runs", tags=["pipeline-runs"])
+app.include_router(admin_requirements.router, prefix="/api/v1/admin/requirements", tags=["admin-requirements"])
+app.include_router(admin_documents.router, prefix="/api/v1/admin/documents", tags=["admin-documents"])
+app.include_router(admin_knowledge.router, prefix="/api/v1/admin/knowledge-state", tags=["admin-knowledge-state"])
+app.include_router(admin_schema.router, prefix="/api/v1/admin/schema", tags=["admin-schema"])
 
 
 @app.post("/api/v1/admin/sync", tags=["admin-sync"])

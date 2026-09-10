@@ -1,0 +1,9 @@
+{
+  "visa_category": "visitor",
+  "program_id": null,
+  "country_id": "AU",
+  "created_at": null,
+  "_status": "AWAITING_REAL_SOURCE",
+  "_comment": "PLACEHOLDER - no gold items yet. Project anti-hallucination rule forbids fabricating evidence_text; every item must quote verbatim from a real Home Affairs visitor-visa page (subclass 600). Live Home Affairs returns HTTP 403 to automated fetchers (see SOURCE_REGISTRY_REPORT.md), so real content cannot be captured in this sandbox. Fill this file with items structured like data/gold/skilled/skilled_189_real.json once real content is available, and set visa_category='visitor' (already set).",
+  "items": []
+}

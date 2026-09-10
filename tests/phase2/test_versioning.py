@@ -8,6 +8,7 @@ SQLite file - no network required.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -69,6 +70,7 @@ def main():
         if p.exists():
             shutil.rmtree(p)
     conn = dbmod.init_schema()
+    os.environ["SEED_BACKEND"] = "sqlite"  # keep the standalone workflow on SQLite
     seed_main()
 
     print("--- v1: extract requirements ---")

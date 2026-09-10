@@ -1,5 +1,7 @@
 -- Phase-1 schema: Government Source Registry + Document Metadata + Versioning
 -- Scope: Australia, Skilled Migration (189 / 190 / 491) only.
+-- Visa category vocabulary reconciled with live ORM models to:
+--   SKILLED / WORK / STUDENT / VISITOR (replaces legacy STUDY/WORK_PERMIT/DEPENDENT)
 -- Engine: SQLite (file-backed, matches the "file-backed now, DB-backed later" plan).
 
 PRAGMA foreign_keys = ON;
@@ -20,7 +22,7 @@ CREATE TABLE IF NOT EXISTS immigration_programs (
     program_id     TEXT PRIMARY KEY,        -- 'SKILLED_189'
     country_id     TEXT NOT NULL REFERENCES countries(country_id),
     visa_category  TEXT NOT NULL CHECK (visa_category IN
-                     ('SKILLED','STUDY','VISITOR','DEPENDENT','WORK_PERMIT','LEGISLATION')),
+                     ('SKILLED','WORK','STUDENT','VISITOR')),
     subclass_code  TEXT,                    -- '189'
     name           TEXT NOT NULL,
     status         TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','CLOSED','SUSPENDED'))
@@ -34,7 +36,7 @@ CREATE TABLE IF NOT EXISTS government_sources (
     country_id          TEXT NOT NULL REFERENCES countries(country_id),
     program_id          TEXT NOT NULL REFERENCES immigration_programs(program_id),
     visa_category        TEXT NOT NULL CHECK (visa_category IN
-                     ('SKILLED','STUDY','VISITOR','DEPENDENT','WORK_PERMIT','LEGISLATION')),
+                     ('SKILLED','WORK','STUDENT','VISITOR')),
     authority            TEXT NOT NULL,             -- 'Department of Home Affairs'
     url                  TEXT NOT NULL UNIQUE,
     source_type          TEXT NOT NULL CHECK (source_type IN ('HTML','PDF')),
@@ -48,7 +50,7 @@ CREATE TABLE IF NOT EXISTS government_sources (
     last_hash              TEXT,                    -- sha256 of raw bytes at last successful fetch
     status                 TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN
                      ('ACTIVE','INACTIVE','BROKEN','ACCESS_BLOCKED','NETWORK_RESTRICTED',
-                      'REQUIRES_BROWSER','REQUIRES_MANUAL_DOWNLOAD')),
+                      'REQUIRES_BROWSER','REQUIRES_MANUAL_DOWNLOAD','NEEDS_MANUAL_CAPTURE')),
     notes                  TEXT
 );
 
@@ -64,7 +66,7 @@ CREATE TABLE IF NOT EXISTS government_documents (
     country_id        TEXT NOT NULL REFERENCES countries(country_id),
     program_id        TEXT NOT NULL REFERENCES immigration_programs(program_id),
     visa_category     TEXT NOT NULL CHECK (visa_category IN
-                     ('SKILLED','STUDY','VISITOR','DEPENDENT','WORK_PERMIT','LEGISLATION')),
+                     ('SKILLED','WORK','STUDENT','VISITOR')),
     document_type     TEXT NOT NULL,               -- 'ELIGIBILITY_GUIDANCE','POINTS_TABLE','LEGISLATION_TEXT'
     url               TEXT NOT NULL,
     title             TEXT,

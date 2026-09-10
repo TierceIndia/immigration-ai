@@ -2,7 +2,7 @@
 
 End-to-end deterministic immigration eligibility system for Australian skilled migration visas.
 
-**Phases completed**: 1 → 2 → 3 → 3C → 3D (all fully tested, 496 tests passing)
+**Phases completed**: 1 → 2 → 3 → 3C → 3D → Admin API → Admin Knowledge → DB Readiness + API Surface Hardening (all fully tested, 839 tests passing)
 
 **Core principle**: Every eligibility decision is deterministic, auditable, and traceable to exact government evidence. No LLM decides eligibility.
 
@@ -12,13 +12,39 @@ End-to-end deterministic immigration eligibility system for Australian skilled m
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests/ -q    # 574/574 passing
+python -m pytest tests/ -q    # 839 passing
 ```
 
 ```bash
 # Docker
 docker-compose up -d
 ```
+
+> **Filename guard:** the build context requires a file named exactly `Dockerfile`
+> (capital D, no extension) at the project root. `docker-compose.yml` depends on it, and a
+> case-only rename to `dockerfile` can silently reuse a stale image on case-insensitive
+> filesystems — do not rename it.
+
+The `api` container runs `alembic upgrade head` → `python src/seed_registry.py` (idempotent
+seed of countries / programs / 9 verified government sources) → uvicorn. The Dockerfile
+builds the Python 3.12-slim base plus Playwright's Chromium (for browser-based source
+retrieval inside the `src/browser_fetcher.py` path).
+
+Diagnostics: `GET /health` is a pure liveness probe (always 200). `GET /ready` reports
+DB connectivity — 200 when connected, else 503 with safe, credential-scrubbed context
+(`configured_backend` / `configured_host` / `configured_database`, plus a scrubbed
+`db_error_detail` outside TESTING). Credentials are scrubbed before they can appear in the
+response body.
+
+Scheduler: government source sync runs **once daily at a fixed clock time** (UTC), not on a
+random/interval offset. Configure with `GOVERNMENT_SYNC_HOUR_UTC` (0-23, default `3`) and
+optional `GOVERNMENT_SYNC_MINUTE_UTC` (0-59, default `0`). The legacy interval mode
+(`GOVERNMENT_SYNC_INTERVAL_MINUTES`) is still honored when set by standalone pipeline
+scripts. Manual sync is always available via `POST /api/v1/admin/sync`.
+
+Database structure: `GET /api/v1/admin/schema-report` (admin-only, read-only) returns the
+full structure — tables, columns, primary/foreign keys, exact row counts, and the current
+alembic revision. A static snapshot is maintained in [`DBSTRUCTURE.md`](DBSTRUCTURE.md).
 
 ```bash
 # Run API
@@ -182,6 +208,15 @@ Government Source → Phase 1 → Phase 2 → Approved Requirement
 
 All applicant endpoints require JWT authentication.
 
+### Assessments (`/api/v1/assessments`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/` | Create assessment (loads ACTIVE rules → Phase 3C → persist) |
+| `GET` | `/` | List assessments for applicant |
+| `GET` | `/{id}` | Get assessment |
+| `POST` | `/evaluate` | In-memory evaluation (no persistence) |
+
 ### Admin Rules (`/api/v1/admin/rules`)
 
 | Method | Path | Description |
@@ -196,22 +231,30 @@ All applicant endpoints require JWT authentication.
 | `POST` | `/{id}/reject` | Pre-active → REJECTED |
 | `POST` | `/{id}/retire` | SUPERSEDED/RETIRED |
 
-Non-admin users get 403 from admin endpoints.
-
-### Assessments (`/api/v1/assessments`)
+### Admin Requirements (`/api/v1/admin/requirements`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/` | Create assessment (loads ACTIVE rules → Phase 3C → persist) |
-| `GET` | `/` | List assessments for applicant |
-| `GET` | `/{id}` | Get assessment |
-| `POST` | `/evaluate` | In-memory evaluation (no persistence) |
+| `GET` | `/` | List all requirements with optional status filter |
+| `GET` | `/{id}` | Get requirement detail with evidence |
+| `POST` | `/{id}/approve` | Mark requirement APPROVED |
+| `POST` | `/{id}/reject` | Mark requirement REJECTED |
 
-### Admin Sync (`/api/v1/admin/sync`)
+### Admin Documents (`/api/v1/admin/documents`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/` | Manually trigger government source sync |
+| `GET` | `/` | List documents (filter by source, program, status) |
+| `GET` | `/{document_id}` | Get document metadata |
+| `GET` | `/{document_id}/versions` | List version history (newest first) |
+| `GET` | `/{document_id}/chunks` | List text chunks (filter by version) |
+| `GET` | `/{document_id}/diff` | Diff between two document versions |
+
+### Admin Knowledge State (`/api/v1/admin/knowledge-state`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/?country_id=AU` | Hierarchical tree: country → visa category → programs → sources → requirement/rule counts |
 
 ### Pipeline Runs (`/api/v1/admin/runs`)
 
@@ -219,8 +262,14 @@ Non-admin users get 403 from admin endpoints.
 |--------|------|-------------|
 | `GET` | `/` | List all pipeline runs (newest first, paginated) |
 | `GET` | `/summary` | Aggregate counts by status |
-| `GET` | `/{id}` | Get single pipeline run |
+| `GET` | `/{id}` | Get single pipeline run (with computed rule counters) |
 | `GET` | `/source/{id}` | List runs for a specific source |
+
+### Admin Sync (`/api/v1/admin/sync`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/` | Manually trigger government source sync |
 
 ## Database
 
@@ -231,11 +280,13 @@ Core tables:
 - `Rule` + `RuleVersion` — Logical rule identity + executable version with `snapshot_json`
 - `Requirement` + `RequirementEvidence` — Phase 2 approved requirements with provenance
 - `GovernmentSource` + `GovernmentDocument` — Source registry + document versions
-- `DocumentChunk` — Text chunks with heading hierarchy
+- `DocumentVersion` + `DocumentChunk` — Document versions and text chunks with heading hierarchy
 - `PipelineRun` — Sync execution audit trail (trigger, status, duration, errors)
 - `ApplicantProfile` — User applicant state
 - `Assessment` + `AssessmentRuleResult` — Assessment persistence
 - `Gap` — Priority gaps per assessment
+- `ExtractionRun` — LLM extraction run tracking
+- `RequirementReview` — Human review audit trail
 
 ### Database Abstraction
 
@@ -261,34 +312,37 @@ from db.repositories import (
 ## Test Suite
 
 ```bash
-python -m pytest tests/ -q              # Full suite: 616 tests
+python -m pytest tests/ -q              # Full suite: 731 tests
 python -m pytest tests/phase3 -q        # Phase 3 core: 192 tests
 python -m pytest tests/phase3c -q       # Phase 3C eligibility: 97 tests
-python -m pytest tests/phase3d -q       # Phase 3D activation: 89 tests
+python -m pytest tests/phase3d -q       # Phase 3D activation: 134 tests
 python -m pytest tests/db -q            # Database models/repos: 22 tests
-python -m pytest tests/test_api.py -q   # API routes: 18 tests
+python -m pytest tests/phase2/test_category_prompts.py -q  # Category→prompt wiring: 10 tests
+python -m pytest tests/test_api.py -q   # API routes: 35 tests
 python -m pytest tests/test_auth.py -q  # Authentication: 11 tests
 python -m pytest tests/test_security.py -q  # Security: 40 tests
 python -m pytest tests/test_llm_governance.py -q  # LLM governance: 30 tests
 python -m pytest tests/test_scheduler.py -q  # Scheduler: 7 tests
 python -m pytest tests/test_pipeline_runs.py -q  # PipelineRun tracking: 42 tests
+python -m pytest tests/test_e2e_scenarios.py -q  # End-to-end scenarios: 14 tests
 ```
 
 | Layer | Tests | What it proves |
 |-------|-------|----------------|
-| Phase 2 | 51 | Schema validation, evidence checking, normalization, deduplication |
+| Phase 2 | 51 + 10 + 12 | Schema validation, evidence checking, normalization, dedup + deterministic category→prompt wiring + category-aware gold harness |
 | Phase 3 | 192 | Operators, expression tree, IF/THEN, exceptions, dependencies, versioning |
 | Phase 3C | 97 | Applicant model, applicability, assessment, gap engine, questions |
-| Phase 3D | 89 | Rule persistence, status machine, requirement→rule bridge, admin API, e2e, hardening |
+| Phase 3D | 134 | Rule persistence, status machine, requirement→rule bridge, admin API, e2e, hardening |
 | Database | 22 | ORM models, repositories, CRUD, in-memory SQLite |
 | Logging | 17 | Structured logging, PII redaction, request context |
-| API Routes | 18 | Request/response contracts, error handling, real assessment |
+| API Routes | 35 | Request/response contracts, error handling, real assessment, G9 regression |
 | Auth | 11 | JWT tokens, register/login, password hashing, duplicate email |
 | LLM Governance | 30 | Rate limiting, caching, budget tracking, retry policy |
 | Security | 40 | JWT secrets, PII redaction, CORS, authorization, password security |
 | Scheduler | 7 | APScheduler start/stop, manual sync trigger |
-| PipelineRun | 42 | Sync audit trail, repo CRUD, API endpoints, orchestrator integration |
-| **Total** | **616** | **All passing, 0 failures** |
+| PipelineRun | 42 | Sync audit trail, repo CRUD, API endpoints, computed counters, orchestrator integration |
+| E2E Scenarios | 14 | Multi-program, multi-version, gap engine, evaluation, orchestration |
+| **Total** | **731** | **All passing, 0 failures** |
 
 ## Expression Types
 
@@ -323,11 +377,17 @@ immigration-knowledge/
 ├── src/
 │   ├── api/                        # FastAPI application
 │   │   ├── main.py                 # App factory, CORS, middleware, lifespan
+│   │   ├── helpers.py              # parse_uuid_or_404 utility
 │   │   ├── routes/
 │   │   │   ├── auth.py             # Register/login/me
 │   │   │   ├── applicants.py       # Applicant CRUD (JWT-protected)
+│   │   │   ├── assessments.py      # Assessment create/list/evaluate
 │   │   │   ├── admin_rules.py      # Admin review/approve/activate
-│   │   │   ├── assessments.py      # Assessment stubs
+│   │   │   ├── admin_requirements.py # Admin requirement review
+│   │   │   ├── admin_sources.py    # Source admin API
+│   │   │   ├── admin_documents.py  # Document admin API (G14)
+│   │   │   ├── admin_knowledge.py  # Knowledge-state endpoint (G15)
+│   │   │   ├── pipeline_runs.py    # Pipeline run API (G13 computed counters)
 │   │   │   └── health.py           # Health check
 │   │   └── schemas/
 │   │       └── models.py           # Pydantic request/response models
@@ -356,10 +416,10 @@ immigration-knowledge/
 ├── tests/
 │   ├── phase3/                     # 192 tests (expression tree, operators, versioning)
 │   ├── phase3c/                    # 97 tests (applicant, assessment, gaps)
-│   ├── phase3d/                    # 62 tests (activation, repo, bridge, admin API, e2e)
+│   ├── phase3d/                    # 134 tests (activation, repo, bridge, admin API, e2e, hardening)
 │   ├── db/                         # 22 tests (models, repositories)
 │   ├── logging/                    # 17 tests (structured logging, PII redaction)
-│   └── test_*.py                   # API, auth, LLM governance tests
+│   └── test_*.py                   # API, auth, LLM governance, pipeline, security tests
 ├── validation/
 │   ├── phase3_baseline_manifest.json
 │   └── run_report.json
@@ -368,10 +428,20 @@ immigration-knowledge/
 │   └── requirements.schema.json
 ├── data/
 │   ├── gold/
+│   │   ├── skilled/        # REAL gold: 189 + 190 (verbatim evidence)
+│   │   ├── work/           # placeholder (AWAITING_REAL_SOURCE, no fabricated evidence)
+│   │   ├── student/        # placeholder (AWAITING_REAL_SOURCE, no fabricated evidence)
+│   │   └── visitor/        # placeholder (AWAITING_REAL_SOURCE, no fabricated evidence)
 │   └── real_validation/
 ├── prompts/
 │   ├── requirement_extraction_v1.md
-│   └── requirement_extraction_v2.md
+│   ├── requirement_extraction_v2.md
+│   ├── skilled/requirement_extraction_v2.md
+│   ├── work/requirement_extraction_v2.md
+│   ├── student/requirement_extraction_v2.md
+│   └── visitor/requirement_extraction_v2.md
+├── sources/
+│   └── source_registry.seed.json   # 9 verified government sources (SKILLED only)
 ├── migrations/                     # Alembic migrations
 ├── .env.example                    # CORS_ORIGINS, JWT_SECRET_KEY, all config
 ├── .gitignore
@@ -380,6 +450,7 @@ immigration-knowledge/
 ├── .dockerignore
 ├── alembic.ini
 ├── requirements.txt                # bcrypt==4.2.1 pinned
+├── DESIGN.md                       # Full architecture design document
 └── conftest.py                     # Root conftest, sys.path setup
 ```
 
@@ -426,18 +497,26 @@ immigration-knowledge/
 |-----|----------|--------|
 | ~~Assessment API stubbed~~ | P0 | DONE |
 | ~~No scheduler~~ | P1 | DONE |
-| PostgreSQL untested in prod | P1 | OPEN |
+| ~~PostgreSQL ORM verification~~ | P1 | DONE (2026-08-27: FK/NOT NULL/lifecycle verified) |
 | ~~PipelineRun tracking~~ | P2 | DONE |
 | ~~No security test suite~~ | P2 | DONE |
+| ~~Admin documents API~~ | P2 | DONE |
+| ~~Admin knowledge-state endpoint~~ | P2 | DONE |
+| ~~G9 lifespan testing bug~~ | P2 | DONE |
+| ~~G10 UUID validation~~ | P2 | DONE |
+| ~~G13 computed PipelineRun counters~~ | P2 | DONE |
+| ~~Phase 4 run_extraction category prompt~~ | P2 | DONE (visa_category→prompt wiring + 10 tests) |
+| WORK/STUDENT/VISITOR sources | P3 | OPEN |
 | Multi-country | P3 | OPEN |
 | 491 real-world coverage | P3 | OPEN |
 
 ### Next Milestones
 
-1. **PostgreSQL-native production validation** — UUID, JSONB, TIMESTAMPTZ, proper indexes
-2. **Multi-country support** — NZ, Canada, UK
-3. **491 real-world scenario coverage** — full immigration program validation
-4. **RAG & Recommendations** — LLM explains rules, suggests pathways
+1. **WORK/STUDENT/VISITOR source registry** — Add verified government sources for all visa categories
+2. **PostgreSQL-native production validation** — UUID, JSONB, TIMESTAMPTZ, proper indexes
+3. **Multi-country support** — NZ, Canada, UK
+4. **491 real-world scenario coverage** — full immigration program validation
+5. **RAG & Recommendations** — LLM explains rules, suggests pathways
 
 ## Running Against Real Data
 
@@ -449,10 +528,58 @@ python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN --model gpt-4o
 python tests/phase2/test_real_gold_evaluation.py gpt-4o 0
 ```
 
+## Gold Datasets (Phase 3: category-aware)
+
+Each visa category owns its gold dataset under `data/gold/<category>/` and is validated against **its own** prompt contract (`prompts/<category>/requirement_extraction_v2.md`). The harness `src/phase2/category_gold.py` enforces **zero cross-category contamination**: a Student source can never be scored against the Skilled contract.
+
+- **skilled/** — populated with real, verbatim gold: `skilled_189_real.json` (23 items) + `skilled_190_real.json` (6 items).
+- **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items**. The project's anti-hallucination rule forbids fabricating `evidence_text`; live Home Affairs is HTTP 403-blocked to automated fetchers (`SOURCE_REGISTRY_REPORT.md`), so real evidence for these categories cannot be captured in-sandbox yet. They become fillable once real content is available.
+
+Run the integrity check:
+
+```bash
+python -m phase2.category_gold   # prints contract + dataset integrity report
+python -m pytest tests/phase2/test_category_gold_harness.py -q   # 12 guard tests
+```
+
 ## Baseline Manifests
 
 - `validation/phase3_baseline_manifest.json` — Phase 3 frozen checkpoint
 - `validation/run_report.json` — Phase 1 pipeline run results
+
+## Verification
+
+### Database-agnostic core (runs on SQLite for tests, PostgreSQL for prod)
+
+The ORM rule lifecycle and Phase 3D pipeline are fully database-agnostic — they run identically against in-memory SQLite (731 tests) and real PostgreSQL.
+
+### Real PostgreSQL verification (performed 2026-08-27)
+
+With `docker compose up -d postgres` + `alembic upgrade head`, the full ORM pipeline was verified end-to-end against real PostgreSQL:
+
+```
+Country → Program → Source → Document → Version → Chunk
+    → ExtractionRun → Requirement (APPROVED)
+        → Rule (DRAFT) → VALIDATED → APPROVED → ACTIVE
+```
+
+Confirmed:
+- **FK constraints enforced** — PostgreSQL rejects a `pipeline_runs.source_id` with no matching `government_sources` row (proves G12 fix correctness).
+- **NOT NULL constraints enforced** — `government_documents.retrieved_at` and `raw_path` required.
+- **Full rule lifecycle** works via `EnhancedRuleRepo` against PostgreSQL (DRAFT → VALIDATED → APPROVED → ACTIVE).
+
+### CLI Phase 1/2 pipeline (offline-verifiable)
+
+```bash
+python src/pipeline.py --source-id SRC-AU-189-MAIN --offline-fixture tests/fixtures/skilled_189_sample.html
+python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN --model mock-llm-v1
+```
+
+Verified: fetch → store → hash → change detect → extract, and Phase 2 requirement extraction with category-aware prompt selection (6 requirements extracted from DOC-AU-189-MAIN).
+
+### Real network fetch — current behavior
+
+`https://immi.homeaffairs.gov.au/...` returns **HTTP 403 ACCESS_BLOCKED** to automated fetchers. The fetcher correctly classifies the block, records it in `fetch_log`, and demotes the source status to `ACCESS_BLOCKED` — the designed failure-safe behavior. A real live end-to-end fetch therefore requires running the fetcher from an approved network context (or using the offline fixture / official API).
 
 ## License
 

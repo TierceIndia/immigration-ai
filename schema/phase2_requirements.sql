@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS extraction_runs (
     run_id                TEXT PRIMARY KEY,          -- 'RUN-<uuid4-short>'
     document_id           TEXT NOT NULL REFERENCES government_documents(document_id),
     document_version      INTEGER NOT NULL,
+    -- canonical audit lineage: the exact immutable source snapshot this run consumed
+    document_version_id   INTEGER REFERENCES document_versions(version_id),
     started_at            TEXT NOT NULL,
     completed_at          TEXT,
     model                 TEXT NOT NULL,              -- e.g. 'mock-llm-v1' or 'claude-sonnet-4-6'
@@ -65,6 +67,8 @@ CREATE TABLE IF NOT EXISTS requirements (
                      ('DRAFT','VALIDATED','NEEDS_REVIEW','APPROVED','REJECTED','SUPERSEDED','CONFLICT')),
     current_version             INTEGER NOT NULL DEFAULT 1,
     extraction_run_id            TEXT NOT NULL REFERENCES extraction_runs(run_id),
+    -- canonical audit lineage: the exact immutable source snapshot this requirement came from
+    document_version_id          INTEGER REFERENCES document_versions(version_id),
     created_at                    TEXT NOT NULL,
     updated_at                    TEXT NOT NULL
 );
@@ -82,6 +86,8 @@ CREATE TABLE IF NOT EXISTS requirement_evidence (
     requirement_id       TEXT NOT NULL REFERENCES requirements(requirement_id),
     document_id           TEXT NOT NULL REFERENCES government_documents(document_id),
     document_version       INTEGER NOT NULL,
+    -- canonical audit lineage: the exact immutable source snapshot this evidence came from
+    document_version_id    INTEGER REFERENCES document_versions(version_id),
     chunk_id                INTEGER NOT NULL REFERENCES document_chunks(chunk_id),
     evidence_text            TEXT NOT NULL,             -- must be a verified substring of the chunk's raw_text
     evidence_type             TEXT NOT NULL CHECK (evidence_type IN
@@ -104,6 +110,7 @@ CREATE TABLE IF NOT EXISTS requirement_versions (
     version_number       INTEGER NOT NULL,
     snapshot_json          TEXT NOT NULL,               -- full structured requirement at this version
     document_version        INTEGER NOT NULL,           -- which source document_version produced/confirmed this
+    document_version_id     INTEGER REFERENCES document_versions(version_id),  -- canonical immutable snapshot
     change_type              TEXT NOT NULL CHECK (change_type IN
                      ('INITIAL','UNCHANGED','ADDED','REMOVED','MODIFIED','UNCERTAIN','CONFLICTING','HUMAN_EDIT')),
     created_at                TEXT NOT NULL,

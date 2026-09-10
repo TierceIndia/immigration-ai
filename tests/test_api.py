@@ -1,6 +1,7 @@
 """Tests for the FastAPI application (Sprint P3)."""
 from __future__ import annotations
 
+import os
 import pytest
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
@@ -27,6 +28,44 @@ def client(db_engine):
     app.state.db_engine = db_engine
     with TestClient(app) as c:
         yield c
+
+
+# ---------------------------------------------------------------------------
+# G9 Regression: lifespan must not overwrite pre-set db_engine
+# ---------------------------------------------------------------------------
+
+class TestG9LifespanRegression:
+    def test_preset_engine_survives_lifespan(self):
+        """Pre-set app.state.db_engine is NOT overwritten by lifespan startup.
+
+        Regression for G9: lifespan used to unconditionally re-initialize
+        from DATABASE_URL, overriding test engines (or explicit None).
+        """
+        from api.main import create_app
+        eng = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=eng)
+        app2 = create_app()
+        app2.state.db_engine = eng
+        with TestClient(app2) as c:
+            # DB should be the test engine, not the production one
+            assert app2.state.db_engine is eng
+            resp = c.get("/ready")
+            assert resp.status_code == 200
+            assert resp.json()["db"] == "connected"
+
+    def test_none_engine_survives_lifespan(self):
+        """Pre-set db_engine=None is NOT overwritten to a real DB engine."""
+        from api.main import create_app
+        app2 = create_app()
+        app2.state.db_engine = None
+        with TestClient(app2, raise_server_exceptions=False) as c:
+            assert app2.state.db_engine is None
+            resp = c.get("/ready")
+            assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +98,81 @@ class TestHealth:
             data = resp.json()
             assert data["status"] == "degraded"
             assert data["db"] == "disconnected"
+
+    def test_readiness_degraded_includes_safe_db_diagnostics(self):
+        """When the DB is disconnected, /ready reports configured backend/host
+        WITHOUT leaking credentials, so an operator can self-diagnose."""
+        from api.main import create_app
+        app2 = create_app()
+        app2.state.db_engine = None
+        import os as _os
+        from unittest.mock import patch
+        with patch.dict(_os.environ, {
+            "DATABASE_URL": "postgresql://immigration:SUPERSECRET@localhost:5432/immigration",
+        }, clear=False):
+            with TestClient(app2) as c:
+                resp = c.get("/ready")
+                assert resp.status_code == 503
+                data = resp.json()
+                assert data.get("configured_backend") == "postgresql"
+                assert data.get("configured_host") == "localhost"
+                body_str = resp.text
+                assert "SUPERSECRET" not in body_str
+                assert "immigration:" not in body_str
+
+    def test_readiness_reports_scrubbed_db_error_detail_when_not_testing(self):
+        """The last DB connection error shows a short, credential-free reason on
+        /ready (outside TESTING) so the operator sees the underlying cause."""
+        from unittest.mock import patch
+        from db.connection import get_engine as _real_get_engine
+        from api.main import create_app
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError(
+                "connection to postgresql://app:realpassword@postgres:5432 failed: "
+                "FATAL: password authentication failed"
+            )
+
+        app2 = create_app()
+        app2.state.db_engine = None
+        with patch("db.connection.get_engine", side_effect=_boom), \
+             patch.dict(os.environ, {
+                 "TESTING": "false",
+                 "DATABASE_URL": "postgresql://app:realpassword@postgres:5432/immigration",
+             }, clear=False):
+            with TestClient(app2) as c:
+                resp = c.get("/ready")
+                assert resp.status_code == 503
+                data = resp.json()
+                detail = data.get("db_error_detail", "") or ""
+                assert "password authentication failed" in detail
+                assert "realpassword" not in detail
+                assert "app:***@postgres" in detail
+
+    def test_readiness_suppresses_error_detail_under_testing(self):
+        """Under TESTING=true the error detail is not emitted (CI-stable body)."""
+        from unittest.mock import patch
+        from api.main import create_app
+        app2 = create_app()
+        app2.state.db_engine = None
+        app2.state.db_error = "boom"
+        with patch.dict(os.environ, {
+            "TESTING": "true",
+            "DATABASE_URL": "postgresql://app:realpassword@postgres:5432/immigration",
+        }, clear=False):
+            with TestClient(app2) as c:
+                resp = c.get("/ready")
+                data = resp.json()
+                assert "db_error_detail" not in data
+
+    def test_readiness_happy_path_unaffected(self, client):
+        """An initialized engine must keep returning 200/'connected' — the
+        diagnostics changes must not affect the happy path."""
+        resp = client.get("/ready")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["db"] == "connected"
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +286,7 @@ class TestAssessments:
     def _setup_applicant_with_rules(self, client, headers):
         """Create an applicant and seed ACTIVE rules, return applicant_id."""
         from db.connection import get_session
-        from db.models import Base
+        from db.models import Base, ExtractionRun, Requirement as RequirementModel
         from db.repositories import ProgramRepo, CountryRepo
 
         # Create applicant
@@ -193,6 +307,35 @@ class TestAssessments:
                 "SKILLED_189", "AU", "Skilled Independent", "189",
                 "Skilled Independent visa",
             )
+
+            # Create extraction run + requirement rows (FK prerequisite for Rule)
+            er = ExtractionRun(
+                run_id="ER-TEST-001",
+                document_id="DOC-AU-189-MAIN",
+                document_version=1,
+                model="test",
+                prompt_version="v1",
+                status="COMPLETED",
+            )
+            session.add(er)
+            for req_id, field, cat in [
+                ("REQ-AGE-189", "age", "age"),
+                ("REQ-POINTS-189", "points", "points"),
+            ]:
+                req = RequirementModel(
+                    requirement_id=req_id,
+                    semantic_key=f"test-{cat}-key",
+                    program_id="SKILLED_189",
+                    country_id="AU",
+                    category=cat,
+                    name=f"{cat} requirement",
+                    field=field,
+                    operator="LT",
+                    status="APPROVED",
+                    extraction_run_id=er.run_id,
+                )
+                session.add(req)
+            session.flush()
 
             from phase3.rule_repository import EnhancedRuleRepo
             rule_repo = EnhancedRuleRepo(session)
@@ -264,6 +407,7 @@ class TestAssessments:
         """Assessment is INCOMPLETE when applicant data is missing."""
         from db.connection import get_session
         from db.repositories import ProgramRepo, CountryRepo
+        from db.models import ExtractionRun, Requirement as RequirementModel
         from phase3.rule_repository import EnhancedRuleRepo
 
         headers = self._auth_headers(client)
@@ -283,6 +427,20 @@ class TestAssessments:
                 "SKILLED_189", "AU", "Skilled Independent", "189",
                 "Skilled Independent visa",
             )
+            er = ExtractionRun(
+                run_id="ER-TEST-INCOMPL",
+                document_id="DOC-AU-189-MAIN", document_version=1,
+                model="test", prompt_version="v1", status="COMPLETED",
+            )
+            session.add(er)
+            session.add(RequirementModel(
+                requirement_id="REQ-ENGLISH-189", semantic_key="test-english-key",
+                program_id="SKILLED_189", country_id="AU", category="english",
+                name="English requirement", field="english_level", operator="IN",
+                status="APPROVED", extraction_run_id=er.run_id,
+            ))
+            session.flush()
+
             rule_repo = EnhancedRuleRepo(session)
             rule_repo.create(
                 rule_id="RULE-ENGLISH-189",
@@ -320,6 +478,7 @@ class TestAssessments:
         """Assessment is INELIGIBLE when a mandatory rule fails."""
         from db.connection import get_session
         from db.repositories import ProgramRepo, CountryRepo
+        from db.models import ExtractionRun, Requirement as RequirementModel
         from phase3.rule_repository import EnhancedRuleRepo
 
         headers = self._auth_headers(client)
@@ -339,6 +498,20 @@ class TestAssessments:
                 "SKILLED_189", "AU", "Skilled Independent", "189",
                 "Skilled Independent visa",
             )
+            er = ExtractionRun(
+                run_id="ER-TEST-INELIG",
+                document_id="DOC-AU-189-MAIN", document_version=1,
+                model="test", prompt_version="v1", status="COMPLETED",
+            )
+            session.add(er)
+            session.add(RequirementModel(
+                requirement_id="REQ-AGE-189", semantic_key="test-age-key",
+                program_id="SKILLED_189", country_id="AU", category="age",
+                name="Age requirement", field="age", operator="LT",
+                status="APPROVED", extraction_run_id=er.run_id,
+            ))
+            session.flush()
+
             rule_repo = EnhancedRuleRepo(session)
             rule_repo.create(
                 rule_id="RULE-AGE-189",
@@ -396,6 +569,7 @@ class TestAssessments:
         # Seed rules
         from db.connection import get_session
         from db.repositories import ProgramRepo, CountryRepo
+        from db.models import ExtractionRun, Requirement as RequirementModel
         from phase3.rule_repository import EnhancedRuleRepo
 
         with get_session(client.app.state.db_engine) as session:
@@ -404,6 +578,20 @@ class TestAssessments:
                 "SKILLED_189", "AU", "Skilled Independent", "189",
                 "Skilled Independent visa",
             )
+            er = ExtractionRun(
+                run_id="ER-TEST-NOAPPL",
+                document_id="DOC-AU-189-MAIN", document_version=1,
+                model="test", prompt_version="v1", status="COMPLETED",
+            )
+            session.add(er)
+            session.add(RequirementModel(
+                requirement_id="REQ-AGE-189", semantic_key="test-age-key",
+                program_id="SKILLED_189", country_id="AU", category="age",
+                name="Age requirement", field="age", operator="LT",
+                status="APPROVED", extraction_run_id=er.run_id,
+            ))
+            session.flush()
+
             rule_repo = EnhancedRuleRepo(session)
             rule_repo.create(
                 rule_id="RULE-AGE-189",
@@ -594,6 +782,7 @@ class TestApplicantSnapshot:
     def _setup_applicant_with_rules(self, client, headers):
         from db.connection import get_session
         from db.repositories import ProgramRepo, CountryRepo
+        from db.models import ExtractionRun, Requirement as RequirementModel
         from phase3.rule_repository import EnhancedRuleRepo
 
         resp = client.post(
@@ -609,6 +798,24 @@ class TestApplicantSnapshot:
                 "SKILLED_189", "AU", "Skilled Independent", "189",
                 "Skilled Independent visa",
             )
+            er = ExtractionRun(
+                run_id="ER-TEST-SNAP",
+                document_id="DOC-AU-189-MAIN", document_version=1,
+                model="test", prompt_version="v1", status="COMPLETED",
+            )
+            session.add(er)
+            for req_id, field, cat in [
+                ("REQ-AGE-189", "age", "age"),
+                ("REQ-POINTS-189", "points", "points"),
+            ]:
+                session.add(RequirementModel(
+                    requirement_id=req_id, semantic_key=f"test-{cat}-snap",
+                    program_id="SKILLED_189", country_id="AU", category=cat,
+                    name=f"{cat} requirement", field=field, operator="LT",
+                    status="APPROVED", extraction_run_id=er.run_id,
+                ))
+            session.flush()
+
             rule_repo = EnhancedRuleRepo(session)
             rule_repo.create(
                 rule_id="RULE-AGE-189",

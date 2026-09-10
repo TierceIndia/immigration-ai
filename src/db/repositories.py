@@ -24,6 +24,7 @@ from db.models import (
     AssessmentRuleResult,
     AuditLog,
     Country,
+    DiscoveredSource,
     DocumentChunk,
     ExtractionRun,
     Gap,
@@ -35,6 +36,8 @@ from db.models import (
     Requirement,
     RequirementEvidence,
     Rule,
+    Ruleset,
+    RulesetRule,
     RuleVersion,
     VisaSelection as VisaSelectionModel,
     RequirementVersion,
@@ -92,6 +95,34 @@ class SourceRepo:
     def __init__(self, session: Session):
         self._s = session
 
+    def assert_safe_fallback(self, source_id: str, fallback_source_id: str | None) -> None:
+        """Reject a fallback link that would create an integrity hazard:
+        self-referencing, a fallback that must not exist, or any cycle (a fallback that
+        transitively points back to the source). Enforces the same rule the PostgreSQL
+        self-reference trigger enforces, plus cycle detection the trigger cannot do."""
+        if fallback_source_id is None or fallback_source_id == "":
+            return
+        if fallback_source_id == source_id:
+            raise ValueError(
+                f"government_sources.{source_id} cannot be its own fallback"
+            )
+        if self.get(fallback_source_id) is None:
+            raise ValueError(
+                f"fallback_source_id {fallback_source_id!r} does not exist"
+            )
+        seen = {source_id}
+        cursor = fallback_source_id
+        while cursor is not None and cursor != "":
+            if cursor in seen:
+                raise ValueError(
+                    f"fallback chain forms a cycle involving {cursor!r}"
+                )
+            seen.add(cursor)
+            row = self.get(cursor)
+            if row is None:
+                break
+            cursor = row.fallback_source_id
+
     def get(self, source_id: str) -> GovernmentSource | None:
         return self._s.get(GovernmentSource, source_id)
 
@@ -101,11 +132,14 @@ class SourceRepo:
 
     def create(self, **kwargs) -> GovernmentSource:
         obj = GovernmentSource(**kwargs)
+        if kwargs.get("fallback_source_id"):
+            self.assert_safe_fallback(kwargs["source_id"], kwargs["fallback_source_id"])
         self._s.add(obj)
         return obj
 
     def update_status(self, source_id: str, status: str, last_hash: str | None = None,
-                      last_checked_at: datetime | None = None) -> GovernmentSource | None:
+                      last_checked_at: datetime | None = None,
+                      last_successful_fetch_at: datetime | None = None) -> GovernmentSource | None:
         obj = self._s.get(GovernmentSource, source_id)
         if obj:
             obj.status = status
@@ -113,7 +147,83 @@ class SourceRepo:
                 obj.last_hash = last_hash
             if last_checked_at is not None:
                 obj.last_checked_at = last_checked_at
+            if last_successful_fetch_at is not None:
+                obj.last_successful_fetch_at = last_successful_fetch_at
         return obj
+
+
+class DiscoveredSourceRepo:
+    """Candidate sources proposed by auto-discovery, awaiting admin review.
+
+    approve() is the ONLY promotion path into a real government_sources row here; it
+    uses SourceRepo.create (the same logic admin_sources.create_source relies on) so
+    no insertion logic is duplicated. Nothing else inserts into government_sources.
+    """
+
+    def __init__(self, session: Session):
+        self._s = session
+
+    def create(self, *, discovered_source_id: str, seed_url: str, candidate_url: str,
+               page_title: str | None = None,
+               matched_keywords: list[str] | None = None,
+               confidence_score: int = 0,
+               suggested_visa_category: str | None = None,
+               suggested_country_id: str = "AU",
+               discovery_run_id: str | None = None) -> DiscoveredSource:
+        obj = DiscoveredSource(
+            discovered_source_id=discovered_source_id,
+            seed_url=seed_url,
+            candidate_url=candidate_url,
+            page_title=page_title,
+            matched_keywords=matched_keywords or [],
+            confidence_score=confidence_score,
+            suggested_visa_category=suggested_visa_category,
+            suggested_country_id=suggested_country_id,
+            status="PENDING_REVIEW",
+            discovery_run_id=discovery_run_id,
+        )
+        self._s.add(obj)
+        return obj
+
+    def get(self, discovered_source_id: str) -> DiscoveredSource | None:
+        return self._s.get(DiscoveredSource, discovered_source_id)
+
+    def list_by_status(self, status: str | None = None,
+                       suggested_visa_category: str | None = None) -> list[DiscoveredSource]:
+        stmt = select(DiscoveredSource)
+        if status:
+            stmt = stmt.where(DiscoveredSource.status == status)
+        if suggested_visa_category:
+            stmt = stmt.where(DiscoveredSource.suggested_visa_category == suggested_visa_category)
+        stmt = stmt.order_by(DiscoveredSource.discovered_at.desc())
+        return list(self._s.execute(stmt).scalars())
+
+    def approve(self, discovered_source_id: str, *, reviewed_by: str,
+                source_fields: dict) -> tuple[DiscoveredSource, GovernmentSource]:
+        """Transitions status -> APPROVED, records review, AND creates the real
+        government_sources row via SourceRepo.create (same creation logic the admin
+        source endpoint uses). No own insert logic for the real source."""
+        cand = self.get(discovered_source_id)
+        if cand is None:
+            raise KeyError(discovered_source_id)
+        cand.status = "APPROVED"
+        cand.reviewed_by = reviewed_by
+        cand.reviewed_at = datetime.now(timezone.utc)
+        source_repo = SourceRepo(self._s)
+        source = source_repo.create(**source_fields)
+        return cand, source
+
+    def reject(self, discovered_source_id: str, *, reviewed_by: str,
+               rejection_reason: str) -> DiscoveredSource:
+        cand = self.get(discovered_source_id)
+        if cand is None:
+            raise KeyError(discovered_source_id)
+        cand.status = "REJECTED"
+        cand.reviewed_by = reviewed_by
+        cand.reviewed_at = datetime.now(timezone.utc)
+        cand.rejection_reason = rejection_reason
+        return cand
+
 
 
 class DocumentRepo:
@@ -263,6 +373,55 @@ class RuleRepo:
         return rv
 
 
+class RulesetRepo:
+    """Immutable released rulesets (append-only). Idempotent release: the same
+    program + content hash reuses the existing ruleset row."""
+
+    def __init__(self, session: Session):
+        self._s = session
+
+    def get(self, ruleset_id: str) -> Ruleset | None:
+        return self._s.get(Ruleset, ruleset_id)
+
+    def get_by_hash(self, program_id: str, content_hash: str) -> Ruleset | None:
+        stmt = select(Ruleset).where(
+            Ruleset.program_id == program_id,
+            Ruleset.content_hash == content_hash,
+        )
+        return self._s.execute(stmt).scalars().first()
+
+    def create(self, program_id: str, content_hash: str, *, released_by: str = "system") -> Ruleset:
+        obj = Ruleset(
+            ruleset_id=str(uuid.uuid4()),
+            program_id=program_id,
+            content_hash=content_hash,
+            status="RELEASED",
+            released_by=released_by,
+            rule_count=0,
+        )
+        self._s.add(obj)
+        self._s.flush()
+        return obj
+
+    def add_rule(self, ruleset_id: str, rule_version_id: int, position: int) -> RulesetRule:
+        obj = RulesetRule(
+            ruleset_id=ruleset_id,
+            rule_version_id=rule_version_id,
+            position=position,
+        )
+        self._s.add(obj)
+        return obj
+
+    def list_rule_versions(self, ruleset_id: str) -> list[RuleVersion]:
+        stmt = (
+            select(RuleVersion)
+            .join(RulesetRule, RulesetRule.rule_version_id == RuleVersion.version_id)
+            .where(RulesetRule.ruleset_id == ruleset_id)
+            .order_by(RulesetRule.position)
+        )
+        return list(self._s.execute(stmt).scalars())
+
+
 class UserRepo:
     def __init__(self, session: Session):
         self._s = session
@@ -284,6 +443,19 @@ class UserRepo:
         self._s.add(obj)
         self._s.flush()
         return obj
+
+    def set_role(self, user_id: str, role: str) -> ApiUser | None:
+        """Update a user's role (e.g. promote to 'admin'). Returns the user or None."""
+        user = self.get(user_id)
+        if user is None:
+            return None
+        user.role = role
+        self._s.flush()
+        return user
+
+    def promote_to_admin(self, user_id: str) -> ApiUser | None:
+        """Convenience wrapper — grant the admin role to a user."""
+        return self.set_role(user_id, "admin")
 
 
 class ApplicantRepo:

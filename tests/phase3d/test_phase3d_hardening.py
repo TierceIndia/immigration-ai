@@ -264,7 +264,7 @@ class TestProvenanceChain:
         dv = DocVersionORM(
             document_id="DOC-189-MAIN", version_number=1,
             content_hash="hash1", retrieved_at=datetime.now(timezone.utc),
-            raw_path="/raw/doc.html", change_type="NEW",
+            raw_path="/raw/doc.html", change_type="INITIAL",
         )
         session.add(dv)
         session.flush()

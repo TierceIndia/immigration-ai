@@ -170,6 +170,34 @@ class TestAuthenticationSecurity:
             )
             assert resp.status_code == 401
 
+    def test_non_uuid_sub_claim_returns_401_not_500(self, client):
+        """G17: a validly-signed JWT whose sub claim is NOT a UUID must yield 401,
+        never a 500. The api_users.user_id column is a native UUID on PostgreSQL;
+        without edge validation the raw DataError would surface as an unhandled 500."""
+        with patch.dict(os.environ, {"JWT_SECRET_KEY": "test-key"}):
+            token_data = create_access_token("not-a-uuid-at-all")
+            resp = client.get(
+                "/api/v1/auth/me",
+                headers={"Authorization": f"Bearer {token_data['access_token']}"},
+            )
+            assert resp.status_code == 401
+
+    def test_get_current_user_malformed_sub_returns_none(self):
+        """G17 service-level guard: AuthService.get_current_user() must return None
+        for a non-UUID-format sub rather than crashing in (or even reaching) the DB
+        lookup."""
+        from unittest.mock import Mock
+        from services.auth_service import AuthService
+
+        with patch.dict(os.environ, {"JWT_SECRET_KEY": "test-key"}):
+            token_data = create_access_token("garbage-not-uuid")
+            svc = AuthService.__new__(AuthService)
+            svc._user_repo = Mock()
+            svc._user_repo.get.side_effect = AssertionError("get() must not be called")
+            result = svc.get_current_user(token_data["access_token"])
+        assert result is None
+        svc._user_repo.get.assert_not_called()
+
     def test_duplicate_email_returns_409(self, client):
         """Registering with duplicate email → 409 Conflict."""
         client.post(
@@ -248,6 +276,55 @@ class TestPasswordSecurity:
         payload = decode_access_token(token_data["access_token"])
         assert "password" not in payload
         assert "password_hash" not in payload
+
+    def test_user_repo_promote_to_admin_changes_role(self):
+        """UserRepo.promote_to_admin upgrades role to 'admin' (idempotent)."""
+        from sqlalchemy.orm import sessionmaker
+        from db.models import ApiUser
+        from db.repositories import UserRepo
+
+        eng = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=eng)
+        factory = sessionmaker(bind=eng)
+
+        with factory() as session:
+            repo = UserRepo(session)
+            user = repo.create(email="promote@example.com", password_hash="x")
+            session.commit()
+            assert user.role == "applicant"
+
+            promoted = repo.promote_to_admin(str(user.user_id))
+            session.commit()
+            assert promoted is not None
+            assert promoted.role == "admin"
+
+            again = repo.promote_to_admin(str(user.user_id))
+            session.commit()
+            assert again.role == "admin"
+
+            fetched = session.get(ApiUser, user.user_id)
+            assert fetched.role == "admin"
+
+    def test_user_repo_promote_to_admin_missing_user_returns_none(self):
+        """promote_to_admin on a non-existent user returns None (no crash)."""
+        from sqlalchemy.orm import sessionmaker
+        from db.repositories import UserRepo
+
+        eng = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=eng)
+        factory = sessionmaker(bind=eng)
+
+        with factory() as session:
+            repo = UserRepo(session)
+            assert repo.promote_to_admin("no-such-user") is None
 
 
 # =========================================================================

@@ -34,6 +34,19 @@ def get_current_user(request: Request) -> dict:
         return user
 
 
+def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+    """Reusable dependency for admin-only endpoints.
+
+    Composes on top of get_current_user (which enforces a valid Bearer JWT and an
+    active user) and then rejects non-admin roles with 403. Use as:
+    ``current_user: dict = Depends(require_admin)``.
+    """
+    role = (current_user or {}).get("role")
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return current_user
+
+
 def get_current_user_id(request: Request) -> str:
     """Extract user_id from JWT — used by applicant/assessment routes."""
     auth_header = request.headers.get("Authorization", "")
@@ -54,9 +67,15 @@ def register(body: UserCreate, request: Request):
     engine = get_db_engine(request)
     with get_session(engine) as session:
         svc = AuthService(session)
+        # Deterministic duplicate rejection: check first so a re-registration attempt
+        # (including one targeting an existing admin account with role="applicant")
+        # is answered with a clean 409 and never even reaches the DB constraint.
+        if svc.email_registered(body.email):
+            raise HTTPException(status_code=409, detail="Email already registered")
         try:
             result = svc.register(body.email, body.password, body.full_name)
         except IntegrityError:
+            # Race backstop (two concurrent requests) — keep the same clean 409.
             raise HTTPException(status_code=409, detail="Email already registered")
         return RegisterResponse(
             user_id=result["user_id"],

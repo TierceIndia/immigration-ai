@@ -108,7 +108,7 @@ def _create_chunk(session, doc_id, version_id=None, chunk_id=100,
                 content_hash=doc.content_hash,
                 retrieved_at=datetime.now(tz.utc),
                 raw_path=f"/tmp/{doc_id}.txt",
-                change_type="NEW",
+                change_type="INITIAL",
             )
             session.add(dv)
             session.flush()
@@ -143,7 +143,7 @@ def _create_approved_requirement(session, req_id, program_id, category,
             document_version=1,
             model="mock",
             prompt_version="v1",
-            status="completed",
+            status="COMPLETED",
         )
         session.add(run)
         session.flush()
@@ -337,7 +337,7 @@ class TestEndToEndPipeline:
         run = ExtractionRun(
             run_id="RUN-BAD", document_id="DOC-1",
             document_version=1, model="mock", prompt_version="v1",
-            status="completed",
+            status="COMPLETED",
         )
         session.add(run)
         session.flush()

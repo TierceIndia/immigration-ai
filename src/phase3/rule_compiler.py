@@ -36,6 +36,7 @@ def compile_requirement_to_rule(requirement: dict, rule_id: str) -> Rule:
         chunk_id=first_evidence.get("chunk_id", 0),
         requirement_id=requirement.get("_requirement_id", "UNKNOWN"),
         evidence_text=first_evidence.get("evidence_text", ""),
+        requirement_version_id=requirement.get("_requirement_version_id", 0),
     )
 
     criticality = requirement.get("criticality", "STANDARD")

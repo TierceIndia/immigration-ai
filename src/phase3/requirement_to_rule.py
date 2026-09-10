@@ -10,7 +10,14 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from db.models import Requirement, RequirementEvidence
+from db.models import (
+    DocumentVersion,
+    ExtractionRun,
+    GovernmentDocument,
+    Requirement,
+    RequirementEvidence,
+    RequirementVersion,
+)
 from phase3.rule_compiler import compile_requirement_to_rule
 from phase3.rule_repository import EnhancedRuleRepo
 from logging_config import get_logger
@@ -20,7 +27,11 @@ logger = get_logger(__name__)
 
 def _load_requirement_dict(session: Session, req_orm: Requirement) -> dict[str, Any]:
     """Convert a DB Requirement ORM object into the dict format expected by
-    compile_requirement_to_rule()."""
+    compile_requirement_to_rule().
+
+    Provenance is resolved from the real extraction lineage: the requirement's extraction
+    run -> its exact immutable document version -> the owning government source, so every
+    compiled rule carries genuine source/document/version anchors instead of blanks."""
     evidence_rows = (
         session.query(RequirementEvidence)
         .filter(RequirementEvidence.requirement_id == req_orm.requirement_id)
@@ -34,12 +45,39 @@ def _load_requirement_dict(session: Session, req_orm: Requirement) -> dict[str, 
         }
         for e in evidence_rows
     ]
+
+    source_id = ""
+    document_id = ""
+    document_version = 0
+    document_version_id = req_orm.document_version_id
+    if document_version_id is None and req_orm.extraction_run_id:
+        run = session.get(ExtractionRun, req_orm.extraction_run_id)
+        if run is not None and run.document_version_id:
+            document_version_id = run.document_version_id
+    if document_version_id is not None:
+        ver = session.get(DocumentVersion, document_version_id)
+        if ver is not None:
+            document_id = ver.document_id
+            document_version = ver.version_number
+            doc = session.get(GovernmentDocument, ver.document_id)
+            if doc is not None:
+                source_id = doc.source_id
+
+    requirement_version_id = (
+        session.query(RequirementVersion.version_id)
+        .filter(RequirementVersion.requirement_id == req_orm.requirement_id)
+        .order_by(RequirementVersion.version_number.desc())
+        .first()
+    )
+    requirement_version_id = requirement_version_id[0] if requirement_version_id else 0
+
     return {
         "_requirement_id": req_orm.requirement_id,
         "_program_id": req_orm.program_id,
-        "_source_id": "",  # filled by caller if available
-        "_document_id": "",
-        "_document_version": 0,
+        "_requirement_version_id": requirement_version_id,
+        "_source_id": source_id,
+        "_document_id": document_id,
+        "_document_version": document_version,
         "category": req_orm.category,
         "name": req_orm.name,
         "description": req_orm.description or "",

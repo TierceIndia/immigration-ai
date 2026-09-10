@@ -3,6 +3,7 @@ without touching the network. Run with: python tests/test_pipeline_offline.py
 """
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -33,6 +34,7 @@ def main():
     print("=== Offline pipeline test ===")
     reset_test_db()
     init_schema()
+    os.environ["SEED_BACKEND"] = "sqlite"  # keep the standalone offline workflow on SQLite
     seed_main()
 
     print("\n--- Run 1: initial fetch (expect INITIAL) ---")

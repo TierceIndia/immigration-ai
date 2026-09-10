@@ -2,8 +2,15 @@
 
 GET /health  → process is alive (always 200)
 GET /ready   → DB available + tables exist (200 or 503)
+
+When the DB is disconnected, /ready includes safe, non-secret diagnostics
+(configured backend/host/name and the scrubbed last connection error) so an
+operator can diagnose a broken setup without grepping logs. Credentials are
+scrubbed before they can reach the response body.
 """
 from __future__ import annotations
+
+import os
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -17,6 +24,30 @@ async def health_check():
     return {"status": "ok"}
 
 
+def _diagnostics_for_disconnect(request: Request) -> dict:
+    """Safe, non-secret context describing a failed DB initialization."""
+    try:
+        from config import database_info, scrub_credential_string
+    except Exception:  # pragma: no cover - config import should never fail
+        return {}
+    info = database_info()
+    body: dict = {
+        "configured_backend": info.get("backend"),
+        "configured_host": info.get("host"),
+        "configured_database": info.get("database"),
+    }
+    if not info.get("configured"):
+        body["configured"] = False
+    # The last connection error is message-only and credential-scrubbed. It is
+    # surfaced only outside TESTING: CI/harness environments should not depend on
+    # a live DB error detail and it keeps the response stable for tests.
+    if os.getenv("TESTING") != "true":
+        raw_error = getattr(request.app.state, "db_error", None)
+        if raw_error:
+            body["db_error_detail"] = scrub_credential_string(str(raw_error))
+    return body
+
+
 @router.get("/ready")
 async def readiness_check(request: Request):
     """Readiness probe — can the application serve traffic?
@@ -28,7 +59,11 @@ async def readiness_check(request: Request):
     if engine is None:
         return JSONResponse(
             status_code=503,
-            content={"status": "degraded", "db": "disconnected"},
+            content={
+                "status": "degraded",
+                "db": "disconnected",
+                **_diagnostics_for_disconnect(request),
+            },
         )
 
     # Verify DB is actually reachable (not just configured)

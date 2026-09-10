@@ -15,9 +15,10 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Enum, Float, ForeignKey, Index, Integer,
-    SmallInteger, String, Text, UniqueConstraint,
-    func,
+    Boolean, CheckConstraint, Column, DateTime, Enum, Float, ForeignKey,
+    ForeignKeyConstraint, Index, Integer, Numeric, SmallInteger, String, Text,
+    UUID, UniqueConstraint,
+    func, text,
 )
 from sqlalchemy.types import JSON
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -29,6 +30,19 @@ def _utcnow() -> datetime:
 
 def _short_uuid() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def _uuid_str() -> str:
+    return str(uuid.uuid4())
+
+
+# Native PostgreSQL UUID columns (as_uuid=False keeps string binding so existing
+# string-based code, e.g. JWT user_id handling, keeps working unchanged). On SQLite
+# (legacy tests) this renders as CHAR(36), also string-compatible. This must stay in
+# sync with migrations/versions/49b9088f3a03 which created these columns as
+# sa.UUID(as_uuid=False).
+def UUIDColumn(**kwargs):
+    return Column(UUID(as_uuid=False), default=_uuid_str, **kwargs)
 
 
 class Base(DeclarativeBase):
@@ -63,6 +77,13 @@ class ImmigrationProgram(Base):
     name = Column(String(256), nullable=False)
     status = Column(String(16), nullable=False, default="ACTIVE")
 
+    __table_args__ = (
+        # composite key used as the FK target from requirements/government_sources/
+        # government_documents so a row's program_id+country_id pairing is always the
+        # program's true country (a row can never claim AU with a CA program)
+        UniqueConstraint("program_id", "country_id", name="uq_program_country"),
+    )
+
 
 class GovernmentSource(Base, TimestampMixin):
     __tablename__ = "government_sources"
@@ -78,11 +99,78 @@ class GovernmentSource(Base, TimestampMixin):
     monitoring_method = Column(String(16), nullable=False, default="WEB")
     crawl_frequency = Column(String(16), nullable=False, default="DAILY")
     last_checked_at = Column(DateTime(timezone=True))
+    last_successful_fetch_at = Column(DateTime(timezone=True))
     last_hash = Column(String(64))
     status = Column(String(32), nullable=False, default="ACTIVE")
     notes = Column(Text)
 
-    __table_args__ = (Index("idx_sources_program", "program_id"),)
+    # Fallback strategy fields
+    fallback_source_id = Column(String(32), ForeignKey("government_sources.source_id"), nullable=True)
+    fetch_status = Column(String(32), nullable=True)
+    http_status = Column(Integer, nullable=True)
+    last_error = Column(Text, nullable=True)
+    consecutive_failures = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("idx_sources_program", "program_id"),
+        ForeignKeyConstraint(
+            ["program_id", "country_id"],
+            ["immigration_programs.program_id", "immigration_programs.country_id"],
+            name="fk_src_program_country",
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE','DISABLED','ACCESS_BLOCKED','NETWORK_RESTRICTED',"
+            "'REQUIRES_BROWSER','REQUIRES_MANUAL_DOWNLOAD','NEEDS_MANUAL_CAPTURE','BROKEN')",
+            name="ck_source_status",
+        ),
+        CheckConstraint(
+            "fetch_status IS NULL OR fetch_status IN ('OK','FETCH_FAILED',"
+            "'ACCESS_BLOCKED','NETWORK_RESTRICTED','REQUIRES_BROWSER',"
+            "'REQUIRES_MANUAL_DOWNLOAD','INVALID_CONTENT')",
+            name="ck_source_fetch_status",
+        ),
+    )
+
+
+# ===========================================================================
+#  GOVERNMENT SOURCE AUTO-DISCOVERY — Candidates proposed upstream of
+#  government_sources (never inserted into that table without admin approval).
+# ===========================================================================
+
+class DiscoveredSource(Base, TimestampMixin):
+    """A candidate URL surfaced by source auto-discovery, awaiting admin review.
+
+    Onboarding/suggestion only: discovery fabricates *candidates*; only an admin
+    approve action (via DiscoveredSourceRepo.approve) promotes a candidate into a
+    real government_sources row. Nothing in discovery ever triggers extraction,
+    rule compilation, or activation on its own.
+    """
+    __tablename__ = "discovered_sources"
+
+    discovered_source_id = Column(String(32), primary_key=True)
+    seed_url = Column(Text, nullable=False)
+    candidate_url = Column(Text, nullable=False, unique=True)
+    page_title = Column(String(512))
+    matched_keywords = Column(JSON, default=list, nullable=False)
+    confidence_score = Column(Integer, nullable=False, default=0)
+    suggested_visa_category = Column(String(32))
+    suggested_country_id = Column(String(8), ForeignKey("countries.country_id"), nullable=False, default="AU")
+    status = Column(String(24), nullable=False, default="PENDING_REVIEW")
+    discovered_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    discovery_run_id = Column(String(36))
+    reviewed_by = Column(String(36))
+    reviewed_at = Column(DateTime(timezone=True))
+    rejection_reason = Column(Text)
+
+    __table_args__ = (
+        Index("idx_discovered_status", "status"),
+        Index("idx_discovered_category", "suggested_visa_category"),
+        Index("idx_discovered_run", "discovery_run_id"),
+        CheckConstraint(
+            "status IN ('PENDING_REVIEW','APPROVED','REJECTED')",
+            name="ck_discovered_status",
+        ),
+    )
 
 
 class GovernmentDocument(Base, TimestampMixin):
@@ -105,7 +193,14 @@ class GovernmentDocument(Base, TimestampMixin):
     extracted_path = Column(Text)
     status = Column(String(32), nullable=False, default="CURRENT")
 
-    __table_args__ = (Index("idx_documents_source", "source_id"),)
+    __table_args__ = (
+        Index("idx_documents_source", "source_id"),
+        ForeignKeyConstraint(
+            ["program_id", "country_id"],
+            ["immigration_programs.program_id", "immigration_programs.country_id"],
+            name="fk_doc_program_country",
+        ),
+    )
 
 
 class DocumentVersion(Base, TimestampMixin):
@@ -122,6 +217,15 @@ class DocumentVersion(Base, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("document_id", "version_number", name="uq_doc_version"),
+        # idempotency: a fetch that produces identical raw bytes never re-opens a version
+        UniqueConstraint("document_id", "content_hash", name="uq_doc_version_hash"),
+        # alternate key referenced by the document_chunks/extraction FKs
+        UniqueConstraint("document_id", "version_id", name="uq_doc_version_identity"),
+        CheckConstraint("version_number > 0", name="ck_doc_version_positive"),
+        CheckConstraint(
+            "change_type IN ('INITIAL','CHANGED','UNCHANGED','MANUAL_CAPTURE')",
+            name="ck_doc_change_type",
+        ),
     )
 
 
@@ -136,7 +240,19 @@ class DocumentChunk(Base, TimestampMixin):
     raw_text = Column(Text, nullable=False)
     page_number = Column(Integer)
 
-    __table_args__ = (Index("idx_chunks_document", "document_id", "version_id"),)
+    __table_args__ = (
+        Index("idx_chunks_document", "document_id", "version_id"),
+        # a chunk is anchored to one exact immutable document version
+        ForeignKeyConstraint(
+            ["document_id", "version_id"],
+            ["document_versions.document_id", "document_versions.version_id"],
+            name="fk_chunks_doc_version_pair",
+        ),
+        UniqueConstraint("version_id", "order_index", name="uq_chunk_version_order"),
+        # alternate key referenced by requirement_evidence lineage FK
+        UniqueConstraint("chunk_id", "document_id", "version_id", name="uq_chunk_lineage"),
+        CheckConstraint("order_index >= 0", name="ck_chunk_order_nonneg"),
+    )
 
 
 class FetchLog(Base):
@@ -151,7 +267,10 @@ class FetchLog(Base):
     duration_ms = Column(Integer)
     error = Column(Text)
 
-    __table_args__ = (Index("idx_fetchlog_source", "source_id", "fetched_at"),)
+    __table_args__ = (
+        Index("idx_fetchlog_source", "source_id", "fetched_at"),
+        CheckConstraint("changed IN (0,1)", name="ck_fetch_changed"),
+    )
 
 
 # ===========================================================================
@@ -163,6 +282,8 @@ class ExtractionRun(Base, TimestampMixin):
     run_id = Column(String(24), primary_key=True)
     document_id = Column(String(32), ForeignKey("government_documents.document_id"), nullable=False)
     document_version = Column(Integer, nullable=False)
+    # canonical audit lineage: the exact immutable source snapshot this run consumed
+    document_version_id = Column(Integer, ForeignKey("document_versions.version_id"))
     model = Column(String(64), nullable=False)
     prompt_version = Column(String(64), nullable=False)
     chunks_seen = Column(Integer, nullable=False, default=0)
@@ -179,7 +300,21 @@ class ExtractionRun(Base, TimestampMixin):
     error = Column(Text)
     completed_at = Column(DateTime(timezone=True))
 
-    __table_args__ = (Index("idx_extraction_runs_document", "document_id", "document_version"),)
+    __table_args__ = (
+        Index("idx_extraction_runs_document", "document_id", "document_version"),
+        # (document_id, document_version) must resolve to one real document_versions row
+        ForeignKeyConstraint(
+            ["document_id", "document_version"],
+            ["document_versions.document_id", "document_versions.version_number"],
+            name="fk_extract_run_doc_version_pair",
+        ),
+        CheckConstraint("document_version > 0", name="ck_extract_version_positive"),
+        CheckConstraint("dry_run IN (0,1)", name="ck_extract_dry_run"),
+        CheckConstraint(
+            "status IN ('RUNNING','COMPLETED','FAILED','DRY_RUN')",
+            name="ck_extract_status",
+        ),
+    )
 
 
 class Requirement(Base, TimestampMixin):
@@ -188,6 +323,8 @@ class Requirement(Base, TimestampMixin):
     semantic_key = Column(String(256), nullable=False)
     program_id = Column(String(32), ForeignKey("immigration_programs.program_id"), nullable=False)
     country_id = Column(String(8), ForeignKey("countries.country_id"), nullable=False)
+    # canonical audit lineage: the source snapshot this requirement was extracted from
+    document_version_id = Column(Integer, ForeignKey("document_versions.version_id"))
     category = Column(String(64), nullable=False)
     name = Column(String(256), nullable=False)
     description = Column(Text)
@@ -211,6 +348,27 @@ class Requirement(Base, TimestampMixin):
         Index("idx_requirements_semantic_key", "semantic_key"),
         Index("idx_requirements_status", "status"),
         Index("idx_requirements_category", "category"),
+        # one live (non-conflicted, non-rejected) row per semantic key + program
+        Index(
+            "uq_req_active_semantic", "program_id", "semantic_key", unique=True,
+            sqlite_where=text("status NOT IN ('CONFLICT','REJECTED')"),
+            postgresql_where=text("status NOT IN ('CONFLICT','REJECTED')"),
+        ),
+        # program/country pairing must match the program's true country
+        ForeignKeyConstraint(
+            ["program_id", "country_id"],
+            ["immigration_programs.program_id", "immigration_programs.country_id"],
+            name="fk_req_program_country",
+        ),
+        # alternate key referenced by the rules (requirement_id, program_id) FK
+        UniqueConstraint("requirement_id", "program_id", name="uq_req_program_pair"),
+        CheckConstraint(
+            "status IN ('DRAFT','VALIDATED','NEEDS_REVIEW','APPROVED','REJECTED',"
+            "'SUPERSEDED','CONFLICT')",
+            name="ck_req_status",
+        ),
+        CheckConstraint("current_version > 0", name="ck_req_current_version"),
+        CheckConstraint("mandatory IN (0,1)", name="ck_req_mandatory"),
     )
 
 
@@ -220,6 +378,9 @@ class RequirementEvidence(Base, TimestampMixin):
     requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
     document_id = Column(String(32), ForeignKey("government_documents.document_id"), nullable=False)
     document_version = Column(Integer, nullable=False)
+    # canonical audit lineage: chunk -> owner document version (proves the evidence
+    # really came from the chunk/version it claims)
+    document_version_id = Column(Integer, ForeignKey("document_versions.version_id"))
     chunk_id = Column(Integer, ForeignKey("document_chunks.chunk_id"), nullable=False)
     evidence_text = Column(Text, nullable=False)
     evidence_type = Column(String(32), nullable=False)
@@ -231,6 +392,20 @@ class RequirementEvidence(Base, TimestampMixin):
     __table_args__ = (
         Index("idx_evidence_requirement", "requirement_id"),
         Index("idx_evidence_chunk", "chunk_id"),
+        # the evidence's chunk/document/document_version triple must be self-consistent
+        ForeignKeyConstraint(
+            ["chunk_id", "document_id", "document_version_id"],
+            ["document_chunks.chunk_id", "document_chunks.document_id", "document_chunks.version_id"],
+            name="fk_evidence_chunk_lineage",
+        ),
+        # (document_id, document_version) must resolve to one real document_versions row
+        ForeignKeyConstraint(
+            ["document_id", "document_version"],
+            ["document_versions.document_id", "document_versions.version_number"],
+            name="fk_evidence_doc_version_pair",
+        ),
+        CheckConstraint("document_version > 0", name="ck_evidence_version_positive"),
+        CheckConstraint("verified IN (0,1)", name="ck_evidence_verified"),
     )
 
 
@@ -241,12 +416,16 @@ class RequirementVersion(Base, TimestampMixin):
     version_number = Column(Integer, nullable=False)
     snapshot_json = Column(Text, nullable=False)
     document_version = Column(Integer, nullable=False)
+    document_version_id = Column(Integer, ForeignKey("document_versions.version_id"))
     change_type = Column(String(16), nullable=False)
     created_by = Column(String(64), nullable=False, default="system")
 
     __table_args__ = (
         UniqueConstraint("requirement_id", "version_number", name="uq_req_version"),
         Index("idx_req_versions_requirement", "requirement_id"),
+        CheckConstraint("version_number > 0", name="ck_reqver_version_number"),
+        # 0 is legal only for legacy human edits with no source attachment
+        CheckConstraint("document_version >= 0", name="ck_reqver_docver"),
     )
 
 
@@ -284,6 +463,10 @@ class Rule(Base, TimestampMixin):
     rule_id = Column(String(48), primary_key=True)
     requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
     program_id = Column(String(32), ForeignKey("immigration_programs.program_id"), nullable=False)
+    # canonical audit lineage: the exact immutable requirement version this rule was
+    # compiled from (rules.requirement_version_id -> requirement_versions.version_id
+    # -> document_versions.version_id)
+    requirement_version_id = Column(Integer, ForeignKey("requirement_versions.version_id"))
     category = Column(String(64), nullable=False)
     field = Column(String(128), nullable=False)
     operator = Column(String(16), nullable=False)
@@ -309,6 +492,24 @@ class Rule(Base, TimestampMixin):
         Index("idx_rules_program", "program_id"),
         Index("idx_rules_status", "status"),
         Index("idx_rules_requirement", "requirement_id"),
+        # a rule can only ever belong to the program of its parent requirement
+        ForeignKeyConstraint(
+            ["requirement_id", "program_id"],
+            ["requirements.requirement_id", "requirements.program_id"],
+            name="fk_rule_req_program_pair",
+        ),
+        CheckConstraint(
+            "status IN ('DRAFT','VALIDATED','APPROVED','ACTIVE',"
+            "'SUPERSEDED','RETIRED','REJECTED')",
+            name="ck_rule_status",
+        ),
+        CheckConstraint("current_version > 0", name="ck_rule_current_version"),
+        # at most one ACTIVE rule per (program_id, field) — enforced at DB level too
+        Index(
+            "uq_rules_active_per_field", "program_id", "field", unique=True,
+            postgresql_where=text("status = 'ACTIVE'"),
+            sqlite_where=text("status = 'ACTIVE'"),
+        ),
     )
 
 
@@ -320,10 +521,46 @@ class RuleVersion(Base, TimestampMixin):
     snapshot_json = Column(JSON, nullable=False)
     change_type = Column(String(16), nullable=False)
     created_by = Column(String(64), nullable=False, default="system")
+    # canonical audit lineage: which exact requirement version produced this rule snapshot
+    requirement_version_id = Column(Integer, ForeignKey("requirement_versions.version_id"))
 
     __table_args__ = (
         UniqueConstraint("rule_id", "version_number", name="uq_rule_version"),
         Index("idx_rule_versions_rule", "rule_id"),
+        CheckConstraint("version_number > 0", name="ck_rulever_version_number"),
+    )
+
+
+class Ruleset(Base, TimestampMixin):
+    """Immutable released ruleset: the deterministic set of rule_versions an assessment
+    evaluated against. Rows are append-only (PG trigger blocks UPDATE/DELETE)."""
+    __tablename__ = "rulesets"
+    ruleset_id = Column(String(36), primary_key=True)
+    program_id = Column(String(32), ForeignKey("immigration_programs.program_id"), nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    status = Column(String(16), nullable=False, default="RELEASED")  # DRAFT/RELEASED
+    released_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    released_by = Column(String(64), nullable=False, default="system")
+    rule_count = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        # idempotency: releasing the exact same rule set twice reuses one ruleset row
+        UniqueConstraint("program_id", "content_hash", name="uq_ruleset_content"),
+        CheckConstraint("status IN ('DRAFT','RELEASED')", name="ck_ruleset_status"),
+    )
+
+
+class RulesetRule(Base, TimestampMixin):
+    """Member of an immutable ruleset: the exact rule_version, in a stable order."""
+    __tablename__ = "ruleset_rules"
+    ruleset_id = Column(String(36), ForeignKey("rulesets.ruleset_id"), nullable=False, primary_key=True)
+    rule_version_id = Column(Integer, ForeignKey("rule_versions.version_id"), nullable=False, primary_key=True)
+    position = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("ruleset_id", "position", name="uq_ruleset_rule_position"),
+        CheckConstraint("position >= 0", name="ck_ruleset_rule_position"),
+        Index("idx_ruleset_rule_version", "rule_version_id"),
     )
 
 
@@ -333,8 +570,8 @@ class RuleVersion(Base, TimestampMixin):
 
 class ApplicantProfile(Base, TimestampMixin):
     __tablename__ = "applicant_profiles"
-    applicant_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("api_users.user_id"), nullable=False)
+    applicant_id = UUIDColumn(primary_key=True)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("api_users.user_id"), nullable=False)
     first_name = Column(String(128))
     last_name = Column(String(128))
     date_of_birth = Column(DateTime(timezone=True))
@@ -357,8 +594,8 @@ class ApplicantProfile(Base, TimestampMixin):
 
 class VisaSelection(Base, TimestampMixin):
     __tablename__ = "visa_selections"
-    selection_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    applicant_id = Column(String(36), ForeignKey("applicant_profiles.applicant_id"), nullable=False)
+    selection_id = UUIDColumn(primary_key=True)
+    applicant_id = Column(UUID(as_uuid=False), ForeignKey("applicant_profiles.applicant_id"), nullable=False)
     program_id = Column(String(32), ForeignKey("immigration_programs.program_id"), nullable=False)
     selected_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
@@ -370,10 +607,9 @@ class VisaSelection(Base, TimestampMixin):
 
 class Assessment(Base, TimestampMixin):
     __tablename__ = "assessments"
-    assessment_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    applicant_id = Column(String(36), ForeignKey("applicant_profiles.applicant_id"), nullable=False)
+    assessment_id = UUIDColumn(primary_key=True)
+    applicant_id = Column(UUID(as_uuid=False), ForeignKey("applicant_profiles.applicant_id"), nullable=False)
     program_id = Column(String(32), ForeignKey("immigration_programs.program_id"), nullable=False)
-    rule_version_id = Column(Integer)  # which rule version was used
     business_status = Column(String(16), nullable=False)  # ELIGIBLE/INELIGIBLE/INCOMPLETE
     overall_status = Column(String(16), nullable=False)   # raw engine status
     total_rules = Column(Integer, nullable=False)
@@ -385,21 +621,34 @@ class Assessment(Base, TimestampMixin):
     request_id = Column(String(36))  # correlation ID for request tracing
     applicant_snapshot = Column(JSON)  # frozen applicant profile at assessment time
     ruleset_hash = Column(String(64))  # hash of all ACTIVE rule versions used in this assessment
+    # immutable released ruleset this assessment evaluated against (nullable for
+    # assessments created before ruleset tracking / when a rule has no version rows)
+    ruleset_id = Column(String(36), ForeignKey("rulesets.ruleset_id"))
 
     __table_args__ = (
         Index("idx_assessment_applicant", "applicant_id"),
         Index("idx_assessment_program", "program_id"),
         Index("idx_assessment_date", "evaluated_at"),
+        CheckConstraint(
+            "business_status IN ('ELIGIBLE','INELIGIBLE','INCOMPLETE')",
+            name="ck_assessment_business",
+        ),
+        CheckConstraint(
+            "overall_status IN ('PASS','FAIL','UNKNOWN','NOT_APPLICABLE','ERROR')",
+            name="ck_assessment_overall",
+        ),
     )
 
 
 class AssessmentRuleResult(Base, TimestampMixin):
     __tablename__ = "assessment_rule_results"
-    result_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    assessment_id = Column(String(36), ForeignKey("assessments.assessment_id"), nullable=False)
+    result_id = UUIDColumn(primary_key=True)
+    assessment_id = Column(UUID(as_uuid=False), ForeignKey("assessments.assessment_id"), nullable=False)
     rule_id = Column(String(48), ForeignKey("rules.rule_id"), nullable=False)
     rule_version = Column(Integer, nullable=False)
-    status = Column(String(16), nullable=False)  # PASS/FAIL/UNKNOWN/NOT_APPLICABLE
+    # canonical audit lineage: the exact immutable rule_versions row this result came from
+    rule_version_id = Column(Integer, ForeignKey("rule_versions.version_id"))
+    status = Column(String(16), nullable=False)  # PASS/FAIL/UNKNOWN/NOT_APPLICABLE/ERROR
     field = Column(String(128))
     actual_value = Column(Text)
     expected_value = Column(Text)
@@ -410,13 +659,19 @@ class AssessmentRuleResult(Base, TimestampMixin):
     __table_args__ = (
         Index("idx_assessment_result_assessment", "assessment_id"),
         Index("idx_assessment_result_rule", "rule_id"),
+        # one evaluation per rule per assessment snapshot
+        UniqueConstraint("assessment_id", "rule_id", name="uq_result_assessment_rule"),
+        CheckConstraint(
+            "status IN ('PASS','FAIL','UNKNOWN','NOT_APPLICABLE','ERROR')",
+            name="ck_result_status",
+        ),
     )
 
 
 class Gap(Base, TimestampMixin):
     __tablename__ = "gaps"
-    gap_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    assessment_id = Column(String(36), ForeignKey("assessments.assessment_id"), nullable=False)
+    gap_id = UUIDColumn(primary_key=True)
+    assessment_id = Column(UUID(as_uuid=False), ForeignKey("assessments.assessment_id"), nullable=False)
     field = Column(String(128), nullable=False)
     priority = Column(String(16), nullable=False)  # CRITICAL/HIGH/MEDIUM/LOW
     message = Column(Text, nullable=False)
@@ -457,6 +712,10 @@ class PipelineRun(Base, TimestampMixin):
         Index("idx_pipeline_run_source", "source_id"),
         Index("idx_pipeline_run_status", "status"),
         Index("idx_pipeline_run_started", "started_at"),
+        CheckConstraint(
+            "status IN ('RUNNING','COMPLETED','FAILED','PARTIAL')",
+            name="ck_pipeline_status",
+        ),
     )
 
 
@@ -466,7 +725,7 @@ class PipelineRun(Base, TimestampMixin):
 
 class ApiUser(Base, TimestampMixin):
     __tablename__ = "api_users"
-    user_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = UUIDColumn(primary_key=True)
     email = Column(String(256), unique=True, nullable=False)
     password_hash = Column(String(256), nullable=False)
     full_name = Column(String(256))
@@ -479,8 +738,8 @@ class ApiUser(Base, TimestampMixin):
 
 class UserSession(Base, TimestampMixin):
     __tablename__ = "user_sessions"
-    session_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("api_users.user_id"), nullable=False)
+    session_id = UUIDColumn(primary_key=True)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("api_users.user_id"), nullable=False)
     token_hash = Column(String(64), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     revoked = Column(Boolean, nullable=False, default=False)
@@ -494,8 +753,8 @@ class UserSession(Base, TimestampMixin):
 class AuditLog(Base):
     """Append-only audit trail. Every state change gets a row."""
     __tablename__ = "audit_log"
-    audit_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("api_users.user_id"))
+    audit_id = UUIDColumn(primary_key=True)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("api_users.user_id"))
     action = Column(String(64), nullable=False)
     entity_type = Column(String(64), nullable=False)
     entity_id = Column(String(64))
@@ -515,15 +774,15 @@ class AuditLog(Base):
 class LlmUsage(Base):
     """Per-call LLM usage tracking."""
     __tablename__ = "llm_usage"
-    usage_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    usage_id = UUIDColumn(primary_key=True)
     request_id = Column(String(36))
-    user_id = Column(String(36), ForeignKey("api_users.user_id"))
+    user_id = Column(UUID(as_uuid=False), ForeignKey("api_users.user_id"))
     provider = Column(String(32), nullable=False)  # openai/gemini/anthropic
     model = Column(String(64), nullable=False)
     prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)
-    cost_usd = Column(Float)
+    cost_usd = Column(Numeric(16, 6))
     latency_ms = Column(Integer)
     success = Column(Boolean, nullable=False, default=True)
     error_message = Column(Text)
@@ -538,14 +797,14 @@ class LlmUsage(Base):
 class LlmBudgetLog(Base):
     """Daily/monthly budget aggregation."""
     __tablename__ = "llm_budget_log"
-    log_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    log_id = UUIDColumn(primary_key=True)
     period = Column(String(16), nullable=False)  # "daily" / "monthly"
     period_start = Column(DateTime(timezone=True), nullable=False)
     provider = Column(String(32))
-    total_cost_usd = Column(Float, nullable=False, default=0.0)
+    total_cost_usd = Column(Numeric(16, 6), nullable=False, default=0.0)
     total_calls = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)
-    budget_limit_usd = Column(Float)
+    budget_limit_usd = Column(Numeric(16, 6))
     exceeded = Column(Boolean, nullable=False, default=False)
 
     __table_args__ = (

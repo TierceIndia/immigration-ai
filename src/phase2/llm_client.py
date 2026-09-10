@@ -37,6 +37,20 @@ dotenv.load_dotenv()  # load OPENAI_API_KEY (or other keys) from .env if present
 PROMPT_VERSION = "requirement_extraction_v2"
 
 
+def _get_prompt_path(visa_category: str | None = None) -> str:
+    """Get the path to the prompt file for the given visa category.
+    
+    Falls back to the base prompt if category-specific prompt doesn't exist.
+    """
+    base_dir = os.path.join(os.path.dirname(__file__), "..", "..", "prompts")
+    if visa_category:
+        category_path = os.path.join(base_dir, visa_category.lower(), f"{PROMPT_VERSION}.md")
+        if os.path.exists(category_path):
+            return category_path
+    # Fallback to flat prompt (backward compatibility)
+    return os.path.join(base_dir, f"{PROMPT_VERSION}.md")
+
+
 class LLMClient(ABC):
     model_name: str
 
@@ -44,6 +58,11 @@ class LLMClient(ABC):
     def extract(self, input_context: dict) -> str:
         """Return a raw string that should be JSON matching requirements.schema.json."""
         raise NotImplementedError
+
+    def get_system_prompt(self, visa_category: str | None = None) -> str:
+        """Get the system prompt for the given visa category.
+        Subclasses can override to provide category-specific prompts."""
+        return self._system_prompt
 
 
 class MockLLMClient(LLMClient):
@@ -53,6 +72,13 @@ class MockLLMClient(LLMClient):
     """
 
     model_name = "mock-llm-v1"
+
+    def __init__(self, visa_category: str | None = None):
+        self.visa_category = visa_category
+        self._system_prompt = ""
+
+    def get_system_prompt(self, visa_category: str | None = None) -> str:
+        return ""
 
     _AGE_LT = re.compile(r"(?:aged?\s+)?under\s+(\d+)", re.IGNORECASE)
     _AGE_LTE = re.compile(r"(\d+)\s*years?\s+of\s+age\s+or\s+(?:younger|under)", re.IGNORECASE)
@@ -378,7 +404,7 @@ class MockLLMClient(LLMClient):
 class OpenAILLMClient(LLMClient):
     model_name = "gpt-4o-mini"
 
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None, visa_category: str | None = None):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if model:
             self.model_name = model
@@ -387,9 +413,7 @@ class OpenAILLMClient(LLMClient):
                 "OPENAI_API_KEY not set. Set the environment variable or pass api_key= "
                 "explicitly. (Never hardcode the key in source or seed files.)"
             )
-        prompt_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "prompts", "requirement_extraction_v2.md"
-        )
+        prompt_path = _get_prompt_path(visa_category)
         with open(prompt_path, "r", encoding="utf-8") as f:
             self._system_prompt = f.read()
 
@@ -455,7 +479,7 @@ class OpenAILLMClient(LLMClient):
 class AnthropicLLMClient(LLMClient):
     model_name = "claude-sonnet-4-6"
 
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None, visa_category: str | None = None):
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if model:
             self.model_name = model
@@ -464,9 +488,7 @@ class AnthropicLLMClient(LLMClient):
                 "ANTHROPIC_API_KEY not set. Set the environment variable or pass api_key= "
                 "explicitly. (Never hardcode the key in source or seed files.)"
             )
-        prompt_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "prompts", "requirement_extraction_v2.md"
-        )
+        prompt_path = _get_prompt_path(visa_category)
         with open(prompt_path, "r", encoding="utf-8") as f:
             self._system_prompt = f.read()
 
@@ -487,7 +509,7 @@ class AnthropicLLMClient(LLMClient):
 class GeminiLLMClient(LLMClient):
     model_name = "gemini-flash-lite-latest"
 
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None, visa_category: str | None = None):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if model:
             self.model_name = model
@@ -496,9 +518,7 @@ class GeminiLLMClient(LLMClient):
                 "GEMINI_API_KEY not set. Set the environment variable (or .env) or pass api_key= "
                 "explicitly. (Never hardcode the key in source or seed files.)"
             )
-        prompt_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "prompts", "requirement_extraction_v2.md"
-        )
+        prompt_path = _get_prompt_path(visa_category)
         with open(prompt_path, "r", encoding="utf-8") as f:
             self._system_prompt = f.read()
 
@@ -567,14 +587,14 @@ class GeminiLLMClient(LLMClient):
         return "\n".join(p.get("text", "") for p in parts)
 
 
-def get_client(model: str) -> LLMClient:
+def get_client(model: str, visa_category: str | None = None) -> LLMClient:
     if model == MockLLMClient.model_name:
-        return MockLLMClient()
+        return MockLLMClient(visa_category=visa_category)
     if model.startswith("gemini"):
-        return GeminiLLMClient(model=model)
+        return GeminiLLMClient(model=model, visa_category=visa_category)
     if model.startswith("claude"):
-        return AnthropicLLMClient(model=model)
+        return AnthropicLLMClient(model=model, visa_category=visa_category)
     if model.startswith("gpt-") or model.startswith("o") or model.startswith("chatgpt"):
-        return OpenAILLMClient(model=model)
+        return OpenAILLMClient(model=model, visa_category=visa_category)
     # Default fallback: OpenAI-compatible endpoint
-    return OpenAILLMClient(model=model)
+    return OpenAILLMClient(model=model, visa_category=visa_category)

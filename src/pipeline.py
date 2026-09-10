@@ -25,6 +25,13 @@ from extractor_pdf import extract_pdf
 from fetcher import FetchResult, FetchStatus, fetch
 from hashing import sha256_bytes, sha256_text
 
+# Fetch statuses that may be resolved by escalating to a genuine non-headless
+# browser session via browser_fetcher before demoting to a terminal health flag.
+_BROWSER_ESCALATION_STATUSES = {
+    FetchStatus.ACCESS_BLOCKED,
+    FetchStatus.REQUIRES_BROWSER,
+}
+
 # fetch statuses that should also demote the source's own health flag in government_sources.status
 _SOURCE_STATUS_FOR_FETCH_STATUS = {
     FetchStatus.ACCESS_BLOCKED: "ACCESS_BLOCKED",
@@ -89,6 +96,18 @@ def process_source(conn, source_row, offline_fixture: Path | None = None) -> dic
         )
     else:
         fetch_result = fetch(url, source_type=source_type)
+        # Escalation: if a plain HTTP fetch is blocked/challenged, escalate to a
+        # genuine non-headless Chromium session (browser_fetcher). If that ALSO
+        # fails with ACCESS_BLOCKED or a challenge marker, we do NOT retry again —
+        # the source goes to NEEDS_MANUAL_CAPTURE and the scheduler skips it until
+        # an admin resolves it (see the manual-capture admin endpoint).
+        if fetch_result.status in _BROWSER_ESCALATION_STATUSES:
+            from browser_fetcher import fetch_with_browser
+            escalated = fetch_with_browser(url, source_type=source_type)
+            if escalated.ok:
+                fetch_result = escalated
+            elif escalated.status in _BROWSER_ESCALATION_STATUSES:
+                fetch_result = escalated  # still blocked even via browser
 
     fetched_at = _now_iso()
 
@@ -101,7 +120,14 @@ def process_source(conn, source_row, offline_fixture: Path | None = None) -> dic
             (source_id, fetched_at, fetch_result.http_status, fetch_result.status.value,
              fetch_result.duration_ms, fetch_result.error),
         )
-        source_status = _SOURCE_STATUS_FOR_FETCH_STATUS.get(fetch_result.status, "BROKEN")
+        # If even a genuine browser session was blocked/challenged, put the source
+        # into NEEDS_MANUAL_CAPTURE so it is (a) skipped by the scheduler (which
+        # filters on status == "ACTIVE") and (b) resolvable only via an admin's
+        # manual-capture action. Do not keep hammering a blocked source.
+        if fetch_result.status in _BROWSER_ESCALATION_STATUSES:
+            source_status = "NEEDS_MANUAL_CAPTURE"
+        else:
+            source_status = _SOURCE_STATUS_FOR_FETCH_STATUS.get(fetch_result.status, "BROKEN")
         conn.execute(
             "UPDATE government_sources SET last_checked_at = ?, status = ? WHERE source_id = ?",
             (fetched_at, source_status, source_id),
@@ -294,7 +320,12 @@ def process_source(conn, source_row, offline_fixture: Path | None = None) -> dic
 
 def run_pipeline(source_id_filter: str | None = None, offline_fixture: Path | None = None) -> dict:
     conn = init_schema()
-    query = "SELECT * FROM government_sources WHERE status != 'INACTIVE'"
+    # Only ACTIVE sources are picked up, matching the production scheduler path
+    # (government_sync.sync_all_sources filters on status == "ACTIVE"). Non-retryable
+    # states (NEEDS_MANUAL_CAPTURE, BROKEN, ACCESS_BLOCKED, ...) must NOT be
+    # repeatedly re-fetched — they need an explicit admin action (e.g. manual capture)
+    # to move back to ACTIVE.
+    query = "SELECT * FROM government_sources WHERE status = 'ACTIVE'"
     params: tuple = ()
     if source_id_filter:
         query += " AND source_id = ?"

@@ -19,6 +19,10 @@ services:
     build: .
     ports:
       - "8000:8000"
+    # Chromium needs more than the default 64MB /dev/shm to run without crashing
+    # (well-documented Chromium-in-Docker requirement). We bump it here rather
+    # than passing --disable-dev-shm-usage at runtime; see Docker docs on /dev/shm.
+    shm_size: '1gb'
     environment:
       DATABASE_URL: postgresql://immigration:immigration_dev@postgres:5432/immigration
       JWT_SECRET_KEY: change-me-in-production
@@ -26,12 +30,12 @@ services:
       JWT_EXPIRATION_MINUTES: "1440"
       CORS_ORIGINS: http://localhost:3000,http://localhost:5173
       ENABLE_SCHEDULER: "true"
-      GOVERNMENT_SYNC_INTERVAL_MINUTES: "60"
+      GOVERNMENT_SYNC_HOUR_UTC: "3"
     depends_on:
       postgres:
         condition: service_healthy
     command: >
-      sh -c "alembic upgrade head && uvicorn src.api.main:create_app --factory --host 0.0.0.0 --port 8000"
+      sh -c "alembic upgrade head && python src/seed_registry.py && uvicorn src.api.main:create_app --factory --host 0.0.0.0 --port 8000"
 
 volumes:
   pgdata:

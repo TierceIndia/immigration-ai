@@ -36,6 +36,7 @@ from db.repositories import PipelineRunRepo
 from phase3.requirement_to_rule import compile_approved_requirements
 from phase3.rule_repository import EnhancedRuleRepo
 from logging_config import get_logger
+from utils.fetch_document import fetch_document_and_store
 
 logger = get_logger(__name__)
 
@@ -86,12 +87,78 @@ def detect_change(session: Session, source_id: str) -> tuple[bool, str | None, s
     return old_hash != new_hash, old_hash, new_hash
 
 
+def _latest_document(session: Session, source_id: str) -> GovernmentDocument | None:
+    return (
+        session.query(GovernmentDocument)
+        .filter(GovernmentDocument.source_id == source_id)
+        .order_by(GovernmentDocument.retrieved_at.desc())
+        .first()
+    )
+
+
+def sync_zero_document_source(
+    session: Session, run_repo: PipelineRunRepo, run, source: GovernmentSource
+) -> SyncResult:
+    """Bootstrap a source with no stored document: real fetch → store → extract.
+
+    Populates the document/version/chunks, updates source diagnostics, and runs Phase-2
+    requirement extraction so the review queue is fed. Success = COMPLETED run,
+    fetch failure = FAILED run (source demoted to NEEDS_MANUAL_CAPTURE when blocked).
+    """
+    outcome = fetch_document_and_store(session, source)
+    result = SyncResult(source_id=source.source_id, status="changed")
+
+    if outcome.document_id is not None:
+        run.old_hash = None
+        run.new_hash = outcome.content_hash
+        run.metadata_json = {
+            "change_detection": {
+                "raw": {
+                    "old_hash": None,
+                    "new_hash": outcome.content_hash,
+                    "changed": True,
+                }
+            }
+        }
+        result.document_id = outcome.document_id
+        result.document_version = outcome.document_version
+        result.requirements_extracted = outcome.requirements_extracted
+        run_repo.complete(run.run_id, requirements_extracted=outcome.requirements_extracted)
+        logger.info(
+            "Source bootstrapped via fetch+extract",
+            extra={
+                "source_id": source.source_id,
+                "document_id": outcome.document_id,
+                "requirements_extracted": outcome.requirements_extracted,
+                "run_id": run.run_id,
+            },
+        )
+        return result
+
+    result.status = "error"
+    error_msg = outcome.error or outcome.status or "fetch failed"
+    result.errors.append(error_msg)
+    run_repo.fail(run.run_id, error_msg)
+    logger.warning(
+        "Source fetch failed during sync",
+        extra={
+            "source_id": source.source_id,
+            "fetch_status": outcome.status,
+            "error": error_msg,
+            "run_id": run.run_id,
+        },
+    )
+    return result
+
+
 def record_change(session: Session, source_id: str, new_hash: str) -> None:
-    """Update the source's last_hash after a successful sync."""
+    """Update the source's last_hash and timestamps after a successful sync."""
     source = session.get(GovernmentSource, source_id)
     if source:
         source.last_hash = new_hash
-        source.last_checked_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        source.last_checked_at = now
+        source.last_successful_fetch_at = now
         session.flush()
 
 
@@ -318,6 +385,15 @@ def sync_source(session: Session, source_id: str,
         run.new_hash = new_hash
 
         if not changed:
+            # Zero-document gate: a source with no stored document is bootstrapped with a
+            # real fetch + Phase-2 extraction (never in dry-run, never when a document exists).
+            source = session.get(GovernmentSource, source_id)
+            if (
+                source is not None
+                and not dry_run
+                and _latest_document(session, source_id) is None
+            ):
+                return sync_zero_document_source(session, run_repo, run, source)
             result.status = "unchanged"
             run_repo.complete(run.run_id)
             logger.info("Source unchanged", extra={"source_id": source_id})
@@ -410,6 +486,9 @@ def sync_source(session: Session, source_id: str,
             requirements_extracted=result.requirements_extracted,
             requirements_approved=result.requirements_approved,
             rules_created=result.rules_created,
+            rules_validated=result.rules_validated,
+            rules_approved=result.rules_approved,
+            rules_activated=result.rules_activated,
         )
         if errors:
             run.metadata_json = {"change_detection": change_detection}

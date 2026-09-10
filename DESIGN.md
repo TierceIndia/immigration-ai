@@ -18,9 +18,9 @@ End-to-end deterministic immigration eligibility system for Australian skilled m
 | 3 | Deterministic Rule Engine (operators, expressions, IF/THEN, exceptions, dependencies, versioning) | COMPLETE |
 | 3C | Eligibility + Gap Engine (applicant model, applicability, assessment, gap detection, questions) | COMPLETE |
 | 3D | Government Knowledge Activation (req→rule bridge, status machine, admin approval, e2e) | COMPLETE |
-| API | FastAPI service layer (auth, CRUD, admin review, assessments) | COMPLETE |
+| API | FastAPI service layer (auth, CRUD, admin review, assessments, documents, knowledge-state) | COMPLETE |
 | Infra | DB abstraction, Docker, LLM governance, structured logging | COMPLETE |
-| 4+ | RAG, Recommendations, User Product, Scheduler, Multi-country | NOT STARTED |
+| 4+ | RAG, Recommendations, User Product, Multi-country | NOT STARTED |
 
 ---
 
@@ -108,7 +108,12 @@ Every extracted requirement must have `evidence_text` that is an exact substring
 
 ### Gold Standard
 
-Real gold dataset (`data/gold/requirements_gold_real.json`): 17 positive + 6 negative items for 189, 5+1 for 190. All 17 evidence texts verified as verbatim substrings.
+Real gold datasets are organized **per visa category** under `data/gold/<category>/` and each is validated against its own prompt contract — enforcing **zero cross-category contamination** (a Student source is never scored with the Skilled contract).
+
+- **skilled/** — populated with real, verbatim gold: `skilled_189_real.json` (23 items) + `skilled_190_real.json` (6 items). The 189 dataset's 17 evidence strings are verified verbatim substrings; it also carries annotations for the 190 cross-source set.
+- **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items** (anti-hallucination: no fabricated `evidence_text`; live Home Affairs is HTTP 403-blocked to automated fetchers, see `SOURCE_REGISTRY_REPORT.md`).
+
+The integrity harness `src/phase2/category_gold.py` fingerprints each category's prompt contract and every gold dataset, and `tests/phase2/test_category_gold_harness.py` (12 tests) asserts the contamination-free + no-fabricated-evidence invariants hold.
 
 ### Production Model
 
@@ -339,9 +344,14 @@ PipelineRun:
     requirements_extracted: int
     requirements_approved: int
     rules_created: int
+    rules_validated: int       # computed at query time (not stored)
+    rules_approved: int        # computed at query time (not stored)
+    rules_activated: int       # computed at query time (not stored)
     errors: JSON               # list of error strings
     metadata_json: JSON        # arbitrary metadata
 ```
+
+**Computed counters**: `rules_validated`, `rules_approved`, `rules_activated` are calculated at query time via `_compute_rule_counts(session, source_id)` by counting Rule rows by status for the given source. These are not stored on the PipelineRun itself, as rules may be approved/activated after the run completes.
 
 Non-admin users: 403.
 
@@ -511,16 +521,40 @@ _cors_origins = [o.strip() for o in _cors_origins_str.split(",") if o.strip()]
 ### Route Registry
 
 ```
-/health                      — GET health check (no auth)
-/api/v1/auth/register        — POST (no auth)
-/api/v1/auth/login           — POST (no auth)
-/api/v1/auth/me              — GET (JWT required)
-/api/v1/applicants/          — POST, GET (JWT required)
-/api/v1/applicants/{id}      — GET, PATCH (JWT required)
-/api/v1/admin/rules/         — GET, POST (admin only)
-/api/v1/admin/rules/{id}     — GET, POST (admin only)
-/api/v1/assessments/         — POST, GET (JWT required)
-/api/v1/assessments/{id}     — GET, POST (JWT required)
+/health                              — GET health check (no auth)
+/api/v1/auth/register                — POST (no auth)
+/api/v1/auth/login                   — POST (no auth)
+/api/v1/auth/me                      — GET (JWT required)
+/api/v1/applicants/                  — POST, GET (JWT required)
+/api/v1/applicants/{id}              — GET, PATCH (JWT required)
+/api/v1/assessments/                 — POST, GET (JWT required)
+/api/v1/assessments/{id}             — GET (JWT required)
+/api/v1/assessments/evaluate         — POST (JWT required)
+/api/v1/admin/rules/                 — GET (admin only)
+/api/v1/admin/rules/queue            — GET (admin only)
+/api/v1/admin/rules/{id}             — GET (admin only)
+/api/v1/admin/rules/{id}/validate    — POST (admin only)
+/api/v1/admin/rules/{id}/approve     — POST (admin only)
+/api/v1/admin/rules/{id}/activate    — POST (admin only)
+/api/v1/admin/rules/{id}/reject      — POST (admin only)
+/api/v1/admin/rules/{id}/retire      — POST (admin only)
+/api/v1/admin/requirements/          — GET (admin only)
+/api/v1/admin/requirements/{id}      — GET (admin only)
+/api/v1/admin/requirements/{id}/approve — POST (admin only)
+/api/v1/admin/requirements/{id}/reject  — POST (admin only)
+/api/v1/admin/sources/               — GET (admin only)
+/api/v1/admin/sources/{id}           — GET (admin only)
+/api/v1/admin/documents/             — GET (admin only)
+/api/v1/admin/documents/{id}         — GET (admin only)
+/api/v1/admin/documents/{id}/versions — GET (admin only)
+/api/v1/admin/documents/{id}/chunks  — GET (admin only)
+/api/v1/admin/documents/{id}/diff    — GET (admin only)
+/api/v1/admin/knowledge-state/       — GET (admin only)
+/api/v1/admin/runs/                  — GET (admin only)
+/api/v1/admin/runs/summary           — GET (admin only)
+/api/v1/admin/runs/{id}              — GET (admin only)
+/api/v1/admin/runs/source/{id}       — GET (admin only)
+/api/v1/admin/sync                   — POST (admin only)
 ```
 
 ### Error Responses
@@ -798,7 +832,7 @@ Government Source
 | test_gap_engine.py | 14 | Gap detection, dedup, priority, linkage |
 | test_questions.py | 27 | Question definitions, validation, normalization |
 
-### Phase 3D Activation (89 tests)
+### Phase 3D Activation (134 tests)
 
 | File | Tests | Coverage |
 |------|-------|----------|
@@ -807,9 +841,10 @@ Government Source
 | test_requirement_to_rule.py | 16 | Requirement→rule bridge, compile_approved_requirements |
 | test_admin_rules_api.py | 12 | Admin API endpoints, auth, validation, activate |
 | test_e2e_pipeline.py | 7 | Full pipeline: v1→ACTIVE→v2→SUPERSEDED |
+| test_e2e_pipeline_lifecycle.py | 27 | Extended lifecycle scenarios |
 | test_phase3d_hardening.py | 27 | One-active invariant, transactional activation, provenance, retirement, E2E lifecycle, failure safety, compilation safety |
 
-### Phase 2 (51 tests)
+### Phase 2 (61 tests)
 
 | File | Tests | Coverage |
 |------|-------|----------|
@@ -820,6 +855,8 @@ Government Source
 | test_extraction.py | 9 | LLM contract tests, mock responses |
 | test_integration.py | 4 | Full pipeline integration |
 | test_gold_dataset.py | 3 | Gold standard evaluation |
+| test_category_prompts.py | 10 | Deterministic visa_category → prompt selection (Phase 4) |
+| test_category_gold_harness.py | 12 | Category-aware gold integrity: zero cross-category contamination, no fabricated evidence (Phase 3) |
 
 ### Infrastructure
 
@@ -828,14 +865,15 @@ Government Source
 | test_db_models.py | 12 | ORM model constraints, relationships |
 | test_repositories.py | 10 | Repository CRUD, query filters |
 | test_logging.py | 17 | Structured logging, PII redaction |
-| test_api.py | 18 | API routes: health, applicants, assessments (real), middleware |
+| test_api.py | 35 | API routes: health, applicants, assessments (real), middleware, G9 regression, G12 FK fixes |
 | test_auth.py | 11 | JWT, register/login, bcrypt, duplicate email |
 | test_llm_governance.py | 30 | Rate limiter, cache, budget, retry |
 | test_security.py | 40 | JWT secrets, PII redaction, CORS, authorization, password security, token claims |
 | test_scheduler.py | 7 | APScheduler start/stop, manual sync trigger |
-| test_pipeline_runs.py | 42 | PipelineRun model, repo CRUD, API endpoints, orchestrator integration |
+| test_pipeline_runs.py | 42 | PipelineRun model, repo CRUD, API endpoints, computed counters, orchestrator integration |
+| test_e2e_scenarios.py | 14 | Multi-program, multi-version, gap engine, evaluation, orchestration |
 
-### Total: 616 tests, all passing, 0 failures
+### Total: 731 tests, all passing, 0 failures
 
 ---
 
@@ -863,11 +901,17 @@ Government Source
 
 ### API & Auth
 
-- `src/api/main.py` — FastAPI app factory, CORS, middleware, lifespan
+- `src/api/main.py` — FastAPI app factory, CORS, middleware, lifespan (TESTING guard)
+- `src/api/helpers.py` — `parse_uuid_or_404()` utility
 - `src/api/routes/auth.py` — Register/login/me
 - `src/api/routes/applicants.py` — Applicant CRUD (JWT-protected)
+- `src/api/routes/assessments.py` — Assessment create/list/evaluate
 - `src/api/routes/admin_rules.py` — Admin review/approve/activate
-- `src/api/routes/assessments.py` — Assessment stubs (501)
+- `src/api/routes/admin_requirements.py` — Admin requirement review (ORM-based)
+- `src/api/routes/admin_sources.py` — Source admin API
+- `src/api/routes/admin_documents.py` — Document admin API (G14): versions, chunks, diffs
+- `src/api/routes/admin_knowledge.py` — Knowledge-state hierarchical endpoint (G15)
+- `src/api/routes/pipeline_runs.py` — Pipeline run API with computed counters (G13)
 - `src/services/auth_service.py` — JWT, bcrypt, secret management
 
 ### Infrastructure
@@ -923,7 +967,7 @@ Government Source
 
 ### Strengths
 
-- 616/616 tests passing with comprehensive coverage
+- 731/731 tests passing with comprehensive coverage
 - Strong domain separation (LLM extraction vs deterministic rules)
 - Complete provenance chain from rule to government URL
 - Structured logging with PII redaction
@@ -934,7 +978,14 @@ Government Source
 - Real assessment API (ACTIVE rules → Phase 3C → persist)
 - Automatic source sync scheduler (APScheduler)
 - 40 security tests (auth, PII, CORS, passwords, authorization)
-- PipelineRun audit trail for every sync execution (42 tests)
+- PipelineRun audit trail for every sync execution (42 tests with computed counters)
+- Admin documents API (versions, chunks, diffs)
+- Admin knowledge-state hierarchical endpoint
+- PipelineRun computed counters (rules validated/approved/activated at query time)
+- Lifespan TESTING mode guard (G9 fix)
+- **Real PostgreSQL ORM verification** (FK constraints, NOT NULL, full rule lifecycle)
+- **Deterministic visa_category → prompt selection** in Phase 2 extraction (10 tests)
+- **Category-aware gold scaffolding + integrity harness** (12 tests): per-category gold dirs under `data/gold/{skilled,work,student,visitor}/`, zero cross-category prompt contamination, no fabricated evidence
 
 ### Gaps
 
@@ -942,15 +993,34 @@ Government Source
 |-----|----------|--------|-------------|
 | ~~Assessment API stubbed~~ | P0 | DONE | `POST /assessments` and `POST /assessments/evaluate` now real |
 | ~~No scheduler~~ | P1 | DONE | APScheduler with configurable interval, manual trigger endpoint |
-| PostgreSQL untested in prod | P1 | OPEN | DB abstraction exists but not validated on production PostgreSQL |
+| ~~PostgreSQL verification~~ | P1 | DONE | ORM rule lifecycle + FK/NOT NULL verified against real PostgreSQL 2026-08-27 |
 | ~~No PipelineRun tracking~~ | P2 | DONE | Full audit trail: model, repo, API, orchestrator integration |
 | ~~No security test suite~~ | P2 | DONE | 40 tests covering auth, PII, CORS, passwords, authorization |
+| ~~Admin documents API~~ | P2 | DONE | Document versions, chunks, diffs for admin visibility |
+| ~~Admin knowledge-state endpoint~~ | P2 | DONE | Hierarchical country → category → program → sources tree |
+| ~~G9 lifespan testing bug~~ | P2 | DONE | TESTING env var guard prevents DB init in test mode |
+| ~~G10 UUID validation~~ | P2 | DONE | parse_uuid_or_404 helper on all UUID-based routes |
+| ~~G13 computed PipelineRun counters~~ | P2 | DONE | rules_validated/approved/activated computed at query time |
+| ~~G16/Phase 4 category prompts~~ | P2 | DONE | run_extraction.py derives visa_category → category prompt |
+| WORK/STUDENT/VISITOR sources | P3 | OPEN | Only SKILLED category has verified sources (9 sources) |
+| Live Home Affairs fetch | P3 | OPEN | HTTP 403 ACCESS_BLOCKED to automated fetchers; needs approved network/API |
+| Real WORK/STUDENT/VISITOR gold data | P3 | OPEN | Gold dirs scaffolded with zero-item AWAITING_REAL_SOURCE placeholders (no fabricated evidence); skilled/ populated with real verbatim gold |
 | Multi-country deferred | P3 | OPEN | Australia only, NZ/Canada/etc. later |
 | 491 real-world coverage | P3 | OPEN | Partial real scenario validation |
 
+### Verification performed (2026-08-27)
+
+1. **731/731 tests pass** on SQLite.
+2. **Real PostgreSQL**: `docker compose up -d postgres` + `alembic upgrade head`, then full ORM pipeline Country → Program → Source → Document → Version → Chunk → Requirement → Rule (DRAFT → VALIDATED → APPROVED → ACTIVE). FK constraints and NOT NULL enforced correctly.
+3. **Live fetch**: Home Affairs returns 403 ACCESS_BLOCKED — the fetcher correctly classifies and records the block (failure-safe by design).
+4. **CLI Phase 1/2**: offline pipeline + phase2 run_extraction against DOC-AU-189-MAIN extract 6 validated requirements with category-aware prompt wiring.
+5. **Category-aware gold harness**: per-category dirs created; skilled gold (189 + 190, 29 items) migrated; work/student/visitor zero-item placeholders; integrity report clean (no contract violations, no cross-category leak).
+
 ### Next Milestones
 
-1. PostgreSQL-native production validation (UUID, JSONB, TIMESTAMPTZ)
-2. Multi-country support (NZ, Canada, UK)
-3. 491 real-world scenario coverage
-4. RAG & Recommendations (LLM explains rules, suggests pathways)
+1. **WORK/STUDENT/VISITOR source registry** — Add verified government sources for all visa categories
+2. **Fill real gold datasets** for WORK/STUDENT/VISITOR categories (dirs scaffolded: `data/gold/{skilled,work,student,visitor}/`)
+3. **Approved/authenticated live fetch** of Home Affairs content
+4. **Multi-country support** (NZ, Canada, UK)
+5. **491 real-world scenario coverage**
+6. **RAG & Recommendations** — LLM explains rules, suggests pathways

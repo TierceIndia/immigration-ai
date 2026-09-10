@@ -26,7 +26,6 @@ from db.models import Base, GovernmentSource
 from scheduler import (
     start_scheduler, shutdown_scheduler, get_scheduler,
     trigger_sync_now, _sync_lock, _acquired_sync_lock, _release_sync_lock,
-    _DEFAULT_INTERVAL_MINUTES,
 )
 
 
@@ -87,8 +86,37 @@ class TestSchedulerStart:
         assert sched is not None
         assert sched.running
 
-    def test_default_interval_is_60(self):
-        assert _DEFAULT_INTERVAL_MINUTES == 60
+    def test_daily_cron_reads_hour_env(self, db_engine, monkeypatch):
+        """GOVERNMENT_SYNC_HOUR_UTC pins a fixed daily run time."""
+        monkeypatch.setenv("GOVERNMENT_SYNC_HOUR_UTC", "7")
+        monkeypatch.setenv("GOVERNMENT_SYNC_MINUTE_UTC", "30")
+        start_scheduler(db_engine)
+        job = get_scheduler().get_jobs()[0]
+        from apscheduler.triggers.cron import CronTrigger
+        assert isinstance(job.trigger, CronTrigger)
+        assert "hour='7'" in str(job.trigger)
+        assert "minute='30'" in str(job.trigger)
+
+    def test_invalid_hour_raises(self, db_engine):
+        import pytest as _pytest
+        with _pytest.raises(ValueError):
+            start_scheduler(db_engine, hour_utc=24)
+
+    def test_default_is_daily_cron_at_fixed_time(self, db_engine, monkeypatch):
+        """Default (no env vars) schedules ONE daily run at 03:00 UTC.
+
+        Regression: the scheduler used to be an interval every 60 minutes from
+        process start (drift). Requirement: daily scraping on a fixed clock time.
+        """
+        monkeypatch.delenv("GOVERNMENT_SYNC_INTERVAL_MINUTES", raising=False)
+        monkeypatch.delenv("GOVERNMENT_SYNC_HOUR_UTC", raising=False)
+        start_scheduler(db_engine)
+        sched = get_scheduler()
+        job = sched.get_jobs()[0]
+        from apscheduler.triggers.cron import CronTrigger
+        assert isinstance(job.trigger, CronTrigger)
+        assert "hour='3'" in str(job.trigger)
+        assert "minute='0'" in str(job.trigger)
 
     def test_custom_interval_minutes(self, db_engine):
         start_scheduler(db_engine, interval_minutes=15)

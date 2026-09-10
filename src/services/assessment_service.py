@@ -22,6 +22,7 @@ from db.repositories import (
     AssessmentRuleResultRepo,
     GapRepo,
     ApplicantRepo,
+    RulesetRepo,
 )
 from phase3.expressions import ANDNode, RuleLeaf
 from phase3.models import Rule, RuleStatus, EvaluationStatus
@@ -29,7 +30,9 @@ from phase3c.applicant import ApplicantProfile as Phase3CProfile, VisaSelection
 from phase3c.assessment import assess_eligibility as _assess, EligibilityOutcome
 from phase3c.gap_engine import GapEngine, Gap
 from phase3.rule_repository import EnhancedRuleRepo, orm_to_dataclass
+from db.models import RuleVersion
 from logging_config import get_logger
+from sqlalchemy import select
 
 logger = get_logger(__name__)
 
@@ -95,8 +98,19 @@ class AssessmentService:
 
         applicant, active_rules, outcome = self._evaluate(applicant_id, program_id)
 
-        # Compute ruleset hash — deterministic fingerprint of all ACTIVE rule versions
-        ruleset_hash = _compute_ruleset_hash(program_id, active_rules)
+        # Resolve each ACTIVE rule to its newest immutable rule_version row. If every rule
+        # has one, the assessment snapshots a released ruleset (immutable, idempotent by
+        # program+content_hash); otherwise it degrades to a ruleset-free assessment rather
+        # than failing (NULL ruleset/rule_version anchors).
+        resolved = _resolve_rule_versions(self._repo._s, active_rules)
+        all_resolved = resolved is not None and all(v is not None for v in resolved.values())
+        ruleset_id = None
+        if all_resolved:
+            ruleset_id, ruleset_hash = _acquire_ruleset(
+                self._repo._s, program_id, resolved
+            )
+        else:
+            ruleset_hash = None
 
         # 6. Find gaps
         rules_by_id = {r.rule_id: r for r in active_rules}
@@ -138,6 +152,8 @@ class AssessmentService:
             request_id=request_id,
             applicant_snapshot=applicant_snapshot,
             ruleset_hash=ruleset_hash,
+            ruleset_id=ruleset_id,
+            rule_version_ids=resolved,
         )
 
         logger.info(
@@ -183,6 +199,8 @@ class AssessmentService:
         request_id: str | None = None,
         applicant_snapshot: dict | None = None,
         ruleset_hash: str | None = None,
+        ruleset_id: str | None = None,
+        rule_version_ids: dict[str, tuple[int, int] | None] | None = None,
     ) -> dict:
         # Build a lookup for rule versions
         rule_version_map = {r.rule_id: r.version for r in (active_rules or [])}
@@ -200,15 +218,22 @@ class AssessmentService:
             request_id=request_id,
             applicant_snapshot=applicant_snapshot,
             ruleset_hash=ruleset_hash,
+            ruleset_id=ruleset_id,
         )
+
+        rule_version_ids = rule_version_ids or {}
 
         # Persist individual rule results
         for eval_dict in eligibility_result.get("rule_evaluations", []):
             rid = eval_dict["rule_id"]
+            resolved = rule_version_ids.get(rid)
+            resolved_id = resolved[0] if resolved else None
+            resolved_version = resolved[1] if resolved else None
             self._result_repo.create(
                 assessment_id=assessment.assessment_id,
                 rule_id=rid,
-                rule_version=rule_version_map.get(rid, 1),
+                rule_version=resolved_version or rule_version_map.get(rid, 1),
+                rule_version_id=resolved_id,
                 status=eval_dict["status"],
                 field=eval_dict.get("field"),
                 actual_value=json.dumps(eval_dict.get("actual_value")),
@@ -261,11 +286,13 @@ class AssessmentService:
             "evaluated_at": assessment.evaluated_at,
             "applicant_snapshot": assessment.applicant_snapshot,
             "ruleset_hash": assessment.ruleset_hash,
+            "ruleset_id": assessment.ruleset_id,
             "rule_results": [
                 {
                     "result_id": r.result_id,
                     "rule_id": r.rule_id,
                     "rule_version": r.rule_version,
+                    "rule_version_id": r.rule_version_id,
                     "status": r.status,
                     "field": r.field,
                     "actual_value": r.actual_value,
@@ -325,17 +352,62 @@ def _build_profile_data(applicant_orm) -> dict:
     return data
 
 
-def _compute_ruleset_hash(program_id: str, rules: list[Rule]) -> str:
-    """Compute a deterministic hash of the complete rule set used in an assessment.
+def _compute_ruleset_hash(program_id: str, rules) -> str:
+    """Compute a deterministic hash of the exact rule-version set used in an assessment.
 
-    This fingerprint lets you say: "Assessment A used SKILLED_189_RULESET_<hash>".
-    If any rule version changes, the hash changes.
+    Accepts a list of ``(rule_id, version_number)`` tuples OR a list of ``phase3.models.Rule``
+    dataclasses (both are used by callers/tests). If any rule version changes, the hash changes.
     """
-    rule_fingerprints = sorted(
-        [f"{r.rule_id}:v{r.version}" for r in rules]
-    )
+    def _fingerprints(rules):
+        for rule in rules:
+            if isinstance(rule, (tuple, list)):
+                rid, ver = rule
+            else:
+                rid, ver = rule.rule_id, rule.version
+            yield f"{rid}:v{ver}"
+
+    rule_fingerprints = sorted(_fingerprints(rules))
     payload = json.dumps({
         "program_id": program_id,
         "rules": rule_fingerprints,
     }, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _resolve_rule_versions(session, rules: list[Rule]) -> dict[str, tuple[int, int] | None]:
+    """Map each rule_id to its newest immutable ``rule_versions`` row ``(version_id,
+    version_number)``. Rules without any version row (e.g. ACTIVE rules seeded directly in
+    tests/legacy data) map to ``None`` so assessments degrade gracefully."""
+    resolved: dict[str, tuple[int, int] | None] = {}
+    for rule in rules:
+        row = session.execute(
+            select(RuleVersion.version_id, RuleVersion.version_number)
+            .where(RuleVersion.rule_id == rule.rule_id)
+            .order_by(RuleVersion.version_number.desc())
+            .limit(1)
+        ).first()
+        resolved[rule.rule_id] = (row[0], row[1]) if row is not None else None
+    return resolved
+
+
+def _acquire_ruleset(session, program_id: str,
+                     resolved: dict[str, tuple[int, int] | None]) -> tuple[str | None, str | None]:
+    """Create-or-reuse the immutable RELEASED ruleset for the resolved rule-version set.
+    Idempotent by (program_id, content_hash). Returns ``(ruleset_id, content_hash)`` or
+    ``(None, None)`` when not every rule resolves to a version row."""
+    if any(v is None for v in resolved.values()):
+        return None, None
+    pairs = [(rule_id, resolved[rule_id][1]) for rule_id in resolved]
+    content_hash = _compute_ruleset_hash(program_id, pairs)
+
+    repo = RulesetRepo(session)
+    existing = repo.get_by_hash(program_id, content_hash)
+    if existing is not None:
+        return existing.ruleset_id, content_hash
+
+    ruleset = repo.create(program_id, content_hash)
+    for position, rule_id in enumerate(sorted(rule_id for rule_id, _ in pairs)):
+        repo.add_rule(ruleset.ruleset_id, resolved[rule_id][0], position)
+    session.flush()
+    ruleset.rule_count = len(pairs)
+    return ruleset.ruleset_id, content_hash

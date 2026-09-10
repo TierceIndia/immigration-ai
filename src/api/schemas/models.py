@@ -83,6 +83,7 @@ class RuleResultResponse(BaseModel):
     result_id: str
     rule_id: str
     rule_version: int
+    rule_version_id: int | None = None
     status: str
     field: str | None = None
     actual_value: str | None = None
@@ -117,6 +118,7 @@ class AssessmentResponse(BaseModel):
     evaluated_at: datetime | None = None
     applicant_snapshot: dict[str, Any] | None = None
     ruleset_hash: str | None = None
+    ruleset_id: str | None = None
     rule_results: list[RuleResultResponse] = []
     gaps: list[GapResponse] = []
 
