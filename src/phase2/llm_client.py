@@ -1,23 +1,37 @@
 """LLM client abstraction for requirement extraction.
 
+PRODUCTION POLICY — OpenAI and Gemini are the supported providers.
+
+The production extraction factory (`get_client` / `create_llm_client`) resolves to
+`OpenAILLMClient` or `GeminiLLMClient` based on the configured model name, and FAILS
+FAST when the configuration is invalid:
+
+- `EXTRACTION_MODEL` unset -> default `gpt-4o-mini`.
+- Missing API key for the resolved provider (`OPENAI_API_KEY` / `GEMINI_API_KEY`) ->
+  RuntimeError. There is NO silent fallback to a mock or to another provider, and no
+  fake requirement is ever manufactured.
+- any unsupported model name (e.g. `claude-*`, or the test-only `mock-llm-v1`) -> ValueError.
+
 Implementations:
 
-- `MockLLMClient` - fully deterministic, no network call, used by every automated test and by
-  `run_extraction.py --dry-run` when no API key is configured. It applies a small set of
-  hand-written regex rules that mimic what a careful extraction model should do for common
-  eligibility phrasings. It exists so the rest of the pipeline (validation, evidence-checking,
-  normalization, dedup, persistence, review) can be built and tested end-to-end without needing
-  live model access, and so the "LLM contract tests" required by this phase can mock specific
-  response shapes (valid, invalid JSON, hallucinated evidence, etc.) deterministically.
+- `OpenAILLMClient` (gpt-4o-mini, gpt-4o, ...) - requires OPENAI_API_KEY. Uses JSON
+  response mode, temperature=0, exponential retries on 429/5xx with backoff, and routes
+  every call through the LLM governance layer (rate limiting, budget, provider-namespaced
+  response cache, usage/cost logging).
 
-- `OpenAILLMClient` (gpt-4o-mini, etc.) - requires OPENAI_API_KEY. Uses JSON response mode,
-  temperature=0, retries on 429/5xx with backoff.
+- `GeminiLLMClient` (gemini-flash-lite-latest, ...) - requires GEMINI_API_KEY (or
+  GOOGLE_API_KEY). Same governance wiring as OpenAILLMClient: rate limiting, budget,
+  provider-namespaced response cache, usage/cost logging, and retries on 429/5xx.
 
-- `GeminiLLMClient` (gemini-flash-lite-latest, etc.) - requires GEMINI_API_KEY. Uses JSON response
-  mode, temperature=0, retries on 429/5xx/timeout with backoff. Free-tier models work well for
-  requirement extraction with context_window=0 on self-contained section chunks.
+- `MockLLMClient` - TEST-ONLY deterministic double. Fully offline, no network call. It applies
+  a small set of hand-written regex rules that mimic what a careful extraction model should do
+  for common eligibility phrasings. It exists so the rest of the pipeline (validation,
+  evidence-checking, normalization, dedup, persistence, review) and the "LLM contract tests"
+  can run deterministically. It is NEVER returned by `get_client` and is never a production
+  default, CLI default, scheduler default, or fallback.
 
-- `AnthropicLLMClient` - legacy, requires ANTHROPIC_API_KEY. Retries handled by the SDK.
+- `AnthropicLLMClient` - retained for reference only; the production factory refuses it.
+  Use legacy checkouts if Anthropic provider support is ever restored.
 
 All implementations honor the same contract: given a JSON input context, return a raw string
 that should be JSON matching requirements.schema.json. The caller (requirement_extractor.py) is
@@ -32,9 +46,22 @@ from abc import ABC, abstractmethod
 
 import dotenv
 
-dotenv.load_dotenv()  # load OPENAI_API_KEY (or other keys) from .env if present
+from logging_config import get_logger
+
+logger = get_logger(__name__)
+
+# In TESTS, dotenv loading is suppressed so a developer's .env cannot leak
+# API keys into the hermetic suite (conftest strips them at module load).
+# TESTING=true is the pytest convention; normal scripts/CLI still load .env.
+if not os.environ.get("TESTING"):
+    dotenv.load_dotenv()  # load OPENAI_API_KEY from .env if present (prod/dev only)
 
 PROMPT_VERSION = "requirement_extraction_v2"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+OPENAI_PROVIDER = "openai"
+GEMINI_PROVIDER = "gemini"
+# Namespacing version for the requirement output contract (schema/requirements.schema.json).
+SCHEMA_VERSION = "requirements.schema.json@v1"
 
 
 def _get_prompt_path(visa_category: str | None = None) -> str:
@@ -68,12 +95,16 @@ class LLMClient(ABC):
 class MockLLMClient(LLMClient):
     """Deterministic rule-based stand-in for the LLM. Never invents a value it can't find a
     textual match for; returns UNKNOWN/None fields otherwise - same discipline the real prompt
-    demands. Used for tests and for --dry-run without credentials.
+    demands. TEST-ONLY: never returned by ``get_client`` and never a production default.
+
+    The optional ``model`` argument is accepted (and ignored) so the class can substitute
+    for the OpenAI-only ``get_client`` factory signature in unit tests without breaking
+    call sites that pass a model name.
     """
 
     model_name = "mock-llm-v1"
 
-    def __init__(self, visa_category: str | None = None):
+    def __init__(self, model: str | None = None, visa_category: str | None = None):
         self.visa_category = visa_category
         self._system_prompt = ""
 
@@ -402,28 +433,58 @@ class MockLLMClient(LLMClient):
 
 
 class OpenAILLMClient(LLMClient):
-    model_name = "gpt-4o-mini"
+    model_name = DEFAULT_OPENAI_MODEL
 
-    def __init__(self, api_key: str | None = None, model: str | None = None, visa_category: str | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None,
+                 visa_category: str | None = None, governance=None):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if model:
             self.model_name = model
+        if not self._is_openai_model(self.model_name):
+            raise ValueError(
+                f"Unsupported extraction model {self.model_name!r}: only OpenAI models "
+                "are supported (e.g. gpt-4o-mini, gpt-4o)."
+            )
         if not self.api_key:
             raise RuntimeError(
-                "OPENAI_API_KEY not set. Set the environment variable or pass api_key= "
-                "explicitly. (Never hardcode the key in source or seed files.)"
+                "OPENAI_API_KEY is required for real LLM extraction. Set the OPENAI_API_KEY "
+                "environment variable (or pass api_key= explicitly). Never hardcode the key "
+                "in source or seed files; there is no silent fallback to a mock."
             )
+        self.visa_category = visa_category
+        if governance is None:
+            from llm_governance import LLMGovernance
+            governance = LLMGovernance()
+        self.governance = governance
+        self._gov_key = visa_category or "phase2-requirement-extraction"
         prompt_path = _get_prompt_path(visa_category)
         with open(prompt_path, "r", encoding="utf-8") as f:
             self._system_prompt = f.read()
 
-    def extract(self, input_context: dict) -> str:
+    @staticmethod
+    def _is_openai_model(model: str) -> bool:
+        return model.startswith(("gpt-", "o1", "o3", "o4", "chatgpt-", "ft:gpt-"))
+
+    def _messages(self, input_context: dict) -> list[dict]:
+        return [
+            {"role": "system", "content": self._system_prompt},
+            {"role": "user", "content": json.dumps(input_context, indent=2)},
+        ]
+
+    def _post_chat(self, messages: list[dict]) -> tuple[dict, int]:
+        """Call the OpenAI chat completions API with exponential backoff.
+
+        Retries only transient 429/5xx responses. Permanent configuration errors (4xx auth /
+        invalid model / invalid request) fail immediately and are never retried indefinitely.
+        Returns (parsed JSON body, retries_used).
+        """
         import time  # local import: only needed if this client is actually used
         import requests  # local import: only needed if this client is actually used
 
         max_retries = 3
-        backoff_seconds = [5, 15, 45]  # handles transient rate limits and server errors
+        backoff_seconds = [5, 15, 45]
         resp = None
+        retries = 0
         for attempt in range(max_retries + 1):
             resp = requests.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -436,10 +497,7 @@ class OpenAILLMClient(LLMClient):
                     "max_tokens": 2000,
                     "temperature": 0.0,
                     "response_format": {"type": "json_object"},
-                    "messages": [
-                        {"role": "system", "content": self._system_prompt},
-                        {"role": "user", "content": json.dumps(input_context, indent=2)},
-                    ],
+                    "messages": messages,
                 },
                 timeout=120,
             )
@@ -447,6 +505,7 @@ class OpenAILLMClient(LLMClient):
                 retry_after = resp.headers.get("Retry-After")
                 wait = float(retry_after) if retry_after else backoff_seconds[attempt]
                 time.sleep(min(wait, 60))
+                retries += 1
                 continue
             break
 
@@ -469,11 +528,71 @@ class OpenAILLMClient(LLMClient):
                 f"Model: {self.model_name}. Transient - re-run later."
             )
         resp.raise_for_status()
-        data = resp.json()
+        return resp.json(), retries
+
+    def extract(self, input_context: dict) -> str:
+        import time  # local import: only needed if this client is actually used
+
+        messages = self._messages(input_context)
+        gate = self.governance.pre_request(
+            key=self._gov_key, model=self.model_name, messages=messages,
+            prompt_version=PROMPT_VERSION, schema_version=SCHEMA_VERSION, temperature=0.0,
+            provider=OPENAI_PROVIDER,
+        )
+        if gate.get("blocked"):
+            raise RuntimeError(
+                f"OpenAI extraction blocked by LLM governance "
+                f"({gate.get('reason')}). Model: {self.model_name}."
+            )
+        if gate.get("cached"):
+            logger.info(
+                "OpenAI extraction served from governance cache",
+                extra={"model": self.model_name, "provider": OPENAI_PROVIDER,
+                       "prompt_version": PROMPT_VERSION},
+            )
+            return gate["cached_response"]
+
+        start = time.perf_counter()
+        try:
+            data, retries = self._post_chat(messages)
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - start) * 1000.0
+            self.governance.post_request(
+                key=self._gov_key, model=self.model_name, messages=messages, response=None,
+                tokens_in=0, tokens_out=0, latency_ms=latency_ms, retries=0,
+                error=f"{exc.__class__.__name__}: {exc}",
+                prompt_version=PROMPT_VERSION, schema_version=SCHEMA_VERSION,
+                temperature=0.0, provider=OPENAI_PROVIDER,
+            )
+            raise
+
+        latency_ms = (time.perf_counter() - start) * 1000.0
+        usage = data.get("usage") or {}
+        tokens_in = int(usage.get("prompt_tokens", 0) or 0)
+        tokens_out = int(usage.get("completion_tokens", 0) or 0)
+
         choices = data.get("choices", [])
-        if choices:
-            return choices[0]["message"]["content"]
-        return ""
+        content = choices[0]["message"]["content"] if choices else ""
+        if not content or not content.strip():
+            raise RuntimeError(
+                f"OpenAI returned an empty extraction response. Model: {self.model_name}. "
+                "The extraction failed safely; no requirement was manufactured."
+            )
+
+        self.governance.post_request(
+            key=self._gov_key, model=self.model_name, messages=messages, response=content,
+            tokens_in=tokens_in, tokens_out=tokens_out, latency_ms=latency_ms, retries=retries,
+            prompt_version=PROMPT_VERSION, schema_version=SCHEMA_VERSION,
+            temperature=0.0, provider=OPENAI_PROVIDER,
+        )
+        logger.info(
+            "OpenAI extraction request completed",
+            extra={"model": self.model_name, "provider": OPENAI_PROVIDER,
+                   "prompt_version": PROMPT_VERSION, "tokens_in": tokens_in,
+                   "tokens_out": tokens_out, "latency_ms": round(latency_ms, 1),
+                   "retries": retries},
+        )
+        return content
 
 
 class AnthropicLLMClient(LLMClient):
@@ -509,20 +628,40 @@ class AnthropicLLMClient(LLMClient):
 class GeminiLLMClient(LLMClient):
     model_name = "gemini-flash-lite-latest"
 
-    def __init__(self, api_key: str | None = None, model: str | None = None, visa_category: str | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None,
+                 visa_category: str | None = None, governance=None):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if model:
             self.model_name = model
+        if not self._is_gemini_model(self.model_name):
+            raise ValueError(
+                f"Unsupported extraction model {self.model_name!r}: GeminiLLMClient only "
+                "supports Gemini models (e.g. gemini-flash-lite-latest, gemini-1.5-pro)."
+            )
         if not self.api_key:
             raise RuntimeError(
                 "GEMINI_API_KEY not set. Set the environment variable (or .env) or pass api_key= "
                 "explicitly. (Never hardcode the key in source or seed files.)"
             )
+        self.visa_category = visa_category
+        if governance is None:
+            from llm_governance import LLMGovernance
+            governance = LLMGovernance()
+        self.governance = governance
+        self._gov_key = visa_category or "phase2-requirement-extraction"
         prompt_path = _get_prompt_path(visa_category)
         with open(prompt_path, "r", encoding="utf-8") as f:
             self._system_prompt = f.read()
 
-    def extract(self, input_context: dict) -> str:
+    @staticmethod
+    def _is_gemini_model(model: str) -> bool:
+        return model.startswith("gemini-")
+
+    def _call_gemini(self, input_context: dict) -> tuple[str, int, int, int]:
+        """Call the Gemini API with exponential backoff.
+
+        Returns (raw text response, tokens_in, tokens_out, retries_used).
+        """
         import time  # local import: only needed if this client is actually used
         import requests  # local import: only needed if this client is actually used
 
@@ -541,6 +680,7 @@ class GeminiLLMClient(LLMClient):
         max_retries = 3
         backoff_seconds = [5, 15, 45]
         resp = None
+        retries = 0
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -549,6 +689,7 @@ class GeminiLLMClient(LLMClient):
                 last_exc = exc
                 if attempt < max_retries:
                     time.sleep(backoff_seconds[attempt])
+                    retries += 1
                     continue
                 raise RuntimeError(
                     f"Gemini API unreachable after retries ({exc.__class__.__name__}). "
@@ -559,6 +700,7 @@ class GeminiLLMClient(LLMClient):
                 retry_after = resp.headers.get("Retry-After")
                 wait = float(retry_after) if retry_after else backoff_seconds[attempt]
                 time.sleep(min(wait, 60))
+                retries += 1
                 continue
             break
         del last_exc
@@ -584,17 +726,108 @@ class GeminiLLMClient(LLMClient):
                 f"Raw: {json.dumps(data)[:300]}"
             )
         parts = candidates[0].get("content", {}).get("parts", [])
-        return "\n".join(p.get("text", "") for p in parts)
+        text = "\n".join(p.get("text", "") for p in parts)
+        usage = data.get("usageMetadata") or {}
+        tokens_in = int(usage.get("promptTokenCount", 0) or 0)
+        tokens_out = int(usage.get("candidatesTokenCount", 0) or 0)
+        return text, tokens_in, tokens_out, retries
+
+    def extract(self, input_context: dict) -> str:
+        import time  # local import: only needed if this client is actually used
+
+        messages = self._messages_for_cache(input_context)
+        gate = self.governance.pre_request(
+            key=self._gov_key, model=self.model_name, messages=messages,
+            prompt_version=PROMPT_VERSION, schema_version=SCHEMA_VERSION, temperature=0.0,
+            provider=GEMINI_PROVIDER,
+        )
+        if gate.get("blocked"):
+            raise RuntimeError(
+                f"Gemini extraction blocked by LLM governance "
+                f"({gate.get('reason')}). Model: {self.model_name}."
+            )
+        if gate.get("cached"):
+            logger.info(
+                "Gemini extraction served from governance cache",
+                extra={"model": self.model_name, "provider": GEMINI_PROVIDER,
+                       "prompt_version": PROMPT_VERSION},
+            )
+            return gate["cached_response"]
+
+        start = time.perf_counter()
+        try:
+            content, tokens_in, tokens_out, retries = self._call_gemini(input_context)
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - start) * 1000.0
+            self.governance.post_request(
+                key=self._gov_key, model=self.model_name, messages=messages, response=None,
+                tokens_in=0, tokens_out=0, latency_ms=latency_ms, retries=0,
+                error=f"{exc.__class__.__name__}: {exc}",
+                prompt_version=PROMPT_VERSION, schema_version=SCHEMA_VERSION,
+                temperature=0.0, provider=GEMINI_PROVIDER,
+            )
+            raise
+
+        latency_ms = (time.perf_counter() - start) * 1000.0
+        if not content or not content.strip():
+            raise RuntimeError(
+                f"Gemini returned an empty extraction response. Model: {self.model_name}. "
+                "The extraction failed safely; no requirement was manufactured."
+            )
+
+        self.governance.post_request(
+            key=self._gov_key, model=self.model_name, messages=messages, response=content,
+            tokens_in=tokens_in, tokens_out=tokens_out, latency_ms=latency_ms, retries=retries,
+            prompt_version=PROMPT_VERSION, schema_version=SCHEMA_VERSION,
+            temperature=0.0, provider=GEMINI_PROVIDER,
+        )
+        logger.info(
+            "Gemini extraction request completed",
+            extra={"model": self.model_name, "provider": GEMINI_PROVIDER,
+                   "prompt_version": PROMPT_VERSION, "tokens_in": tokens_in,
+                   "tokens_out": tokens_out, "latency_ms": round(latency_ms, 1),
+                   "retries": retries},
+        )
+        return content
+
+    def _messages_for_cache(self, input_context: dict) -> list[dict]:
+        """Shape Gemini's system+content into the same {role, content} form the
+        governance cache/rate-limit keying uses for OpenAI, so both providers hash
+        equivalently for the same (system prompt, input) pair."""
+        return [
+            {"role": "system", "content": self._system_prompt},
+            {"role": "user", "content": json.dumps(input_context, indent=2)},
+        ]
 
 
-def get_client(model: str, visa_category: str | None = None) -> LLMClient:
+def get_client(model: str | None = None, visa_category: str | None = None) -> LLMClient:
+    """Production factory — resolves to OpenAILLMClient or GeminiLLMClient.
+
+    Resolves `model` from the argument, then `EXTRACTION_MODEL`, falling back to
+    ``DEFAULT_OPENAI_MODEL``.  Any unsupported model (including the test-only
+    ``mock-llm-v1`` or an unsupported provider such as Anthropic) raises immediately
+    so that production never silently falls back to fake requirement output.  A
+    missing API key for the resolved provider also fails fast.
+    """
+    if model is None:
+        model = os.getenv("EXTRACTION_MODEL", DEFAULT_OPENAI_MODEL)
+
     if model == MockLLMClient.model_name:
-        return MockLLMClient(visa_category=visa_category)
-    if model.startswith("gemini"):
-        return GeminiLLMClient(model=model, visa_category=visa_category)
-    if model.startswith("claude"):
-        return AnthropicLLMClient(model=model, visa_category=visa_category)
-    if model.startswith("gpt-") or model.startswith("o") or model.startswith("chatgpt"):
+        raise ValueError(
+            "mock-llm-v1 is a test-only deterministic double and must not be selected "
+            "in production.  Set EXTRACTION_MODEL to a supported model "
+            "(e.g. EXTRACTION_MODEL=gpt-4o-mini or EXTRACTION_MODEL=gemini-flash-lite-latest)."
+        )
+    if OpenAILLMClient._is_openai_model(model):
         return OpenAILLMClient(model=model, visa_category=visa_category)
-    # Default fallback: OpenAI-compatible endpoint
-    return OpenAILLMClient(model=model, visa_category=visa_category)
+    if GeminiLLMClient._is_gemini_model(model):
+        return GeminiLLMClient(model=model, visa_category=visa_category)
+    raise ValueError(
+        f"Unsupported extraction model {model!r}.  Supported providers are OpenAI "
+        "(examples: gpt-4o-mini, gpt-4o, ft:gpt-4o-mini-...) and Gemini "
+        "(examples: gemini-flash-lite-latest, gemini-1.5-pro)."
+    )
+
+
+# Public alias: some callers import create_llm_client; both resolve identically.
+create_llm_client = get_client

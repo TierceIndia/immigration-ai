@@ -15,7 +15,10 @@ import os
 import dotenv
 
 # Load once, at import. Idempotent; does not override existing env vars.
-dotenv.load_dotenv()
+# In TESTS dotenv loading is suppressed so a developer's .env cannot leak
+# keys into the hermetic suite (conftest strips them at module load).
+if not os.environ.get("TESTING"):
+    dotenv.load_dotenv()
 
 # Convenience alias so the rest of the codebase can do `from config import getenv`.
 getenv = os.getenv

@@ -93,6 +93,7 @@ class TestLogin:
         assert "access_token" in data
         assert data["token_type"] == "bearer"
         assert data["expires_in"] > 0
+        assert data["role"] == "applicant"
 
     def test_login_wrong_password(self, client):
         client.post(
@@ -144,6 +145,16 @@ class TestMe:
         )
         assert resp.status_code == 401
 
+    def test_user_routes_require_authentication(self, client):
+        assert client.get("/api/v1/applicants").status_code == 401
+        assert client.get(
+            "/api/v1/assessments", params={"applicant_id": "missing"}
+        ).status_code == 401
+        assert client.post(
+            "/api/v1/assessments/evaluate",
+            json={"applicant_id": "missing", "program_id": "missing"},
+        ).status_code == 401
+
 
 # ---------------------------------------------------------------------------
 # Applicant ownership
@@ -166,3 +177,23 @@ class TestOwnership:
         resp = client.get("/api/v1/applicants", headers=auth_headers)
         assert resp.status_code == 200
         assert len(resp.json()) == 2
+
+    def test_user_cannot_access_another_users_applicant(self, client, auth_headers):
+        created = client.post(
+            "/api/v1/applicants", json={"age": 30}, headers=auth_headers
+        ).json()
+        other = client.post(
+            "/api/v1/auth/register",
+            json={"email": "other@example.com", "password": "secret123"},
+        ).json()
+        other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+        applicant_id = created["applicant_id"]
+
+        assert client.get(
+            f"/api/v1/applicants/{applicant_id}", headers=other_headers
+        ).status_code == 403
+        assert client.patch(
+            f"/api/v1/applicants/{applicant_id}",
+            json={"age": 31},
+            headers=other_headers,
+        ).status_code == 403

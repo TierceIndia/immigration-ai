@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "src" / "phase2"))
 
-from llm_client import PROMPT_VERSION, _get_prompt_path, get_client  # noqa: E402
+from llm_client import PROMPT_VERSION, MockLLMClient, _get_prompt_path  # noqa: E402
 from db import init_schema, get_connection  # noqa: E402
 
 PROMPTS_DIR = ROOT / "prompts"
@@ -80,9 +80,9 @@ def test_real_client_selects_seeded_prompt_by_category(monkeypatch):
     assert client._system_prompt == student_text
 
 
-def test_get_client_receives_visa_category():
-    """get_client forwards the visa_category to the mock client."""
-    client = get_client("mock-llm-v1", visa_category="WORK")
+def test_mock_client_receives_visa_category():
+    """A test double forwards the visa_category into prompt selection."""
+    client = MockLLMClient(visa_category="WORK")
     assert client.visa_category == "WORK"
 
 

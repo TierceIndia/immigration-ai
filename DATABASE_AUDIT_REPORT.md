@@ -6,6 +6,15 @@ Confidence is based on direct queries (`pg_constraint`, `pg_indexes`, `informati
 actual row counts) and code reads (`src/`, `tests/`), not on the stale DBSTRUCTURE.md the
 audit was originally written against.
 
+> **STATUS UPDATE — 2026-09-15** (this report is a historical snapshot of the audit work;
+> the findings below remain valid). Since publication: the suite has grown to **899 collected /
+> 897 passed / 2 skipped / 0 failures** (30 warnings — all the SQLite datetime deprecation
+> warning), the source registry now seeds **14 sources across all four visa categories**
+> (SKILLED / WORK / STUDENT / VISITOR), `POST /api/v1/admin/sync` was found and fixed to be
+> admin-gated (it was previously unauthenticated; every admin route was re-audited), and the
+> manual Playwright script was moved out of `tests/` so the suite no longer launches a browser
+> at collection. See `README.md` → "What works / what doesn't" for the authoritative status.
+
 Coverage:
 - 873-pass local suite before audit-hardening, **883 passed / 21 warnings** after adding 10
   new integrity tests (62s).

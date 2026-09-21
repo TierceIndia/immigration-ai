@@ -32,6 +32,18 @@ from phase3.models import Rule, RuleStatus, Provenance
 from pipeline_run_activation import (
     can_run_transition, validate_run_transition, RunStatus,
 )
+from fetcher import FetchResult, FetchStatus
+from hashing import sha256_bytes
+
+# Stable HTML + its real sha256 so sync_source's always-fetch path can be
+# mocked hermetically while fetch_document_and_store compares honest hashes.
+MOCK_HTML_V1 = (
+    b"<html><head><title>Skilled 189</title></head><body>"
+    b"<h1>Eligibility</h1>"
+    b"<p>Applicants must be under 45 years of age.</p>"
+    b"</body></html>"
+)
+MOCK_HASH_V1 = sha256_bytes(MOCK_HTML_V1)
 
 
 @pytest.fixture()
@@ -43,6 +55,18 @@ def engine():
     )
     Base.metadata.create_all(bind=eng)
     return eng
+
+
+def _mock_ok_fetch(monkeypatch):
+    """Patch fetcher.fetch to return stable HTML the sync path can re-fetch."""
+    def fetch(url, source_type=None, **kw):
+        return FetchResult(
+            url=url, status=FetchStatus.OK, http_status=200,
+            content_type="text/html", raw_bytes=MOCK_HTML_V1,
+            duration_ms=5, error=None,
+        )
+
+    monkeypatch.setattr("fetcher.fetch", fetch)
 
 
 @pytest.fixture()
@@ -343,21 +367,22 @@ class TestPipelineRunMetrics:
 # =========================================================================
 
 class TestFailureSafe:
-    def test_extraction_failure_keeps_old_active(self, session, repo):
+    def test_extraction_failure_keeps_old_active(self, session, repo, monkeypatch):
         """
         SCENARIO: Government changed but LLM extraction failed.
         Expected: Old ACTIVE rule stays ACTIVE, no new rule activated,
                   PipelineRun = FAILED or COMPLETED (no new rules).
         """
         _create_source(session)
-        doc = _create_document(session, "SRC-AU-189", "DOC-1", "hash-1")
+        _mock_ok_fetch(monkeypatch)
+        doc = _create_document(session, "SRC-AU-189", "DOC-AU-189", MOCK_HASH_V1)
 
         # Create and activate v1
         _create_approved_requirement(
             session, req_id="REQ-AGE-1", program_id="SKILLED_189",
             category="AGE", field="age", operator="LT", value=45,
             evidence_text="Under 45 years of age.",
-            document_id="DOC-1", chunk_id=100,
+            document_id="DOC-AU-189", chunk_id=100,
         )
         compile_approved_requirements(session, program_id="SKILLED_189")
         repo.validate_rule("RULE-REQ-AGE-1", actor="system")
@@ -373,10 +398,10 @@ class TestFailureSafe:
 
         # Set source last_hash so change detection works properly
         source = session.get(GovernmentSource, "SRC-AU-189")
-        source.last_hash = "hash-1"
+        source.last_hash = MOCK_HASH_V1
         session.flush()
 
-        # Simulate sync: source hasn't changed (same hash)
+        # Simulate sync: source re-fetched, content unchanged (same hash)
         from orchestration.government_sync import sync_source
         result = sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
         session.flush()
@@ -642,9 +667,10 @@ class TestFullLifecycleWithPipelineRun:
         assert loaded_run.rules_approved == 2
         assert loaded_run.rules_activated == 2
 
-    def test_partial_run_when_compilation_fails(self, session, repo):
+    def test_partial_run_when_compilation_fails(self, session, repo, monkeypatch):
         """When some requirements fail compilation, PipelineRun = PARTIAL."""
         _create_source(session)
+        _mock_ok_fetch(monkeypatch)
         doc = _create_document(session, "SRC-AU-189", "DOC-1", "hash-1")
 
         # Good requirement
@@ -701,17 +727,18 @@ class TestFullLifecycleWithPipelineRun:
 # =========================================================================
 
 class TestMultiLevelChangeDetection:
-    def test_change_detection_stored_in_run_metadata(self, session, repo):
+    def test_change_detection_stored_in_run_metadata(self, session, repo, monkeypatch):
         """Sync stores raw hash, requirement snapshot, and rule snapshot in metadata."""
         _create_source(session)
-        _create_document(session, "SRC-AU-189", "DOC-1", "hash-v1")
+        _mock_ok_fetch(monkeypatch)
+        _create_document(session, "SRC-AU-189", "DOC-AU-189", MOCK_HASH_V1)
 
         # Create an active rule first
         _create_approved_requirement(
             session, req_id="REQ-AGE", program_id="SKILLED_189",
             category="AGE", field="age", operator="LT", value=45,
             evidence_text="Under 45.",
-            document_id="DOC-1", chunk_id=100,
+            document_id="DOC-AU-189", chunk_id=100,
         )
         compile_approved_requirements(session, program_id="SKILLED_189")
         repo.validate_rule("RULE-REQ-AGE", actor="system")
@@ -719,7 +746,7 @@ class TestMultiLevelChangeDetection:
         repo.activate_rule("RULE-REQ-AGE", actor="system")
         session.flush()
 
-        # Set source hash so sync detects "changed"
+        # Set source hash so sync detects "changed" (stale last_hash vs fresh fetch)
         source = session.get(GovernmentSource, "SRC-AU-189")
         source.last_hash = "old-hash"
         session.flush()
@@ -736,9 +763,9 @@ class TestMultiLevelChangeDetection:
         cd = last_run.metadata_json.get("change_detection")
         assert cd is not None
 
-        # Raw level
+        # Raw level — previous hash before the fetch vs freshly fetched hash
         assert cd["raw"]["old_hash"] == "old-hash"
-        assert cd["raw"]["new_hash"] == "hash-v1"
+        assert cd["raw"]["new_hash"] == MOCK_HASH_V1
         assert cd["raw"]["changed"] is True
 
         # Requirement level
@@ -751,12 +778,13 @@ class TestMultiLevelChangeDetection:
         assert "active_after" in cd["rule"]
         assert "diff" in cd["rule"]
 
-    def test_unchanged_sync_no_change_detection(self, session, repo):
+    def test_unchanged_sync_no_change_detection(self, session, repo, monkeypatch):
         """Unchanged sync doesn't compute change detection (returns early)."""
         _create_source(session)
-        _create_document(session, "SRC-AU-189", "DOC-1", "hash-same")
+        _mock_ok_fetch(monkeypatch)
+        _create_document(session, "SRC-AU-189", "DOC-AU-189", MOCK_HASH_V1)
         source = session.get(GovernmentSource, "SRC-AU-189")
-        source.last_hash = "hash-same"
+        source.last_hash = MOCK_HASH_V1
         session.flush()
 
         from orchestration.government_sync import sync_source

@@ -15,19 +15,7 @@ class ApplicantService:
     def create(self, user_id: str, **kwargs) -> dict:
         profile = self._repo.create(user_id, **kwargs)
         logger.info("Applicant created", extra={"applicant_id": profile.applicant_id})
-        return {
-            "applicant_id": profile.applicant_id,
-            "user_id": profile.user_id,
-            "age": profile.age,
-            "english_level": profile.english_level,
-            "points": profile.points,
-            "occupation": profile.occupation,
-            "skills_assessment_status": profile.skills_assessment_status,
-            "health_status": profile.health_status,
-            "character_status": profile.character_status,
-            "has_regional_nomination": profile.has_regional_nomination,
-            "visa_subclass": profile.visa_subclass,
-        }
+        return self.get(profile.applicant_id)
 
     def get(self, applicant_id: str) -> dict | None:
         profile = self._repo.get(applicant_id)
@@ -56,9 +44,16 @@ class ApplicantService:
             {
                 "applicant_id": p.applicant_id,
                 "user_id": p.user_id,
+                "first_name": p.first_name,
+                "last_name": p.last_name,
                 "age": p.age,
                 "english_level": p.english_level,
                 "points": p.points,
+                "occupation": p.occupation,
+                "skills_assessment_status": p.skills_assessment_status,
+                "health_status": p.health_status,
+                "character_status": p.character_status,
+                "has_regional_nomination": p.has_regional_nomination,
                 "visa_subclass": p.visa_subclass,
                 "created_at": p.created_at,
             }

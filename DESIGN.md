@@ -54,7 +54,7 @@ No LLM. No rules. Pure data engineering.
 
 ### Source Registry
 
-9 verified government sources across 3 visa programs plus governing legislation.
+14 verified government sources across all four visa categories — SKILLED (189/190/491 + Migration Regulations), WORK (482 main + Skill Occupation List), STUDENT (500 main + CRICOS register), VISITOR (600 main) — covering 7 programs in total.
 
 ### Change Detection
 
@@ -75,7 +75,7 @@ document_chunks (Phase 1)
 chunk_selector.py       — recall-oriented candidate detection
         │
         ▼
-llm_client.py           — Mock (deterministic) or OpenAI/Gemini/Anthropic
+llm_client.py           — OpenAI only (production); MockLLMClient (unit tests only)
         │
         ▼
 requirement_validator.py — JSON Schema + logic consistency
@@ -111,7 +111,7 @@ Every extracted requirement must have `evidence_text` that is an exact substring
 Real gold datasets are organized **per visa category** under `data/gold/<category>/` and each is validated against its own prompt contract — enforcing **zero cross-category contamination** (a Student source is never scored with the Skilled contract).
 
 - **skilled/** — populated with real, verbatim gold: `skilled_189_real.json` (23 items) + `skilled_190_real.json` (6 items). The 189 dataset's 17 evidence strings are verified verbatim substrings; it also carries annotations for the 190 cross-source set.
-- **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items** (anti-hallucination: no fabricated `evidence_text`; live Home Affairs is HTTP 403-blocked to automated fetchers, see `SOURCE_REGISTRY_REPORT.md`).
+- **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items** (anti-hallucination: no fabricated `evidence_text`; plain-HTTP fetches of live Home Affairs are HTTP 403-blocked to automated fetchers, see `SOURCE_REGISTRY_REPORT.md`; the browser path `src/browser_fetcher.py` receives HTTP 200 with headless=False, so real capture is feasible but not yet executed).
 
 The integrity harness `src/phase2/category_gold.py` fingerprints each category's prompt contract and every gold dataset, and `tests/phase2/test_category_gold_harness.py` (12 tests) asserts the contamination-free + no-fabricated-evidence invariants hold.
 
@@ -295,10 +295,13 @@ def _load_requirement_dict(req: Requirement) -> dict:
 ```python
 sync_source(session, source_id, dry_run=False, trigger_type="ON_DEMAND") → SyncResult
 # Creates PipelineRun at start, updates on completion/failure
-# Steps: detect_change → compile rules → record_change
+# Steps: re-fetch (always) → classify fresh vs previous hash → compile rules
+#   dry_run = stored-state preview via detect_change, no network
 
 sync_all_sources(session, dry_run=False, trigger_type="ON_DEMAND") → [SyncResult]
 # Syncs all ACTIVE sources, one PipelineRun per source
+# SCHEDULED runs skip sources not yet due per crawl_frequency/last_checked_at;
+# MANUAL/ON_DEMAND always re-fetch
 ```
 
 Every sync execution tracked via `PipelineRun` (trigger_type: SCHEDULED/MANUAL/ON_DEMAND).
@@ -865,15 +868,17 @@ Government Source
 | test_db_models.py | 12 | ORM model constraints, relationships |
 | test_repositories.py | 10 | Repository CRUD, query filters |
 | test_logging.py | 17 | Structured logging, PII redaction |
-| test_api.py | 35 | API routes: health, applicants, assessments (real), middleware, G9 regression, G12 FK fixes |
-| test_auth.py | 11 | JWT, register/login, bcrypt, duplicate email |
+| test_api.py | 38 | API routes: health, applicants, assessments (real), middleware, G9 regression, G12 FK fixes, admin-sync auth (401/403/200) |
+| test_auth.py | 13 | JWT, register/login, bcrypt, duplicate email, role in token |
 | test_llm_governance.py | 30 | Rate limiter, cache, budget, retry |
-| test_security.py | 40 | JWT secrets, PII redaction, CORS, authorization, password security, token claims |
-| test_scheduler.py | 7 | APScheduler start/stop, manual sync trigger |
+| test_security.py | 44 | JWT secrets, PII redaction, CORS, authorization, password security, token claims |
+| test_scheduler.py | 28 | APScheduler start/stop, manual sync trigger, concurrent-sync lock |
 | test_pipeline_runs.py | 42 | PipelineRun model, repo CRUD, API endpoints, computed counters, orchestrator integration |
 | test_e2e_scenarios.py | 14 | Multi-program, multi-version, gap engine, evaluation, orchestration |
 
-### Total: 731 tests, all passing, 0 failures
+### Total: 899 collected — 897 passed / 2 skipped / 30 warnings, 0 failures (2026-09-15)
+
+(The table above is a representative subset; the complete per-file inventory lives in the README test suite summary.)
 
 ---
 
@@ -967,7 +972,7 @@ Government Source
 
 ### Strengths
 
-- 731/731 tests passing with comprehensive coverage
+- 899 collected / 897 passing (2 skipped) with comprehensive coverage
 - Strong domain separation (LLM extraction vs deterministic rules)
 - Complete provenance chain from rule to government URL
 - Structured logging with PII redaction
@@ -995,32 +1000,33 @@ Government Source
 | ~~No scheduler~~ | P1 | DONE | APScheduler with configurable interval, manual trigger endpoint |
 | ~~PostgreSQL verification~~ | P1 | DONE | ORM rule lifecycle + FK/NOT NULL verified against real PostgreSQL 2026-08-27 |
 | ~~No PipelineRun tracking~~ | P2 | DONE | Full audit trail: model, repo, API, orchestrator integration |
-| ~~No security test suite~~ | P2 | DONE | 40 tests covering auth, PII, CORS, passwords, authorization |
+| ~~No security test suite~~ | P2 | DONE | 44 tests covering auth, PII, CORS, passwords, authorization |
 | ~~Admin documents API~~ | P2 | DONE | Document versions, chunks, diffs for admin visibility |
 | ~~Admin knowledge-state endpoint~~ | P2 | DONE | Hierarchical country → category → program → sources tree |
 | ~~G9 lifespan testing bug~~ | P2 | DONE | TESTING env var guard prevents DB init in test mode |
 | ~~G10 UUID validation~~ | P2 | DONE | parse_uuid_or_404 helper on all UUID-based routes |
 | ~~G13 computed PipelineRun counters~~ | P2 | DONE | rules_validated/approved/activated computed at query time |
 | ~~G16/Phase 4 category prompts~~ | P2 | DONE | run_extraction.py derives visa_category → category prompt |
-| WORK/STUDENT/VISITOR sources | P3 | OPEN | Only SKILLED category has verified sources (9 sources) |
-| Live Home Affairs fetch | P3 | OPEN | HTTP 403 ACCESS_BLOCKED to automated fetchers; needs approved network/API |
+| ~~Admin-only enforcement on every admin endpoint~~ | P1 | DONE | 2026-09-15: `POST /api/v1/admin/sync` was unauthenticated — now gated via shared `require_admin`; all admin routes audited |
+| ~~Playwright collection crash~~ | P1 | DONE | 2026-09-15: manual browser script moved out of `tests/` into `scripts/` — pytest no longer launches a browser at collection |
+| WORK/STUDENT/VISITOR sources | P3 | DONE | 2026-09-15: registry extended to 14 sources across all four categories (482/500/600 mains + occupation list + CRICOS) |
+| Live Home Affairs fetch | P3 | PARTIAL | Plain-HTTP 403 ACCESS_BLOCKED; browser path (headless=False) proven 200 — capture not yet operationalized |
 | Real WORK/STUDENT/VISITOR gold data | P3 | OPEN | Gold dirs scaffolded with zero-item AWAITING_REAL_SOURCE placeholders (no fabricated evidence); skilled/ populated with real verbatim gold |
 | Multi-country deferred | P3 | OPEN | Australia only, NZ/Canada/etc. later |
 | 491 real-world coverage | P3 | OPEN | Partial real scenario validation |
 
-### Verification performed (2026-08-27)
+### Verification performed (2026-08-27; re-verified 2026-09-15)
 
-1. **731/731 tests pass** on SQLite.
+1. **899 collected / 897 passed / 2 skipped** on SQLite (0 failures, 30 SQLite datetime deprecation warnings).
 2. **Real PostgreSQL**: `docker compose up -d postgres` + `alembic upgrade head`, then full ORM pipeline Country → Program → Source → Document → Version → Chunk → Requirement → Rule (DRAFT → VALIDATED → APPROVED → ACTIVE). FK constraints and NOT NULL enforced correctly.
-3. **Live fetch**: Home Affairs returns 403 ACCESS_BLOCKED — the fetcher correctly classifies and records the block (failure-safe by design).
+3. **Live fetch**: Home Affairs returns 403 ACCESS_BLOCKED to the plain-HTTP fetcher — correctly classified, recorded, and source demoted (failure-safe by design); the Playwright browser path (`headless=False`) returns HTTP 200 on the same pages.
 4. **CLI Phase 1/2**: offline pipeline + phase2 run_extraction against DOC-AU-189-MAIN extract 6 validated requirements with category-aware prompt wiring.
 5. **Category-aware gold harness**: per-category dirs created; skilled gold (189 + 190, 29 items) migrated; work/student/visitor zero-item placeholders; integrity report clean (no contract violations, no cross-category leak).
 
 ### Next Milestones
 
-1. **WORK/STUDENT/VISITOR source registry** — Add verified government sources for all visa categories
-2. **Fill real gold datasets** for WORK/STUDENT/VISITOR categories (dirs scaffolded: `data/gold/{skilled,work,student,visitor}/`)
-3. **Approved/authenticated live fetch** of Home Affairs content
-4. **Multi-country support** (NZ, Canada, UK)
-5. **491 real-world scenario coverage**
-6. **RAG & Recommendations** — LLM explains rules, suggests pathways
+1. **Fill real gold datasets** for WORK/STUDENT/VISITOR categories (sources now registered; dirs scaffolded: `data/gold/{skilled,work,student,visitor}/`)
+2. **Operationalize live capture** of Home Affairs / CRICOS content via the browser path or official API
+3. **Multi-country support** (NZ, Canada, UK)
+4. **491 real-world scenario coverage**
+5. **RAG & Recommendations** — LLM explains rules, suggests pathways

@@ -35,7 +35,11 @@ def list_applicants(request: Request, user_id: str = Depends(get_current_user_id
 
 
 @router.get("/{applicant_id}", response_model=ApplicantResponse)
-def get_applicant(applicant_id: str, request: Request):
+def get_applicant(
+    applicant_id: str,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
     parse_uuid_or_404(applicant_id)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -43,15 +47,27 @@ def get_applicant(applicant_id: str, request: Request):
         result = svc.get(applicant_id)
         if not result:
             raise HTTPException(status_code=404, detail="Applicant not found")
+        if result["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Applicant access denied")
         return result
 
 
 @router.patch("/{applicant_id}", response_model=ApplicantResponse)
-def update_applicant(applicant_id: str, body: ApplicantUpdate, request: Request):
+def update_applicant(
+    applicant_id: str,
+    body: ApplicantUpdate,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
     parse_uuid_or_404(applicant_id)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         svc = ApplicantService(session)
+        existing = svc.get(applicant_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Applicant not found")
+        if existing["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Applicant access denied")
         result = svc.update(applicant_id, **body.model_dump(exclude_unset=True))
         if not result:
             raise HTTPException(status_code=404, detail="Applicant not found")

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import pytest
+from unittest.mock import patch
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -223,12 +224,13 @@ class TestApplicants:
             headers=headers,
         )
         applicant_id = create_resp.json()["applicant_id"]
-        resp = client.get(f"/api/v1/applicants/{applicant_id}")
+        resp = client.get(f"/api/v1/applicants/{applicant_id}", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["age"] == 30
 
     def test_get_applicant_not_found(self, client):
-        resp = client.get("/api/v1/applicants/nonexistent")
+        headers = self._auth_headers(client)
+        resp = client.get("/api/v1/applicants/nonexistent", headers=headers)
         assert resp.status_code == 404
 
     def test_update_applicant(self, client):
@@ -242,6 +244,7 @@ class TestApplicants:
         resp = client.patch(
             f"/api/v1/applicants/{applicant_id}",
             json={"age": 31, "english_level": "proficient"},
+            headers=headers,
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -249,7 +252,9 @@ class TestApplicants:
         assert data["english_level"] == "proficient"
 
     def test_update_applicant_not_found(self, client):
-        resp = client.patch("/api/v1/applicants/nonexistent", json={"age": 31})
+        headers = self._auth_headers(client)
+        resp = client.patch("/api/v1/applicants/nonexistent", json={"age": 31},
+                            headers=headers)
         assert resp.status_code == 404
 
     def test_create_applicant_minimal(self, client):
@@ -563,7 +568,7 @@ class TestAssessments:
         assert "No ACTIVE rules" in resp.json()["detail"]
 
     def test_create_assessment_applicant_not_found(self, client):
-        """Returns 400 when applicant doesn't exist."""
+        """Returns 404 when applicant doesn't exist (ownership check runs first)."""
         headers = self._auth_headers(client)
 
         # Seed rules
@@ -619,8 +624,8 @@ class TestAssessments:
             json={"applicant_id": "nonexistent", "program_id": "SKILLED_189"},
             headers=headers,
         )
-        assert resp.status_code == 400
-        assert "not found" in resp.json()["detail"]
+        assert resp.status_code == 404
+        assert "Applicant not found" in resp.json()["detail"]
 
     def test_get_assessment(self, client):
         """GET /assessments/{id} returns persisted assessment."""
@@ -636,7 +641,7 @@ class TestAssessments:
         assessment_id = create_resp.json()["assessment_id"]
 
         # Get
-        resp = client.get(f"/api/v1/assessments/{assessment_id}")
+        resp = client.get(f"/api/v1/assessments/{assessment_id}", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["assessment_id"] == assessment_id
@@ -657,6 +662,7 @@ class TestAssessments:
         resp = client.get(
             "/api/v1/assessments",
             params={"applicant_id": applicant_id},
+            headers=headers,
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -671,6 +677,7 @@ class TestAssessments:
         resp = client.post(
             "/api/v1/assessments/evaluate",
             json={"applicant_id": applicant_id, "program_id": "SKILLED_189"},
+            headers=headers,
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -899,7 +906,66 @@ class TestApplicantSnapshot:
             headers=headers,
         )
 
-        resp2 = client.get(f"/api/v1/assessments/{assessment_id1}")
+        resp2 = client.get(f"/api/v1/assessments/{assessment_id1}", headers=headers)
         assert resp2.status_code == 200
         snapshot2 = resp2.json()["applicant_snapshot"]
         assert snapshot2["age"] == 30
+
+
+# ---------------------------------------------------------------------------
+# Admin sync: POST /api/v1/admin/sync must be admin-gated (regression)
+# ---------------------------------------------------------------------------
+
+class TestAdminSyncAuth:
+    """POST /api/v1/admin/sync is admin-only.
+
+    Regression: the endpoint previously ran `trigger_sync_now` with no auth —
+    anyone could trigger a full government source sync. It must now require a
+    valid Bearer token (401) AND role="admin" (403 otherwise) before the sync
+    engine is reached (verified by mocking trigger_sync_now and asserting it is
+    never invoked on the rejected paths).
+    """
+
+    def _register_and_login(self, client, email):
+        client.post(
+            "/api/v1/auth/register",
+            json={"email": email, "password": "pass123", "full_name": "Sync Test"},
+        )
+        resp = client.post(
+            "/api/v1/auth/login",
+            json={"email": email, "password": "pass123"},
+        )
+        token = resp.json()["access_token"]
+        return {"Authorization": f"Bearer {token}"}
+
+    def _promote_to_admin(self, client, email):
+        from db.connection import get_session
+        from db.models import ApiUser
+        with get_session(client.app.state.db_engine) as s:
+            user = s.query(ApiUser).filter(ApiUser.email == email).first()
+            user.role = "admin"
+            s.commit()
+
+    def test_no_token_returns_401(self, client):
+        with patch("scheduler.trigger_sync_now") as mock_sync:
+            resp = client.post("/api/v1/admin/sync")
+            assert resp.status_code == 401
+        mock_sync.assert_not_called()
+
+    def test_non_admin_token_returns_403(self, client):
+        headers = self._register_and_login(client, "applicant-sync@example.com")
+        with patch("scheduler.trigger_sync_now") as mock_sync:
+            resp = client.post("/api/v1/admin/sync", headers=headers)
+            assert resp.status_code == 403
+            assert "Admin role required" in resp.json()["detail"]
+        mock_sync.assert_not_called()
+
+    def test_admin_token_returns_200_and_triggers_sync(self, client):
+        headers = self._register_and_login(client, "admin-sync@example.com")
+        self._promote_to_admin(client, "admin-sync@example.com")
+        with patch("scheduler.trigger_sync_now") as mock_sync:
+            mock_sync.return_value = {"status": "ok", "total_sources": 0}
+            resp = client.post("/api/v1/admin/sync", headers=headers)
+            assert resp.status_code == 200
+            assert resp.json() == {"status": "ok", "total_sources": 0}
+        mock_sync.assert_called_once()

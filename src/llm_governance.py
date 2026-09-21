@@ -72,8 +72,9 @@ class ResponseCache:
     @staticmethod
     def _key(model: str, messages: list[dict],
              prompt_version: str = "", schema_version: str = "",
-             temperature: float = 0.0) -> str:
+             temperature: float = 0.0, provider: str = "") -> str:
         raw = json.dumps({
+            "provider": provider,
             "model": model,
             "messages": messages,
             "prompt_version": prompt_version,
@@ -84,8 +85,8 @@ class ResponseCache:
 
     def get(self, model: str, messages: list[dict],
             prompt_version: str = "", schema_version: str = "",
-            temperature: float = 0.0) -> Any | None:
-        key = self._key(model, messages, prompt_version, schema_version, temperature)
+            temperature: float = 0.0, provider: str = "") -> Any | None:
+        key = self._key(model, messages, prompt_version, schema_version, temperature, provider)
         if key in self._cache:
             value, ts = self._cache[key]
             if time.monotonic() - ts < self.max_age:
@@ -95,8 +96,8 @@ class ResponseCache:
 
     def set(self, model: str, messages: list[dict], value: Any,
             prompt_version: str = "", schema_version: str = "",
-            temperature: float = 0.0) -> None:
-        key = self._key(model, messages, prompt_version, schema_version, temperature)
+            temperature: float = 0.0, provider: str = "") -> None:
+        key = self._key(model, messages, prompt_version, schema_version, temperature, provider)
         if len(self._cache) >= self.max_size:
             oldest = min(self._cache, key=lambda k: self._cache[k][1])
             del self._cache[oldest]
@@ -254,6 +255,7 @@ DEFAULT_PRICES = {
     "gpt-4o": {"input": 0.0025, "output": 0.01},
     "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
     "claude-sonnet-4-20250514": {"input": 0.003, "output": 0.015},
+    "gemini-flash-lite-latest": {"input": 0.0001, "output": 0.0004},
 }
 
 
@@ -285,12 +287,13 @@ class LLMGovernance:
                     messages: list[dict],
                     prompt_version: str = "",
                     schema_version: str = "",
-                    temperature: float = 0.0) -> dict[str, Any]:
+                    temperature: float = 0.0,
+                    provider: str = "") -> dict[str, Any]:
         """Check cache, rate limits, budget before making an LLM call.
         Returns metadata dict with {cached, cached_response, blocked, reason}.
         """
         # 1. Cache lookup
-        cached = self.cache.get(model, messages, prompt_version, schema_version, temperature)
+        cached = self.cache.get(model, messages, prompt_version, schema_version, temperature, provider=provider)
         if cached is not None:
             return {"cached": True, "cached_response": cached,
                     "blocked": False, "reason": None}
@@ -315,13 +318,14 @@ class LLMGovernance:
                      error: str | None = None,
                      prompt_version: str = "",
                      schema_version: str = "",
-                     temperature: float = 0.0) -> UsageMetrics:
+                     temperature: float = 0.0,
+                     provider: str = "") -> UsageMetrics:
         """Record usage, update cache and budget after an LLM call."""
         cost = estimate_cost(model, tokens_in, tokens_out)
         self.budget.record(key, tokens_in, tokens_out, cost)
 
         if error is None:
-            self.cache.set(model, messages, response, prompt_version, schema_version, temperature)
+            self.cache.set(model, messages, response, prompt_version, schema_version, temperature, provider=provider)
 
         entry = UsageMetrics(
             model=model, tokens_in=tokens_in, tokens_out=tokens_out,

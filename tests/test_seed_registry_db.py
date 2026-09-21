@@ -13,7 +13,7 @@ seed backend observable and safe:
     scripts) back into the legacy SQLite path.
   * database_info()/get_database_url() never leak the password.
 
-The real-PostgreSQL assertions (counts 1/7/9 + idempotency) are gated on PG
+The real-PostgreSQL assertions (counts 1/7/14 + idempotency) are gated on PG
 being reachable so the offline suite stays green when the container is down.
 """
 from __future__ import annotations
@@ -125,7 +125,7 @@ class TestExplicitSqliteOverride:
 class TestIdempotency:
     def test_legacy_sqlite_seed_is_idempotent(self, monkeypatch, tmp_path):
         """The legacy SQLite path (a real deployment backend used by the offline
-        scripts) must seed 1/7/9 exactly once across repeated calls."""
+        scripts) must seed 1/7/14 exactly once across repeated calls."""
         import db
 
         tmp_db = tmp_path / "immigration.db"
@@ -138,13 +138,13 @@ class TestIdempotency:
 
         result1 = seed_registry._seed_database(require_postgres=False)
         result2 = seed_registry._seed_database(require_postgres=False)
-        assert result1 == {"countries": 1, "programs": 7, "sources": 9}
+        assert result1 == {"countries": 1, "programs": 7, "sources": 14}
         assert result2 == result1
 
         import sqlite3
         raw = sqlite3.connect(str(tmp_db))
         for table, expect in [("countries", 1), ("immigration_programs", 7),
-                              ("government_sources", 9)]:
+                              ("government_sources", 14)]:
             n = raw.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             assert n == expect, f"{table}: expected {expect}, got {n}"
         raw.close()
@@ -165,7 +165,7 @@ class TestPostgresSeedCounts:
         with engine.connect() as conn:
             assert conn.execute(text("SELECT COUNT(*) FROM countries")).scalar() == 1
             assert conn.execute(text("SELECT COUNT(*) FROM immigration_programs")).scalar() == 7
-            assert conn.execute(text("SELECT COUNT(*) FROM government_sources")).scalar() == 9
+            assert conn.execute(text("SELECT COUNT(*) FROM government_sources")).scalar() == 14
         engine.dispose()
 
     def test_seed_idempotent_on_postgres(self):
@@ -180,7 +180,7 @@ class TestPostgresSeedCounts:
         with engine.connect() as conn:
             assert conn.execute(text("SELECT COUNT(*) FROM countries")).scalar() == 1
             assert conn.execute(text("SELECT COUNT(*) FROM immigration_programs")).scalar() == 7
-            assert conn.execute(text("SELECT COUNT(*) FROM government_sources")).scalar() == 9
+            assert conn.execute(text("SELECT COUNT(*) FROM government_sources")).scalar() == 14
         engine.dispose()
 
 

@@ -14,7 +14,7 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(SRC / "phase2"))
 
-from llm_client import get_client  # noqa: E402
+from llm_client import MockLLMClient, OpenAILLMClient, get_client  # noqa: E402
 from requirement_extractor import extract_from_document  # noqa: E402
 
 REAL_CHUNKS_PATH = ROOT / "data" / "real_validation" / "skilled_189_real_chunks.json"
@@ -23,12 +23,24 @@ SOURCE_ID = "SRC-AU-189-MAIN"
 DOCUMENT_ID = "DOC-AU-189-MAIN"
 
 
+def _build_client(model: str):
+    """Route a model name to the right LLM client.
+
+    OpenAI model names resolve through the production factory; anything else
+    (including the test-only mock-llm-v1) resolves to the deterministic
+    MockLLMClient so the default offline evaluation never needs an API key.
+    """
+    if OpenAILLMClient._is_openai_model(model):
+        return get_client(model)
+    return MockLLMClient()
+
+
 def _run_extraction_with_real_chunks(model: str = "mock-llm-v1", context_window: int = 0):
     """Load frozen real chunks, persist to DB, run LLM extraction."""
     real_data = json.loads(REAL_CHUNKS_PATH.read_text(encoding="utf-8"))
     chunks = real_data["chunks"]
 
-    client = get_client(model)
+    client = _build_client(model)
     print(f"LLM model: {client.model_name}")
     outcomes = extract_from_document(
         source={"source_id": SOURCE_ID, "authority": "Department of Home Affairs", "program_id": "SKILLED_189"},

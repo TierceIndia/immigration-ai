@@ -12,7 +12,7 @@ _SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from logging_config import get_logger, set_request_context, setup_logging
@@ -164,6 +164,7 @@ async def request_id_middleware(request: Request, call_next):
 # Routes
 # ---------------------------------------------------------------------------
 from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs, admin_sources, admin_requirements, admin_documents, admin_knowledge, admin_schema  # noqa: E402
+from api.routes.auth import require_admin  # noqa: E402
 
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
@@ -179,7 +180,7 @@ app.include_router(admin_schema.router, prefix="/api/v1/admin/schema", tags=["ad
 
 
 @app.post("/api/v1/admin/sync", tags=["admin-sync"])
-def trigger_sync(request: Request):
+def trigger_sync(request: Request, current_user: dict = Depends(require_admin)):
     """Manually trigger government source sync (admin only)."""
     from db.connection import get_db_engine
     from scheduler import trigger_sync_now

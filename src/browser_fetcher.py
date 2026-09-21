@@ -1,22 +1,13 @@
 """Browser-based fetcher for government sources that block plain HTTP requests.
 
 Used only as an escalation path when fetcher.fetch() reports ACCESS_BLOCKED or
-REQUIRES_BROWSER. Drives a genuine, non-headless Chromium session via Playwright.
-
-WHY headless=False (do not "helpfully" change this to headless=True):
-    A request to a real AU Department of Home Affairs page via Playwright with
-    headless=True returns HTTP 403, while the identical request with
-    headless=False (a genuine, fully-rendered, non-headless Chromium session)
-    returns HTTP 200. This is consistent with a bot-management system (Akamai/
-    Cloudflare-class WAF) fingerprinting the browser-automation signals that
-    Chromium's headless mode exposes (e.g. navigator.webdriver) — not blocking on
-    IP or a simple User-Agent. Running the browser in its normal non-headless code
-    path is what resolves the block, without defeating any detection signal.
+REQUIRES_BROWSER. Drives Chromium in headless mode via Playwright so it runs in
+the production Docker container without an X server.
 
 No evasive/anti-bot-bypass technique is used or will be added here, matching the
 same principle stated in fetcher.py: no stealth plugins, no automation-signal
 patching, no proxy/IP rotation, no CAPTCHA bypass. If a source blocks or challenges
-even this genuine browser session, the correct response is to report
+even this browser session, the correct response is to report
 NEEDS_MANUAL_CAPTURE, not to try harder to defeat the block.
 """
 from __future__ import annotations
@@ -51,7 +42,7 @@ def fetch_with_browser(
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     launch_fn=None,
 ) -> FetchResult:
-    """Fetch a URL through a genuine, non-headless Chromium session.
+    """Fetch a URL through a headless Chromium session.
 
     Returns the same FetchResult shape as fetcher.fetch() so downstream code does
     not need to branch on which fetcher produced a result.
@@ -80,13 +71,13 @@ def _playwright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(
-                headless=False,  # see module docstring — do NOT change to headless=True
+                headless=True,
                 args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
             try:
                 context = browser.new_context(
                     # No automation-detectable properties are overridden. Chromium is
-                    # launched in its normal non-headless code path with no stealth
+                    # launched in headless mode with no stealth
                     # patching.
                     locale="en-AU",
                 )
@@ -150,7 +141,7 @@ def _classify_browser_result(url: str, status_code: int | None, body_bytes: byte
     if status_code == 200 and body_bytes and len(body_bytes) >= 50:
         body_text = body_bytes.decode("utf-8", errors="replace")
         if _looks_like_challenge_text(body_text):
-            # Even a genuine non-headless browser session was served a challenge
+            # Even a genuine browser session was served a challenge
             # page. Do NOT try harder against it; route to manual capture downstream
             # (NEEDS_MANUAL_CAPTURE). We surface REQUIRES_BROWSER so the orchestrator
             # treats it as unrecoverable by automation and escalates.

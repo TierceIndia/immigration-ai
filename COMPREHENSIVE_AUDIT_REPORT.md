@@ -4,6 +4,14 @@
 **Status**: 496 tests PASSING ✅ | No compilation errors | Production Status: NOT PRODUCTION-READY  
 **Prepared For**: Principal AI/ML Architect Review
 
+> **STATUS UPDATE — 2026-09-15** (this report is a historical snapshot of the full-system review;
+> its structural findings remain valid). Since publication the suite has grown to **899 collected /
+> 897 passed / 2 skipped / 0 failures** (30 warnings), the source registry now seeds **14 sources
+> across all four visa categories** (WORK / STUDENT / VISITOR added), `POST /api/v1/admin/sync`
+> was fixed to be admin-gated (was unauthenticated; all admin routes re-audited), and the manual
+> Playwright script was moved out of `tests/` so pytest no longer launches a browser during
+> collection. Current, authoritative status: `README.md` → "What works / what doesn't".
+
 ---
 
 ## EXECUTIVE SUMMARY

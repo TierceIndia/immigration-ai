@@ -405,9 +405,8 @@ def _acquire_ruleset(session, program_id: str,
     if existing is not None:
         return existing.ruleset_id, content_hash
 
-    ruleset = repo.create(program_id, content_hash)
+    ruleset = repo.create(program_id, content_hash, rule_count=len(pairs))
     for position, rule_id in enumerate(sorted(rule_id for rule_id, _ in pairs)):
         repo.add_rule(ruleset.ruleset_id, resolved[rule_id][0], position)
     session.flush()
-    ruleset.rule_count = len(pairs)
     return ruleset.ruleset_id, content_hash

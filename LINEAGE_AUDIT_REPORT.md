@@ -3,6 +3,14 @@
 **Report Date**: September 8, 2026
 **Status**: ✅ 873 tests PASSING | Live PostgreSQL migrated to `f7a6d5c4b3a2` | 11/11 live-schema smoke probes PASS
 
+> **STATUS UPDATE — 2026-09-15** (this report is a historical snapshot of the lineage/immutability
+> hardening; its findings remain valid). Since publication the suite has grown to **899 collected /
+> 897 passed / 2 skipped / 0 failures** (30 warnings), the source registry now seeds **14 sources
+> across all four visa categories**, `POST /api/v1/admin/sync` was fixed to be admin-gated (was
+> unauthenticated) and all admin routes re-audited, and the manual Playwright script was moved out
+> of `tests/` so pytest no longer launches a browser at collection. Current, authoritative status:
+> `README.md` → "What works / what doesn't".
+
 ---
 
 ## 1. Objective

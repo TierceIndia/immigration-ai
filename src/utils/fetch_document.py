@@ -9,8 +9,10 @@ This is the "real network" path that bootstraps a government source with no stor
                         └─ other failure ──────────┴─► FetchLog + source diagnostics
 
 After a successful fetch + store it runs the Phase-2 requirement extraction contract
-(``run_requirement_extraction``) so the human review queue gets populated the same way the
-legacy sqlite pipeline did — with ``mock-llm-v1`` by default (no network / no API key).
+(``run_requirement_extraction``) with the real extraction model.  The model is resolved
+via ``EXTRACTION_MODEL`` (defaulting to ``gpt-4o-mini``); the matching provider API key
+(OPENAI_API_KEY or GEMINI_API_KEY) must be set — there is no silent fallback to a mock
+or to any other provider.
 
 Everything here is ORM-driven on the session's transaction; Phase-2 persistence runs through
 ``db.conn.SqliteConn`` (a sqlite3-shaped shim over the same session) so legacy module code is
@@ -28,7 +30,10 @@ from typing import Any
 import dotenv
 import fetcher
 
-dotenv.load_dotenv()
+# In TESTS, dotenv loading is suppressed so a developer's .env cannot leak
+# keys into the hermetic suite (confest strips them at module load).
+if not os.environ.get("TESTING"):
+    dotenv.load_dotenv()
 from db.conn import SqliteConn
 from db.current_session import current_session
 from db.models import (
@@ -53,17 +58,18 @@ _BROWSER_ESCALATION_STATUSES = {
     fetcher.FetchStatus.ACCESS_BLOCKED,
     fetcher.FetchStatus.REQUIRES_BROWSER,
 }
-_DEFAULT_MODEL = "mock-llm-v1"
 
 
 def _extraction_model() -> str:
-    """Resolve the requirement-extraction model.
+    """Resolve the extraction model.
 
-    Honors EXTRACTION_MODEL from the environment (e.g. a real provider model such as
-    ``gemini-flash-lite-latest``) and falls back to the deterministic mock when unset, so
-    the fetch→store→extract path stays offline/credential-free by default.
+    Honors EXTRACTION_MODEL from the environment (e.g. ``gpt-4o-mini`` or
+    ``gemini-flash-lite-latest``) and falls back to ``gpt-4o-mini`` when unset.  A
+    missing API key for the resolved provider will fail fast when the client is
+    constructed — there is no silent fallback to a mock or to any other provider.
     """
-    return os.getenv("EXTRACTION_MODEL", _DEFAULT_MODEL)
+    from llm_client import DEFAULT_OPENAI_MODEL
+    return os.getenv("EXTRACTION_MODEL", DEFAULT_OPENAI_MODEL)
 
 # Phase-2 modules rely on flat imports against src/phase2.
 _PHASE2_DIR = Path(__file__).resolve().parent.parent / "phase2"
@@ -87,6 +93,7 @@ class FetchStoreOutcome:
     content_hash: str | None = None
     requirements_extracted: int = 0
     error: str | None = None
+    error_type: str | None = None  # machine-readable failure class
     demoted: str | None = None  # GovernmentSource.status set when the source was demoted
 
 
@@ -96,13 +103,21 @@ def _resolve_session(session_or_engine) -> Session:
     return current_session(session_or_engine)
 
 
-def _load_chunk_dicts(session: Session, document_id: str) -> list[dict[str, Any]]:
-    rows = (
-        session.query(DocumentChunk)
-        .filter(DocumentChunk.document_id == document_id)
-        .order_by(DocumentChunk.order_index)
-        .all()
-    )
+def _load_chunk_dicts(
+    session: Session, document_id: str, version_id: int | None = None
+) -> list[dict[str, Any]]:
+    """Load a document's chunks for extraction.
+
+    ``version_id`` scopes the load to exactly the document version being extracted.
+    Scoping matters on versioned documents: evidence must link a chunk to the
+    version that chunk actually belongs to (``fk_evidence_chunk_lineage``), so
+    re-extraction after a content change must only ever pair new-version chunks
+    with the new version.
+    """
+    q = session.query(DocumentChunk).filter(DocumentChunk.document_id == document_id)
+    if version_id is not None:
+        q = q.filter(DocumentChunk.version_id == version_id)
+    rows = q.order_by(DocumentChunk.order_index).all()
     return [
         {
             "chunk_id": c.chunk_id,
@@ -127,6 +142,7 @@ def _record_fetch_failure(
     source.fetch_status = fetch_result.status.value
     source.http_status = fetch_result.http_status
     source.last_error = fetch_result.error
+    source.last_error_type = fetch_result.error_type
     source.consecutive_failures = (source.consecutive_failures or 0) + 1
 
     session.add(
@@ -139,6 +155,7 @@ def _record_fetch_failure(
             changed=0,
             duration_ms=fetch_result.duration_ms,
             error=fetch_result.error,
+            error_type=fetch_result.error_type,
         )
     )
     session.flush()
@@ -147,6 +164,7 @@ def _record_fetch_failure(
         extra={
             "source_id": source.source_id,
             "fetch_status": fetch_result.status.value,
+            "error_type": fetch_result.error_type,
             "http_status": fetch_result.http_status,
             "error": fetch_result.error,
         },
@@ -155,6 +173,7 @@ def _record_fetch_failure(
         source_id=source.source_id,
         status=fetch_result.status.value,
         error=fetch_result.error,
+        error_type=fetch_result.error_type,
         demoted=demoted,
     )
 
@@ -164,16 +183,33 @@ def run_requirement_extraction(
 ) -> dict[str, Any]:
     """Run the Phase-2 requirement-extraction contract for a freshly stored document.
 
-    Creates one ``extraction_runs`` row (``mock-llm-v1`` by default), executes the
-    requirement contract over the document's chunks, and persists results through the legacy
-    Phase-2 repository. Returns the counters dict (same shape as ``run_extraction.py``).
+    Creates one ``extraction_runs`` row for the configured model (via
+    ``EXTRACTION_MODEL``, defaulting to ``gpt-4o-mini``), executes the requirement
+    contract over the document's chunks, and persists results through the legacy
+    Phase-2 repository.  A missing API key for the resolved provider (OPENAI_API_KEY
+    or GEMINI_API_KEY) will cause a hard failure; there is no silent fallback to a
+    mock or to any other provider.
+    Returns the counters dict (same shape as ``run_extraction.py``).
     """
     session = _resolve_session(session_or_engine)
     session.flush()
     doc = session.get(GovernmentDocument, document_id)
     if doc is None:
         return {"document_id": document_id, "status": "DOCUMENT_NOT_FOUND"}
-    chunks = _load_chunk_dicts(session, document_id)
+
+    dv = (
+        session.query(DocumentVersion)
+        .filter(
+            DocumentVersion.document_id == document_id,
+            DocumentVersion.version_number == version_number,
+        )
+        .order_by(DocumentVersion.version_id.desc())
+        .first()
+    )
+    if dv is None:
+        return {"document_id": document_id, "status": "NO_VERSION"}
+
+    chunks = _load_chunk_dicts(session, document_id, version_id=dv.version_id)
     if not chunks:
         return {"document_id": document_id, "status": "NO_CHUNKS"}
 
@@ -209,7 +245,6 @@ def run_requirement_extraction(
     session.flush()
     run_id = run.run_id
     conn.commit()
-    client = get_client(model_name, visa_category=source.visa_category)
     source_ctx = {
         "source_id": source.source_id,
         "authority": source.authority,
@@ -223,6 +258,7 @@ def run_requirement_extraction(
     }
 
     try:
+        client = get_client(model_name, visa_category=source.visa_category)
         outcomes = extract_from_document(
             source=source_ctx,
             document=document_ctx,
@@ -391,6 +427,7 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
     source.fetch_status = "OK"
     source.http_status = fetch_result.http_status
     source.last_error = None
+    source.last_error_type = None
     source.consecutive_failures = 0
 
     if change_type != "UNCHANGED":

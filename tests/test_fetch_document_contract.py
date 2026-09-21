@@ -2,8 +2,12 @@
 
 Verifies the Phase-2 extraction contract:
 * ExtractionRun row is created with correct model/status/counters.
-* Requirements are persisted via the mock LLM when chunks contain extractable text.
+* Requirements are persisted when chunks contain extractable text.
 * Empty chunks / missing document return well-defined error dicts.
+
+The deterministic MockLLMClient is injected by tests/conftest.py, so no real
+LLM call or OPENAI_API_KEY is involved; the run row still records the resolved
+OpenAI default model (gpt-4o-mini).
 """
 from __future__ import annotations
 
@@ -131,11 +135,11 @@ class TestRunRequirementExtractionWithMockLLM:
 
         assert result["status"] == "COMPLETED"
         assert result["requirements_extracted"] >= 1
-        assert result["model"] == "mock-llm-v1"
+        assert result["model"] == "gpt-4o-mini"
 
         run = session.query(ExtractionRun).filter_by(document_id="DOC-AU-189").one()
         assert run.status == "COMPLETED"
-        assert run.model == "mock-llm-v1"
+        assert run.model == "gpt-4o-mini"
         assert run.chunks_seen >= 2
         assert run.requirements_extracted >= 1
 

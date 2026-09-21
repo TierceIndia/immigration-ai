@@ -37,7 +37,10 @@ from bs4 import BeautifulSoup
 from db.repositories import DiscoveredSourceRepo, SourceRepo
 from fetcher import FetchResult, fetch as _default_fetch
 
-dotenv.load_dotenv()
+# In TESTS, dotenv loading is suppressed so a developer's .env cannot leak
+# keys into the hermetic suite (conftest strips them at module load).
+if not os.environ.get("TESTING"):
+    dotenv.load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Category-aware keyword lists (easy to find / edit; bitmap of which sub-pages are
@@ -350,12 +353,9 @@ def _apply_llm_second_opinion(candidates, suggested_category, report):
         from phase2.llm_client import get_client
         from llm_governance import LLMGovernance
 
-        # Only proceed with a REAL provider client (never the mock, which has no
-        # provider semantics) — otherwise skip LLM entirely.
-        client = get_client(_llm_model_name(), visa_category=(suggested_category or "").lower())
-        if getattr(client, "model_name", "mock-llm-v1") == "mock-llm-v1":
-            report["llm_second_opinion"] = "skipped (no real LLM client configured)"
-            return candidates
+        # get_client is OpenAI-only and fails fast on missing key / bad model —
+        # so reaching this line means a real provider client is available.
+        client = get_client(visa_category=(suggested_category or "").lower())
     except Exception as e:  # noqa: BLE001 - graceful degradation is the contract
         report["llm_second_opinion"] = f"skipped (LLM unavailable: {e})"
         return candidates
@@ -395,10 +395,6 @@ def _apply_llm_second_opinion(candidates, suggested_category, report):
             report["llm_second_opinion"] = "partial error; kept keyword results"
             continue
     return candidates
-
-
-def _llm_model_name() -> str:
-    return os.environ.get("SOURCE_DISCOVERY_LLM_MODEL", "gpt-4o-mini")
 
 
 def _discovery_budget():

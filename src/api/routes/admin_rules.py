@@ -212,6 +212,7 @@ def get_rule(
     current_user: dict = Depends(get_current_user),
 ):
     """Get a single rule by ID."""
+    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)

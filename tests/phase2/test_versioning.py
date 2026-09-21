@@ -21,7 +21,7 @@ sys.path.insert(0, str(SRC / "phase2"))
 import db as dbmod  # noqa: E402
 from seed_registry import main as seed_main  # noqa: E402
 from pipeline import run_pipeline  # noqa: E402
-from llm_client import get_client  # noqa: E402
+from llm_client import MockLLMClient  # noqa: E402
 from requirement_extractor import extract_from_document  # noqa: E402
 from requirement_repository import complete_extraction_run, create_extraction_run, persist_requirement  # noqa: E402
 
@@ -42,7 +42,7 @@ def _extract_and_persist(conn, document_id, model="mock-llm-v1"):
         "SELECT * FROM document_chunks WHERE document_id = ? AND version_id = ? ORDER BY order_index",
         (document_id, version_row["version_id"]),
     ).fetchall()]
-    client = get_client(model)
+    client = MockLLMClient()
     run_id = create_extraction_run(conn, document_id, version, model, "requirement_extraction_v1", False)
     outcomes = extract_from_document(
         source={"source_id": doc["source_id"], "authority": "Test", "program_id": doc["program_id"]},

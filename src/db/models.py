@@ -109,6 +109,7 @@ class GovernmentSource(Base, TimestampMixin):
     fetch_status = Column(String(32), nullable=True)
     http_status = Column(Integer, nullable=True)
     last_error = Column(Text, nullable=True)
+    last_error_type = Column(String(64), nullable=True)  # dns_resolution_failure / connect_timeout / ...
     consecutive_failures = Column(Integer, nullable=False, default=0)
 
     __table_args__ = (
@@ -266,6 +267,7 @@ class FetchLog(Base):
     changed = Column(SmallInteger, nullable=False, default=0)
     duration_ms = Column(Integer)
     error = Column(Text)
+    error_type = Column(String(64))  # machine-readable failure class from fetcher
 
     __table_args__ = (
         Index("idx_fetchlog_source", "source_id", "fetched_at"),
@@ -550,8 +552,11 @@ class Ruleset(Base, TimestampMixin):
     )
 
 
-class RulesetRule(Base, TimestampMixin):
-    """Member of an immutable ruleset: the exact rule_version, in a stable order."""
+class RulesetRule(Base):
+    """Member of an immutable ruleset: the exact rule_version, in a stable order.
+
+    No TimestampMixin — the real ruleset_rules table has no created_at/updated_at columns.
+    """
     __tablename__ = "ruleset_rules"
     ruleset_id = Column(String(36), ForeignKey("rulesets.ruleset_id"), nullable=False, primary_key=True)
     rule_version_id = Column(Integer, ForeignKey("rule_versions.version_id"), nullable=False, primary_key=True)

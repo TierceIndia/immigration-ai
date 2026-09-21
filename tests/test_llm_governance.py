@@ -81,6 +81,15 @@ class TestResponseCache:
         c.set("gpt-4o", msgs, "r1")
         assert c.get("gpt-4o-mini", msgs) is None
 
+    def test_provider_namespaces_key(self):
+        c = ResponseCache()
+        msgs = [{"role": "user", "content": "hi"}]
+        c.set("gpt-4o", msgs, "openai_response", provider="openai")
+        # Same model + messages but different/absent provider -> distinct key.
+        assert c.get("gpt-4o", msgs) is None
+        assert c.get("gpt-4o", msgs, provider="openai") == "openai_response"
+        assert c.get("gpt-4o", msgs, provider="gemini") is None
+
     def test_expiry(self):
         c = ResponseCache(max_age_seconds=0)
         msgs = [{"role": "user", "content": "hi"}]
@@ -204,6 +213,17 @@ class TestLLMGovernance:
         result = gov.pre_request("user1", "gpt-4o", msgs)
         assert result["cached"] is True
         assert result["blocked"] is False
+
+    def test_pre_request_provider_passthrough(self):
+        gov = LLMGovernance(cache=ResponseCache())
+        msgs = [{"role": "user", "content": "hello"}]
+        gov.cache.set("gpt-4o", msgs, "cached_response", provider="openai")
+        # Same inputs but a different provider must NOT hit the openai cache entry.
+        miss = gov.pre_request("user1", "gpt-4o", msgs, provider="gemini")
+        assert miss["cached"] is False
+        hit = gov.pre_request("user1", "gpt-4o", msgs, provider="openai")
+        assert hit["cached"] is True
+        assert hit["cached_response"] == "cached_response"
 
     def test_rate_limit_blocks(self):
         gov = LLMGovernance(

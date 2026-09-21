@@ -14,6 +14,7 @@ identified HTTP GET.
 """
 from __future__ import annotations
 
+import socket
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -56,10 +57,39 @@ class FetchResult:
     raw_bytes: bytes | None
     duration_ms: int
     error: str | None
+    error_type: str | None = None  # machine-readable failure class, e.g. "dns_resolution_failure"
 
     @property
     def ok(self) -> bool:
         return self.status == FetchStatus.OK
+
+
+def _classify_exception(exc: BaseException) -> str:
+    """Map a requests transport exception to an explicit, machine-readable class.
+
+    All of these currently surface as ``FetchStatus.FETCH_FAILED``; ``error_type``
+    is what tells operations *which* kind of network failure actually occurred.
+    """
+    # DNS resolution failure: ConnectionError whose underlying cause is socket.gaierror
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        reason = getattr(getattr(exc, "args", [None])[0], "reason", None) or exc
+        if isinstance(reason, socket.gaierror):
+            return "dns_resolution_failure"
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return "connect_timeout"
+    if isinstance(exc, requests.exceptions.ReadTimeout):
+        return "read_timeout"
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "timeout"
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "tls_error"
+    if isinstance(exc, requests.exceptions.TooManyRedirects):
+        return "too_many_redirects"
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "connection_error"
+    if isinstance(exc, requests.exceptions.RequestException):
+        return "request_error"
+    return "unknown"
 
 
 def _looks_like_network_restriction(resp: requests.Response) -> bool:
@@ -134,8 +164,9 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
                 continue
             return FetchResult(
                 url=url, status=FetchStatus.FETCH_FAILED, http_status=None,
-                content_type=None, raw_bytes=None, duration_ms=duration_ms, error=last_error,
+                content_type=None, raw_bytes=None, duration_ms=duration_ms,
+                error=last_error, error_type=_classify_exception(e),
             )
     return FetchResult(url=url, status=FetchStatus.FETCH_FAILED, http_status=None,
                         content_type=None, raw_bytes=None, duration_ms=0,
-                        error=last_error or "unknown error")
+                        error=last_error or "unknown error", error_type="unknown")

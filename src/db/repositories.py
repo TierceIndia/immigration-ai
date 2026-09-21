@@ -390,14 +390,15 @@ class RulesetRepo:
         )
         return self._s.execute(stmt).scalars().first()
 
-    def create(self, program_id: str, content_hash: str, *, released_by: str = "system") -> Ruleset:
+    def create(self, program_id: str, content_hash: str, *, released_by: str = "system",
+               rule_count: int = 0) -> Ruleset:
         obj = Ruleset(
             ruleset_id=str(uuid.uuid4()),
             program_id=program_id,
             content_hash=content_hash,
             status="RELEASED",
             released_by=released_by,
-            rule_count=0,
+            rule_count=rule_count,
         )
         self._s.add(obj)
         self._s.flush()
@@ -613,8 +614,13 @@ class PipelineRunRepo:
         validate_run_transition(obj.status, new_status)
         obj.status = new_status
         obj.completed_at = datetime.now(timezone.utc)
-        if obj.started_at:
-            delta = obj.completed_at - obj.started_at
+        started_at = obj.started_at
+        # SQLite has no tz storage: a value reloaded after a session commit comes back
+        # naive, while completed_at is aware — normalize before subtracting.
+        if started_at is not None and started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        if started_at:
+            delta = obj.completed_at - started_at
             obj.duration_ms = int(delta.total_seconds() * 1000)
         if error is not None:
             existing = obj.errors or []

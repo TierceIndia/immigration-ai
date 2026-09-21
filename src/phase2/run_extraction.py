@@ -4,18 +4,20 @@ Usage:
     python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN
     python src/phase2/run_extraction.py --source-id SRC-AU-189-MAIN
     python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN --dry-run
-    python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN --model mock-llm-v1 --limit 5
+    python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN --model gpt-4o --limit 5
     python src/phase2/run_extraction.py --review --status NEEDS_REVIEW
     python src/phase2/run_extraction.py --review --approve REQ-SKILLED_189-abcd1234 --reviewer alice
     python src/phase2/run_extraction.py --review --reject REQ-SKILLED_189-abcd1234 --reviewer alice --notes "..."
 
-Without --model, defaults to 'mock-llm-v1' (no network/API key required). Pass
---model claude-sonnet-4-6 (with ANTHROPIC_API_KEY set) to use the real extractor.
+Without --model, resolves EXTRACTION_MODEL from the environment, falling back to
+gpt-4o-mini.  Missing OPENAI_API_KEY fails fast — there is no silent fallback to a mock
+and fake requirement output is never manufactured.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,7 +26,7 @@ sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from db import ROOT, init_schema  # noqa: E402
-from llm_client import PROMPT_VERSION, get_client  # noqa: E402
+from llm_client import PROMPT_VERSION, DEFAULT_OPENAI_MODEL, get_client  # noqa: E402
 from requirement_extractor import extract_from_document  # noqa: E402
 from requirement_repository import complete_extraction_run, create_extraction_run, persist_requirement  # noqa: E402
 import review as review_mod  # noqa: E402
@@ -69,15 +71,24 @@ def run_for_document(conn, document_id: str, model: str, dry_run: bool, limit: i
     # generic prompt if the category prompt is unavailable. This guarantees a Student source
     # never uses the Skilled extraction contract.
     visa_category = source_row["visa_category"] if source_row else doc.get("visa_category")
-    client = get_client(model, visa_category=visa_category)
     source_ctx = {"source_id": source_row["source_id"], "authority": source_row["authority"],
                   "program_id": doc["program_id"], "visa_category": visa_category}
     document_ctx = {"document_id": document_id, "version": version, "title": doc["title"]}
 
-    outcomes = extract_from_document(
-        source=source_ctx, document=document_ctx, all_chunks=chunks, llm_client=client,
-        context_window=context_window,
-    )
+    try:
+        client = get_client(model, visa_category=visa_category)
+        outcomes = extract_from_document(
+            source=source_ctx, document=document_ctx, all_chunks=chunks, llm_client=client,
+            context_window=context_window,
+        )
+    except Exception as exc:
+        # Fail-safe: a real extraction that raises must never be left as a
+        # dangling RUNNING run or silently downgraded to a mock/placeholder.
+        try:
+            complete_extraction_run(conn, run_id, {}, status="FAILED", error=str(exc))
+        except Exception:
+            pass
+        raise
     if limit:
         outcomes = outcomes[:limit]
 
@@ -145,7 +156,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 2 requirement extraction CLI.")
     parser.add_argument("--document-id")
     parser.add_argument("--source-id")
-    parser.add_argument("--model", default="mock-llm-v1")
+    parser.add_argument("--model", default=None,
+                        help="OpenAI extraction model (default: EXTRACTION_MODEL or gpt-4o-mini).")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--context-window", type=int, default=1)
@@ -180,7 +192,20 @@ def main() -> None:
     if not args.document_id and not args.source_id:
         parser.error("provide --document-id or --source-id (or --review)")
 
-    kwargs = dict(model=args.model, dry_run=args.dry_run, limit=args.limit,
+    model = args.model or os.getenv("EXTRACTION_MODEL", DEFAULT_OPENAI_MODEL)
+    from llm_client import MockLLMClient, OpenAILLMClient
+    if model == MockLLMClient.model_name:
+        parser.error(
+            "mock-llm-v1 is a test-only double and must not be used in production extraction. "
+            "Set EXTRACTION_MODEL to an OpenAI model (e.g. gpt-4o-mini) or pass --model."
+        )
+    if not OpenAILLMClient._is_openai_model(model):
+        parser.error(
+            f"Unsupported extraction model {model!r}. Only OpenAI models are supported "
+            "(examples: gpt-4o-mini, gpt-4o)."
+        )
+
+    kwargs = dict(model=model, dry_run=args.dry_run, limit=args.limit,
                    context_window=args.context_window)
     if args.document_id:
         report = run_for_document(conn, args.document_id, **kwargs)

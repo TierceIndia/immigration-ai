@@ -23,7 +23,7 @@ sys.path.insert(0, str(SRC / "phase2"))
 import db as dbmod  # noqa: E402
 from seed_registry import main as seed_main  # noqa: E402
 from pipeline import run_pipeline  # noqa: E402
-from llm_client import get_client  # noqa: E402
+from llm_client import MockLLMClient  # noqa: E402
 from requirement_extractor import extract_from_document  # noqa: E402
 
 GOLD_PATH = ROOT / "data" / "gold" / "requirements_gold.json"
@@ -56,7 +56,7 @@ def _run_extraction():
         (DOCUMENT_ID, version_row["version_id"]),
     ).fetchall()]
 
-    client = get_client("mock-llm-v1")
+    client = MockLLMClient()
     outcomes = extract_from_document(
         source={"source_id": SOURCE_ID, "authority": "Department of Home Affairs", "program_id": "SKILLED_189"},
         document={"document_id": DOCUMENT_ID, "version": doc["current_version"], "title": doc["title"]},

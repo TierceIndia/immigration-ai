@@ -183,6 +183,31 @@ class TestRegistrationKeepsApplicantRole:
 
 
 class TestAdminBearerAuthorization:
+    def test_promoted_admin_login_and_me_return_admin_role(self, client, db_engine):
+        promote_or_create(db_engine, "admin-me@example.com", "pw123456", "Admin")
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin-me@example.com", "password": "pw123456"},
+        )
+        assert login.status_code == 200
+        assert login.json()["role"] == "admin"
+
+        me = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+        )
+        assert me.status_code == 200
+        assert me.json()["role"] == "admin"
+
+    def test_admin_login_returns_admin_role(self, client, db_engine):
+        promote_or_create(db_engine, "admin-login@example.com", "pw123456", "Admin")
+        resp = client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin-login@example.com", "password": "pw123456"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["role"] == "admin"
+
     def test_admin_can_access_admin_endpoint(self, client, db_engine):
         promote_or_create(db_engine, "admin-sec@example.com", "pw123456", "Admin")
         token = _register(client, "admin-sec@example.com", "pw123456")
@@ -204,6 +229,17 @@ class TestAdminBearerAuthorization:
     def test_missing_token_gets_401(self, client):
         resp = client.get("/api/v1/admin/rules/queue")
         assert resp.status_code == 401
+
+    def test_non_admin_gets_403_on_get_rule_by_id(self, client):
+        # GET /admin/rules/{rule_id} previously skipped the _require_admin check
+        # that every sibling route in this file applies.
+        token = _register(client, "plain-user-rule@example.com")
+        resp = client.get(
+            "/api/v1/admin/rules/RULE-DOES-NOT-EXIST",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403
+        assert "admin" in resp.json()["detail"].lower()
 
     def test_reusable_require_admin_forged_admin_token(self, client):
         with patch.dict(os.environ, {"JWT_SECRET_KEY": "test-key"}):

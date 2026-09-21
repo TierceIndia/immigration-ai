@@ -1,10 +1,11 @@
 """Government sync orchestrator — end-to-end pipeline from source to ACTIVE rules.
 
 Pipeline:
-    1. Load source + document metadata
-    2. Detect change (hash comparison)
-    3. If changed: compile approved requirements → DRAFT rules
-    4. Record the change
+    1. Real fetch every due source (no stored-hash short-circuit)
+    2. Classify change: freshly fetched hash vs previously known hash
+       (source.last_hash captured BEFORE the fetch)
+    3. INITIAL/CHANGED → compile approved requirements → DRAFT rules
+    4. source.last_hash / last_checked_at updated on every successful fetch
 
 Every sync execution is tracked via PipelineRun for audit trail.
 
@@ -13,25 +14,32 @@ Failure-safe invariant:
     new rules are NOT activated, PipelineRun = FAILED | PARTIAL.
 
 Multi-level change detection (for reviewer visibility):
-    Level 1 — RAW:       source last_hash vs document content_hash
+    Level 1 — RAW:       source last_hash vs freshly fetched content hash
     Level 2 — DOCUMENT:  old document version vs new document version
     Level 3 — REQUIREMENT: old requirement fields vs new requirement fields
     Level 4 — RULE:      old rule data vs new rule data
     Stored in PipelineRun.metadata_json["change_detection"].
+
+crawl_frequency gating:
+    Scheduled syncs (trigger_type="SCHEDULED") skip ACTIVE sources that were
+    checked more recently than their crawl frequency. Manual/ON_DEMAND syncs
+    always re-fetch. Sources with no stored document are always due so a failed
+    or never-bootstrapped source keeps getting retried.
 """
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from db.models import (
     GovernmentSource, GovernmentDocument, DocumentVersion,
-    DocumentChunk, Requirement,
+    DocumentChunk, Requirement, PipelineRun,
 )
+from change_detector import ChangeType, classify_change
 from db.repositories import PipelineRunRepo
 from phase3.requirement_to_rule import compile_approved_requirements
 from phase3.rule_repository import EnhancedRuleRepo
@@ -39,6 +47,13 @@ from logging_config import get_logger
 from utils.fetch_document import fetch_document_and_store
 
 logger = get_logger(__name__)
+
+_CRAWL_INTERVALS: dict[str, timedelta] = {
+    "DAILY": timedelta(hours=24),
+    "WEEKLY": timedelta(days=7),
+    "MONTHLY": timedelta(days=30),
+}
+_DEFAULT_CRAWL_INTERVAL = _CRAWL_INTERVALS["DAILY"]
 
 
 @dataclass
@@ -96,70 +111,66 @@ def _latest_document(session: Session, source_id: str) -> GovernmentDocument | N
     )
 
 
-def sync_zero_document_source(
-    session: Session, run_repo: PipelineRunRepo, run, source: GovernmentSource
-) -> SyncResult:
-    """Bootstrap a source with no stored document: real fetch → store → extract.
+def _as_utc(dt: datetime | None) -> datetime | None:
+    """Normalize a possibly-naive UTC datetime (e.g. reloaded from SQLite) to aware."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
-    Populates the document/version/chunks, updates source diagnostics, and runs Phase-2
-    requirement extraction so the review queue is fed. Success = COMPLETED run,
-    fetch failure = FAILED run (source demoted to NEEDS_MANUAL_CAPTURE when blocked).
+
+def _record_run_failure(session: Session, run: PipelineRun, error: str) -> PipelineRun:
+    """Persist a FAILED PipelineRun on a healthy transaction.
+
+    A database error raised mid-sync aborts the surrounding transaction in
+    PostgreSQL: any further statement on it fails with ``InFailedSqlTransaction``.
+    Roll back to a clean state first so the FAILED status can always be recorded
+    and the remaining sources in the batch can keep running. If the run's row was
+    already durable (committed during an earlier step such as the fetch), it is
+    re-fetched in the fresh transaction and flipped to FAILED; otherwise it is
+    re-inserted with the same run_id.
     """
-    outcome = fetch_document_and_store(session, source)
-    result = SyncResult(source_id=source.source_id, status="changed")
-
-    if outcome.document_id is not None:
-        run.old_hash = None
-        run.new_hash = outcome.content_hash
-        run.metadata_json = {
-            "change_detection": {
-                "raw": {
-                    "old_hash": None,
-                    "new_hash": outcome.content_hash,
-                    "changed": True,
-                }
-            }
-        }
-        result.document_id = outcome.document_id
-        result.document_version = outcome.document_version
-        result.requirements_extracted = outcome.requirements_extracted
-        run_repo.complete(run.run_id, requirements_extracted=outcome.requirements_extracted)
-        logger.info(
-            "Source bootstrapped via fetch+extract",
-            extra={
-                "source_id": source.source_id,
-                "document_id": outcome.document_id,
-                "requirements_extracted": outcome.requirements_extracted,
-                "run_id": run.run_id,
-            },
-        )
-        return result
-
-    result.status = "error"
-    error_msg = outcome.error or outcome.status or "fetch failed"
-    result.errors.append(error_msg)
-    run_repo.fail(run.run_id, error_msg)
-    logger.warning(
-        "Source fetch failed during sync",
-        extra={
-            "source_id": source.source_id,
-            "fetch_status": outcome.status,
-            "error": error_msg,
-            "run_id": run.run_id,
-        },
-    )
-    return result
-
-
-def record_change(session: Session, source_id: str, new_hash: str) -> None:
-    """Update the source's last_hash and timestamps after a successful sync."""
-    source = session.get(GovernmentSource, source_id)
-    if source:
-        source.last_hash = new_hash
+    try:
+        return PipelineRunRepo(session).fail(run.run_id, error)
+    except Exception:
+        # The current transaction was aborted — start a fresh one.
+        session.rollback()
+        run_repo = PipelineRunRepo(session)
+        existing = session.get(PipelineRun, run.run_id)
+        if existing is not None:
+            return run_repo.fail(run.run_id, error)
         now = datetime.now(timezone.utc)
-        source.last_checked_at = now
-        source.last_successful_fetch_at = now
+        fresh = PipelineRun(
+            run_id=run.run_id,
+            source_id=run.source_id,
+            trigger_type=run.trigger_type,
+            status="FAILED",
+            started_at=_as_utc(run.started_at) or now,
+            completed_at=now,
+            errors=[error],
+        )
+        session.add(fresh)
         session.flush()
+        return fresh
+
+
+def _crawl_frequency_value(frequency: str | None) -> timedelta:
+    """Map a source's ``crawl_frequency`` to a politeness interval (default DAILY)."""
+    return _CRAWL_INTERVALS.get((frequency or "DAILY").upper(), _DEFAULT_CRAWL_INTERVAL)
+
+
+def _source_is_due(session: Session, source: GovernmentSource, now: datetime) -> bool:
+    """Whether a source should be fetched on a scheduled sync.
+
+    Never checked before → due. No stored document → due (so bootstrap/failed
+    sources keep being retried). Otherwise due once the crawl-frequency interval
+    has elapsed since ``last_checked_at``.
+    """
+    if source.last_checked_at is None:
+        return True
+    if _latest_document(session, source.source_id) is None:
+        return True
+    last_checked = _as_utc(source.last_checked_at)
+    return (now - last_checked) >= _crawl_frequency_value(source.crawl_frequency)
 
 
 def get_source_documents(session: Session, source_id: str) -> list[dict]:
@@ -363,11 +374,16 @@ def sync_source(session: Session, source_id: str,
                 dry_run: bool = False, trigger_type: str = "ON_DEMAND") -> SyncResult:
     """Run the full sync pipeline for one government source.
 
-    Creates a PipelineRun to track execution. Steps:
-        1. Detect change
-        2. If unchanged → return early
-        3. Compile approved requirements → DRAFT rules
-        4. Record the change
+    Creates a PipelineRun to track execution. Non-dry-run:
+        1. Capture previous_hash = source.last_hash (BEFORE the fetch)
+        2. Always re-fetch via fetch_document_and_store (browser escalation on
+           blocks; source.last_hash/last_checked_at updated on every success)
+        3. Classify classify_change(previous_hash, fresh_hash):
+             UNCHANGED   → complete early (no change detection, no new version)
+             INITIAL/CHANGED → compile approved requirements → DRAFT rules
+        4. Fetch failure → run FAILED (source demoted when browser-blocked)
+
+    dry_run performs a non-network, stored-state preview via detect_change().
 
     Failure-safe: if any step fails, old ACTIVE rules remain untouched.
     PipelineRun is marked FAILED or PARTIAL with error details.
@@ -379,139 +395,87 @@ def sync_source(session: Session, source_id: str,
     result = SyncResult(source_id=source_id, status="error")
 
     try:
-        # 1. Detect change
-        changed, old_hash, new_hash = detect_change(session, source_id)
-        run.old_hash = old_hash
-        run.new_hash = new_hash
+        if dry_run:
+            # 1. Detect change — dry-run preview over stored state (no network)
+            changed, old_hash, new_hash = detect_change(session, source_id)
+            run.old_hash = old_hash
+            run.new_hash = new_hash
 
-        if not changed:
-            # Zero-document gate: a source with no stored document is bootstrapped with a
-            # real fetch + Phase-2 extraction (never in dry-run, never when a document exists).
-            source = session.get(GovernmentSource, source_id)
-            if (
-                source is not None
-                and not dry_run
-                and _latest_document(session, source_id) is None
-            ):
-                return sync_zero_document_source(session, run_repo, run, source)
+            if not changed:
+                result.status = "unchanged"
+                run_repo.complete(run.run_id)
+                logger.info("Source unchanged (dry-run)", extra={"source_id": source_id})
+                return result
+
+            result.status = "changed"
+            return _finalize_change(
+                session, run_repo, rule_repo, run, result,
+                source_id, old_hash, new_hash,
+                dry_run=True, requirements_extracted=0,
+            )
+
+        # ---- Real path: always fetch, classify freshly fetched hash ----
+        source = session.get(GovernmentSource, source_id)
+        if source is None:
+            raise ValueError(f"Source {source_id} not found")
+
+        previous_hash = source.last_hash
+        result.old_hash = previous_hash
+
+        outcome = fetch_document_and_store(session, source)
+        fresh_hash = outcome.content_hash
+        run.old_hash = previous_hash
+        run.new_hash = fresh_hash
+        result.new_hash = fresh_hash
+
+        if outcome.document_id is None:
+            # Fetch failed; diagnostics/demotion already handled by the fetcher.
+            error_msg = outcome.error or outcome.status or "fetch failed"
+            result.status = "error"
+            result.errors.append(error_msg)
+            _record_run_failure(session, run, error_msg)
+            logger.warning(
+                "Source fetch failed during sync",
+                extra={
+                    "source_id": source_id,
+                    "fetch_status": outcome.status,
+                    "error": error_msg,
+                    "run_id": run.run_id,
+                },
+            )
+            return result
+
+        change = classify_change(previous_hash, fresh_hash)
+
+        if change == ChangeType.UNCHANGED:
+            # Re-fetched, but content identical to the last known hash → no
+            # new version, no change detection, no re-extraction.
             result.status = "unchanged"
+            result.document_id = outcome.document_id
+            result.document_version = outcome.document_version
             run_repo.complete(run.run_id)
-            logger.info("Source unchanged", extra={"source_id": source_id})
+            logger.info(
+                "Source unchanged (re-fetched, content identical)",
+                extra={"source_id": source_id, "run_id": run.run_id},
+            )
             return result
 
         result.status = "changed"
-
-        # 2. Get the latest document
-        doc = (
-            session.query(GovernmentDocument)
-            .filter(GovernmentDocument.source_id == source_id)
-            .order_by(GovernmentDocument.retrieved_at.desc())
-            .first()
+        result.requirements_extracted = outcome.requirements_extracted
+        return _finalize_change(
+            session, run_repo, rule_repo, run, result,
+            source_id, previous_hash, fresh_hash,
+            dry_run=False, requirements_extracted=outcome.requirements_extracted,
         )
-        if not doc:
-            result.status = "no_document"
-            run_repo.fail(run.run_id, "No document found for source")
-            return result
-
-        result.document_id = doc.document_id
-        result.document_version = doc.current_version
-
-        # 3. Compute multi-level change detection (before compilation)
-        change_detection = compute_change_detection(
-            session, source_id, old_hash, new_hash, doc.program_id,
-        )
-
-        # 4. Count existing approved requirements
-        approved_count = (
-            session.query(Requirement)
-            .filter(Requirement.program_id == doc.program_id)
-            .filter(Requirement.status == "APPROVED")
-            .count()
-        )
-        result.requirements_approved = approved_count
-
-        # 5. Compile approved requirements → DRAFT rules
-        #    Failure-safe: if compilation fails, old rules stay ACTIVE
-        errors: list[str] = []
-        if approved_count > 0 and not dry_run:
-            try:
-                compilation_results = compile_approved_requirements(
-                    session, program_id=doc.program_id, dry_run=dry_run
-                )
-                result.rules_created = sum(
-                    1 for r in compilation_results if r["status"] == "created"
-                )
-                result.rules_drafted = result.rules_created
-                result.requirements_extracted = len(compilation_results)
-
-                # Track per-rule errors
-                for r in compilation_results:
-                    if r["status"] == "error" and r.get("error"):
-                        errors.append(f"{r['requirement_id']}: {r['error']}")
-            except Exception as comp_err:
-                errors.append(f"Compilation failed: {comp_err}")
-                logger.error("Requirement compilation failed",
-                             extra={"source_id": source_id, "error": str(comp_err),
-                                    "run_id": run.run_id})
-
-        # 6. Compute rule diff after compilation
-        new_active = rule_repo.list_active(doc.program_id)
-        change_detection["rule"]["active_after_count"] = len(new_active)
-        change_detection["rule"]["active_after"] = [
-            {
-                "rule_id": r.rule_id,
-                "program_id": r.program_id,
-                "category": r.category,
-                "field": r.field,
-                "operator": r.operator,
-                "value_json": r.value_json,
-                "mandatory": r.mandatory,
-                "critical": r.critical,
-                "status": r.status,
-                "version": r.current_version,
-            }
-            for r in new_active
-        ]
-        change_detection["rule"]["diff"] = compute_rule_diff(
-            change_detection["rule"]["active_before"],
-            change_detection["rule"]["active_after"],
-        )
-
-        # 7. Record the change
-        if not dry_run and new_hash:
-            record_change(session, source_id, new_hash)
-
-        # 8. Update PipelineRun via state machine
-        run_kwargs = dict(
-            requirements_extracted=result.requirements_extracted,
-            requirements_approved=result.requirements_approved,
-            rules_created=result.rules_created,
-            rules_validated=result.rules_validated,
-            rules_approved=result.rules_approved,
-            rules_activated=result.rules_activated,
-        )
-        if errors:
-            run.metadata_json = {"change_detection": change_detection}
-            run_repo.partial(
-                run.run_id, "; ".join(errors), **run_kwargs,
-            )
-            logger.warning("Source sync partial",
-                           extra={"source_id": source_id, "errors": errors,
-                                  "run_id": run.run_id})
-        else:
-            run.metadata_json = {"change_detection": change_detection}
-            run_repo.complete(run.run_id, **run_kwargs)
-            logger.info("Source sync completed",
-                         extra={"source_id": source_id, "status": result.status,
-                                "rules_created": result.rules_created,
-                                "run_id": run.run_id})
 
     except Exception as e:
         result.status = "error"
         result.errors.append(str(e))
         # Failure-safe: if anything fails, old ACTIVE rules are untouched
-        # PipelineRun is FAILED, new rules never activated
-        run_repo.fail(run.run_id, str(e))
+        # PipelineRun is FAILED, new rules never activated.
+        # The recorder rolls back any aborted transaction first so a PostgreSQL
+        # DB error mid-run can never poison the failure handler.
+        _record_run_failure(session, run, str(e))
         logger.error("Source sync failed",
                       extra={"source_id": source_id, "error": str(e),
                              "run_id": run.run_id})
@@ -519,9 +483,144 @@ def sync_source(session: Session, source_id: str,
     return result
 
 
+def _finalize_change(
+    session: Session,
+    run_repo: PipelineRunRepo,
+    rule_repo: EnhancedRuleRepo,
+    run,
+    result: SyncResult,
+    source_id: str,
+    old_hash: str | None,
+    new_hash: str | None,
+    dry_run: bool,
+    requirements_extracted: int = 0,
+) -> SyncResult:
+    """Run the shared changed-path body: change detection → compile → run record.
+
+    Used by both the dry-run preview and the real always-fetch path. The real
+    path passes the number of requirements extracted by the fetch step so the
+    PipelineRun audit metrics reflect bootstrap/extraction (as the legacy
+    zero-document path did).
+    """
+    result.requirements_extracted = requirements_extracted
+
+    doc = _latest_document(session, source_id)
+    if not doc:
+        result.status = "no_document"
+        run_repo.fail(run.run_id, "No document found for source")
+        return result
+
+    result.document_id = doc.document_id
+    result.document_version = doc.current_version
+
+    # 1. Compute multi-level change detection (before compilation)
+    change_detection = compute_change_detection(
+        session, source_id, old_hash, new_hash, doc.program_id,
+    )
+
+    # 2. Count existing approved requirements
+    approved_count = (
+        session.query(Requirement)
+        .filter(Requirement.program_id == doc.program_id)
+        .filter(Requirement.status == "APPROVED")
+        .count()
+    )
+    result.requirements_approved = approved_count
+
+    # 3. Compile approved requirements → DRAFT rules
+    #    Failure-safe: if compilation fails, old rules stay ACTIVE
+    errors: list[str] = []
+    if approved_count > 0 and not dry_run:
+        try:
+            compilation_results = compile_approved_requirements(
+                session, program_id=doc.program_id, dry_run=dry_run
+            )
+            result.rules_created = sum(
+                1 for r in compilation_results if r["status"] == "created"
+            )
+            result.rules_drafted = result.rules_created
+
+            # Track per-rule errors
+            for r in compilation_results:
+                if r["status"] == "error" and r.get("error"):
+                    errors.append(f"{r['requirement_id']}: {r['error']}")
+        except Exception as comp_err:
+            errors.append(f"Compilation failed: {comp_err}")
+            logger.error("Requirement compilation failed",
+                         extra={"source_id": source_id, "error": str(comp_err),
+                                "run_id": run.run_id})
+
+    # 4. Compute rule diff after compilation
+    new_active = rule_repo.list_active(doc.program_id)
+    change_detection["rule"]["active_after_count"] = len(new_active)
+    change_detection["rule"]["active_after"] = [
+        {
+            "rule_id": r.rule_id,
+            "program_id": r.program_id,
+            "category": r.category,
+            "field": r.field,
+            "operator": r.operator,
+            "value_json": r.value_json,
+            "mandatory": r.mandatory,
+            "critical": r.critical,
+            "status": r.status,
+            "version": r.current_version,
+        }
+        for r in new_active
+    ]
+    change_detection["rule"]["diff"] = compute_rule_diff(
+        change_detection["rule"]["active_before"],
+        change_detection["rule"]["active_after"],
+    )
+
+    # 5. Update PipelineRun via state machine.
+    #    source.last_hash / last_checked_at were already updated by
+    #    fetch_document_and_store after the fresh fetch (real path only).
+    run_kwargs = dict(
+        requirements_extracted=result.requirements_extracted,
+        requirements_approved=result.requirements_approved,
+        rules_created=result.rules_created,
+        rules_validated=result.rules_validated,
+        rules_approved=result.rules_approved,
+        rules_activated=result.rules_activated,
+    )
+    if errors:
+        run.metadata_json = {"change_detection": change_detection}
+        try:
+            run_repo.partial(
+                run.run_id, "; ".join(errors), **run_kwargs,
+            )
+        except Exception as write_err:
+            # The failing compile statement aborted the transaction (PostgreSQL
+            # InFailedSqlTransaction), so even the PARTIAL write fails. Surface the
+            # actionable root cause — not the generic "transaction is aborted" —
+            # so the FAILED record that follows keeps the real error.
+            raise RuntimeError(
+                f"Recording partial results failed: {'; '.join(errors)}"
+            ) from write_err
+        logger.warning("Source sync partial",
+                       extra={"source_id": source_id, "errors": errors,
+                              "run_id": run.run_id})
+    else:
+        run.metadata_json = {"change_detection": change_detection}
+        run_repo.complete(run.run_id, **run_kwargs)
+        logger.info("Source sync completed",
+                    extra={"source_id": source_id, "status": result.status,
+                           "rules_created": result.rules_created,
+                           "run_id": run.run_id})
+
+    return result
+
+
 def sync_all_sources(session: Session, dry_run: bool = False,
                      trigger_type: str = "ON_DEMAND") -> list[SyncResult]:
-    """Sync all active government sources."""
+    """Sync all active government sources.
+
+    Scheduled syncs (trigger_type="SCHEDULED", non-dry-run) skip ACTIVE sources
+    that were checked more recently than their ``crawl_frequency``. Manual and
+    on-demand syncs always re-fetch, so an admin can force a refresh.
+    """
+    now = datetime.now(timezone.utc)
     sources = (
         session.query(GovernmentSource)
         .filter(GovernmentSource.status == "ACTIVE")
@@ -529,8 +628,41 @@ def sync_all_sources(session: Session, dry_run: bool = False,
     )
     results = []
     for src in sources:
-        result = sync_source(session, src.source_id, dry_run=dry_run,
-                             trigger_type=trigger_type)
+        if (
+            trigger_type == "SCHEDULED"
+            and not dry_run
+            and not _source_is_due(session, src, now)
+        ):
+            logger.info(
+                "Source skipped — not due per crawl_frequency",
+                extra={"source_id": src.source_id, "crawl_frequency": src.crawl_frequency},
+            )
+            continue
+        try:
+            result = sync_source(session, src.source_id, dry_run=dry_run,
+                                 trigger_type=trigger_type)
+        except Exception as e:  # very last line of defence — never poison the batch
+            # A failed source must not terminate the sync: roll back its partial
+            # writes, record a FAILED PipelineRun on the fresh transaction, and
+            # continue with the remaining sources.
+            session.rollback()
+            now = datetime.now(timezone.utc)
+            run = PipelineRun(
+                source_id=src.source_id, trigger_type=trigger_type,
+                status="FAILED",
+                started_at=now,
+                completed_at=now,
+                errors=[f"Unhandled sync failure: {e}"],
+            )
+            session.add(run)
+            session.flush()
+            logger.error(
+                "Source sync crashed unhandled — batch continues",
+                extra={"source_id": src.source_id, "error": str(e),
+                       "run_id": run.run_id},
+            )
+            result = SyncResult(source_id=src.source_id, status="error",
+                                errors=[str(e)])
         results.append(result)
     return results
 

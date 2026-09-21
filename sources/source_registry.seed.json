@@ -1,9 +1,9 @@
 {
   "_meta": {
-    "verified_on": "2026-08-19",
-    "verification_method": "web_search against immi.homeaffairs.gov.au and legislation.gov.au",
+    "verified_on": "2026-09-15",
+    "verification_method": "web_search against immi.homeaffairs.gov.au, cricos.education.gov.au and legislation.gov.au",
     "note": "URLs are re-validated by the fetcher on every run (HTTP status is logged in fetch_log). Update this file if the department restructures its site.",
-    "confidence_flag": "WORK_482, STUDENT_500, and VISITOR_600 are LOW-CONFIDENCE placeholder program rows added so discovered sources in those visa categories have a program to attach to. They are structural anchors only (not verified program URLs, and no government_sources rows reference them). Confirm the real subclass criteria/authoritative source before enabling live extraction for them."
+    "confidence_flag": "WORK_482, STUDENT_500, and VISITOR_600 program rows now have authoritative government_sources attached (official Home Affairs visa-listing pages; CRICOS register for 500). CRICOS and the Skill Occupation List are shared reference registers — referenced data, not per-program criteria. Visitor (600) has no dedicated reference-data source; only the main page is tracked."
   },
   "countries": [
     { "country_id": "AU", "name": "Australia", "iso_code": "AUS" }
@@ -136,6 +136,74 @@
       "monitoring_method": "WEB",
       "crawl_frequency": "WEEKLY",
       "notes": "Highest-authority source (binding regulation). Governs Schedule 2 criteria for subclasses 189/190/491 among others."
+    },
+    {
+      "source_id": "SRC-AU-482-MAIN",
+      "country_id": "AU",
+      "program_id": "WORK_482",
+      "visa_category": "WORK",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/skills-in-demand-visa-subclass-482",
+      "source_type": "HTML",
+      "source_subtype": "PROGRAM_OVERVIEW",
+      "priority": "PRIMARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "DAILY"
+    },
+    {
+      "source_id": "SRC-AU-SKILL-OCCUPATION-LIST",
+      "country_id": "AU",
+      "program_id": "WORK_482",
+      "visa_category": "WORK",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/working-in-australia/skill-occupation-list",
+      "source_type": "HTML",
+      "source_subtype": "REFERENCE_DATA",
+      "priority": "SECONDARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "WEEKLY",
+      "notes": "Shared reference list of eligible skilled occupations. Linked to 482 as the sponsor-based program; also relevant to skilled (189/190/491) employer pathways."
+    },
+    {
+      "source_id": "SRC-AU-500-MAIN",
+      "country_id": "AU",
+      "program_id": "STUDENT_500",
+      "visa_category": "STUDENT",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/student-500",
+      "source_type": "HTML",
+      "source_subtype": "PROGRAM_OVERVIEW",
+      "priority": "PRIMARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "DAILY"
+    },
+    {
+      "source_id": "SRC-AU-CRICOS-REGISTER",
+      "country_id": "AU",
+      "program_id": "STUDENT_500",
+      "visa_category": "STUDENT",
+      "authority": "Department of Education (CRICOS register)",
+      "url": "https://cricos.education.gov.au",
+      "source_type": "HTML",
+      "source_subtype": "REFERENCE_DATA",
+      "priority": "SECONDARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "WEEKLY",
+      "notes": "CRICOS — official register of registered education providers and courses. Student visa eligibility depends on enrolment at a CRICOS-registered provider; no 'occupation list' equivalent for Student visa."
+    },
+    {
+      "source_id": "SRC-AU-600-MAIN",
+      "country_id": "AU",
+      "program_id": "VISITOR_600",
+      "visa_category": "VISITOR",
+      "authority": "Department of Home Affairs",
+      "url": "https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/visitor-600",
+      "source_type": "HTML",
+      "source_subtype": "PROGRAM_OVERVIEW",
+      "priority": "PRIMARY",
+      "monitoring_method": "WEB",
+      "crawl_frequency": "DAILY",
+      "notes": "No dedicated 'reference-data' page exists for Visitor visas (no occupation/course-registration concept applies to subclass 600); main Program Overview page only for now."
     }
   ]
 }

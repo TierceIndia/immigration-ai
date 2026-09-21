@@ -14,10 +14,19 @@ from api.schemas.models import (
 )
 from db.connection import get_session, get_db_engine
 from logging_config import get_logger
+from services.applicant_service import ApplicantService
 from services.assessment_service import AssessmentService
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def _require_applicant_owner(session, applicant_id: str, user_id: str) -> None:
+    applicant = ApplicantService(session).get(applicant_id)
+    if not applicant:
+        raise HTTPException(status_code=404, detail="Applicant not found")
+    if applicant["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Applicant access denied")
 
 
 @router.post("", response_model=AssessmentResponse, status_code=201)
@@ -33,6 +42,7 @@ def create_assessment(
     """
     engine = get_db_engine(request)
     with get_session(engine) as session:
+        _require_applicant_owner(session, body.applicant_id, user_id)
         svc = AssessmentService(session)
         try:
             result = svc.run_assessment(
@@ -46,16 +56,26 @@ def create_assessment(
 
 
 @router.get("", response_model=AssessmentListResponse)
-def list_assessments(request: Request, applicant_id: str, limit: int = 20):
+def list_assessments(
+    request: Request,
+    applicant_id: str,
+    limit: int = 20,
+    user_id: str = Depends(get_current_user_id),
+):
     engine = get_db_engine(request)
     with get_session(engine) as session:
+        _require_applicant_owner(session, applicant_id, user_id)
         svc = AssessmentService(session)
         results = svc.list_for_applicant(applicant_id, limit=limit)
         return AssessmentListResponse(assessments=results, total=len(results))
 
 
 @router.get("/{assessment_id}", response_model=AssessmentResponse)
-def get_assessment(assessment_id: str, request: Request):
+def get_assessment(
+    assessment_id: str,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
     parse_uuid_or_404(assessment_id)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -63,11 +83,16 @@ def get_assessment(assessment_id: str, request: Request):
         result = svc.get(assessment_id)
         if not result:
             raise HTTPException(status_code=404, detail="Assessment not found")
+        _require_applicant_owner(session, result["applicant_id"], user_id)
         return result
 
 
 @router.post("/evaluate", response_model=EvaluateResponse)
-def evaluate_inline(body: EvaluateRequest, request: Request):
+def evaluate_inline(
+    body: EvaluateRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
     """In-memory eligibility check (no persistence).
 
     Runs the full pipeline — load ACTIVE rules, build expression tree,
@@ -75,6 +100,7 @@ def evaluate_inline(body: EvaluateRequest, request: Request):
     """
     engine = get_db_engine(request)
     with get_session(engine) as session:
+        _require_applicant_owner(session, body.applicant_id, user_id)
         svc = AssessmentService(session)
         try:
             return svc.evaluate_inline(

@@ -2,17 +2,58 @@
 
 End-to-end deterministic immigration eligibility system for Australian skilled migration visas.
 
-**Phases completed**: 1 → 2 → 3 → 3C → 3D → Admin API → Admin Knowledge → DB Readiness + API Surface Hardening (all fully tested, 839 tests passing)
+**Phases completed**: 1 → 2 → 3 → 3C → 3D → Admin API → Admin Knowledge → DB Readiness + API Surface Hardening → security hardening → browser-fetch escalation → Gemini provider support (all fully tested, **933 passing / 9 skipped** with auth enabled — see the auth-disabled note below for current suite state).
 
 **Core principle**: Every eligibility decision is deterministic, auditable, and traceable to exact government evidence. No LLM decides eligibility.
 
 **Production status**: NOT PRODUCTION-READY — see [Production Readiness](#production-readiness) for gaps.
 
+## ⚠️ Authentication is currently DISABLED (temporary, 2026-09-21)
+
+At the platform owner's explicit request, `get_current_user()` in
+[`src/api/routes/auth.py`](src/api/routes/auth.py) is bypassed so business logic can be
+exercised end-to-end without login friction. **Every request — with or without an
+Authorization header — is treated as the bootstrap admin user** (`ADMIN_EMAIL`). This
+cascades through `require_admin`, `get_current_user_id`, and every route's `_require_admin(...)`
+check, so **the entire API is currently unauthenticated**.
+
+- The real JWT-checking implementation is preserved as a commented-out block directly below
+  the bypass in the same function — restore it by deleting the bypass and uncommenting that
+  block.
+- The bypass resolves to a **real** `api_users` row (not a fabricated ID) so applicant/assessment
+  foreign keys still hold; if no bootstrap admin exists (e.g. `ADMIN_EMAIL`/`ADMIN_PASSWORD` unset)
+  every protected route now returns 401.
+- **Do not deploy this state anywhere reachable by anyone but you.** Restore real auth before
+  any shared/public use.
+- Side effect: **84 tests in the automated suite now fail** (`test_auth.py`, `test_security.py`,
+  `test_pipeline_runs.py`, `test_manual_capture_api.py`) because they assert real 401/403/ownership
+  semantics that this bypass intentionally defeats. This is expected, not a regression — the
+  suite goes back to 933 passed / 0 failed / 9 skipped once real auth is restored.
+
+## What works / what doesn't (2026-09-21)
+
+| Area | Status |
+|------|--------|
+| Deterministic rule engine + eligibility/gap engine | WORKING — never yet exercised with real extracted data (see below) |
+| Admin API (rules, requirements, documents, sources, runs, knowledge-state, schema) | WORKING functionally — **currently unauthenticated**, see banner above |
+| `POST /api/v1/admin/sync` | WORKING — always re-fetches due sources, correctly demotes blocked sources, records real `PipelineRun` audit trail |
+| Source registry | WORKING — 14 sources across SKILLED / WORK / STUDENT / VISITOR |
+| Source fetch → store → version → change-detect → downstream extraction | WORKING end-to-end against the real running stack (verified live, not just offline-tested) |
+| Plain-HTTP + browser-escalation fetch of `immi.homeaffairs.gov.au` | NOT WORKING — 12 of 14 sources get HTTP 403 even via genuine non-headless browser session; correctly demoted to `NEEDS_MANUAL_CAPTURE` (no evasion attempted, by design). **This is also why `POST /admin/sync` only ever touches 2 sources** — see [Why does sync only touch 2 of 14 sources?](#why-does-admin-sync-only-touch-2-of-14-sources) below. |
+| LLM extraction — **OpenAI** | WORKING when the account has billing credits; fails safely and visibly (`FAILED` run, real error) when it doesn't |
+| LLM extraction — **Gemini** | WORKING — `EXTRACTION_MODEL=gemini-flash-lite-latest` now routes through `GeminiLLMClient`, fully wired to the same governance layer (budget/rate-limit/cache) as OpenAI |
+| Real requirement extraction end-to-end | NOT YET PROVEN WITH REAL CONTENT — the only two sources that reach extraction (`SRC-AU-CRICOS-REGISTER`, `SRC-AU-MIGRATION-REGS-1994`) both return 0 requirements: CRICOS's page appears to be a JS-rendered SPA shell with no static content (0 chunks extracted), and the Migration Regs source URL currently points at a Federal Register *index/citation* page, not the actual regulation text. Both are content/source-URL problems, not pipeline bugs — the pipeline honestly extracted nothing rather than fabricating anything. |
+| Rule compilation → review → activation → assessment | UNTESTED WITH REAL DATA — zero requirements exist in any program yet (a direct consequence of the above), so nothing has ever reached `DRAFT`/`VALIDATED`/`APPROVED`/`ACTIVE`, and no assessment has ever run against real ACTIVE rules |
+| Applicant CRUD | WORKING — a field-dropping bug in `POST /applicants` (create) was found and fixed today: `first_name`/`last_name`/`created_at` were silently returned as `null` even though correctly persisted (services/applicant_service.py `create()` built its own incomplete response dict instead of reusing `get()`) |
+| Docker deployment — LLM extraction | WAS COMPLETELY BROKEN, now fixed: `docker-compose.yml` never forwarded `OPENAI_API_KEY`/`GEMINI_API_KEY`/`EXTRACTION_MODEL` into the `api` container, and `Dockerfile` never copied `prompts/` into the image at all. Both fixed today; verified live. |
+| WORK / STUDENT / VISITOR **live LLM extraction + gold data** | NOT WORKING YET — sources registered, but real evidence capture still pending (`AWAITING_REAL_SOURCE`); no fabricated evidence |
+| Multi-country (NZ/CA/UK) | NOT STARTED |
+
 ## Quick Start
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests/ -q    # 839 passing
+python -m pytest tests/ -q    # 933 passed / 9 skipped with real auth; 849 passed / 84 failed / 9 skipped while the auth bypass above is active
 ```
 
 ```bash
@@ -20,15 +61,32 @@ python -m pytest tests/ -q    # 839 passing
 docker-compose up -d
 ```
 
+To configure the administrator used by the API, create a root `.env` file before
+starting Docker Compose:
+
+```dotenv
+ADMIN_EMAIL=admin@gmail.com
+ADMIN_PASSWORD=use-a-strong-password
+ADMIN_FULL_NAME=System Administrator
+```
+
+On startup, the API idempotently creates this account or promotes the existing
+account with that email to `admin`. Normal registration always creates an
+`applicant`; roles are stored in the database and are returned by `/api/v1/auth/login`
+and `/api/v1/auth/me`. After changing an existing user's role, log in again to get a
+new access token.
+
 > **Filename guard:** the build context requires a file named exactly `Dockerfile`
 > (capital D, no extension) at the project root. `docker-compose.yml` depends on it, and a
 > case-only rename to `dockerfile` can silently reuse a stale image on case-insensitive
 > filesystems — do not rename it.
 
 The `api` container runs `alembic upgrade head` → `python src/seed_registry.py` (idempotent
-seed of countries / programs / 9 verified government sources) → uvicorn. The Dockerfile
+seed of countries / programs / 14 verified government sources across all four visa categories:
+SKILLED, WORK, STUDENT, VISITOR) → uvicorn. The Dockerfile
 builds the Python 3.12-slim base plus Playwright's Chromium (for browser-based source
-retrieval inside the `src/browser_fetcher.py` path).
+retrieval inside the `src/browser_fetcher.py` path — which requires `headless=False` because
+headless mode is fingerprinted and blocked with HTTP 403 by the Home Affairs WAF).
 
 Diagnostics: `GET /health` is a pure liveness probe (always 200). `GET /ready` reports
 DB connectivity — 200 when connected, else 503 with safe, credential-scrubbed context
@@ -265,11 +323,64 @@ All applicant endpoints require JWT authentication.
 | `GET` | `/{id}` | Get single pipeline run (with computed rule counters) |
 | `GET` | `/source/{id}` | List runs for a specific source |
 
+### Admin Sources (`/api/v1/admin/sources`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | List all government sources (admin only) |
+| `POST` | `/` | Create a source (admin only) |
+| `GET` | `/{source_id}` | Get a single source (admin only) |
+| `PATCH` | `/{source_id}` | Update source (status, priority, crawl_frequency, url) (admin only) |
+| `POST` | `/{source_id}/manual-capture` | Record a manually captured document for a blocked source |
+| `POST` | `/discover` | Run source discovery (admin only) |
+| `GET` | `/discovered` | List discovered source candidates (admin only) |
+| `POST` | `/discovered/{id}/approve` | Approve a candidate into a real source (admin only) |
+| `POST` | `/discovered/{id}/reject` | Reject a candidate (admin only) |
+
+### Admin Schema (`/api/v1/admin/schema-report`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Full DB structure: tables, columns, PK/FK/unique/check/index/triggers, live row counts, alembic head (admin only, read-only) |
+
 ### Admin Sync (`/api/v1/admin/sync`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/` | Manually trigger government source sync |
+| `POST` | `/` | Manually trigger government source sync — **admin only** (401 without token, 403 for non-admins) |
+
+#### Why does `/admin/sync` only touch 2 of 14 sources?
+
+`sync_all_sources()` in `src/orchestration/government_sync.py` only ever queries sources
+where `status == "ACTIVE"`:
+
+```python
+sources = session.query(GovernmentSource).filter(GovernmentSource.status == "ACTIVE").all()
+```
+
+Right now **12 of the 14 seeded sources are `NEEDS_MANUAL_CAPTURE`**, not `ACTIVE` — every
+`immi.homeaffairs.gov.au` page in the registry. They got demoted because the real
+`immi.homeaffairs.gov.au` WAF returns `HTTP 403` even after the fetcher escalates to a genuine,
+non-headless Chromium session (`src/browser_fetcher.py`). `_record_fetch_failure()` in
+`src/utils/fetch_document.py` sets `source.status = "NEEDS_MANUAL_CAPTURE"` whenever a block
+survives browser escalation — this is deliberate, not a bug: the project's design explicitly
+forbids trying harder to get past a real block (no stealth plugins, no fingerprint evasion, no
+CAPTCHA solving). Once demoted, a source is excluded from **every** future sync — scheduled or
+manual — until an admin resets it.
+
+Only `SRC-AU-CRICOS-REGISTER` and `SRC-AU-MIGRATION-REGS-1994` are currently `ACTIVE`
+(different domains, not blocked), so those are the only two `POST /admin/sync` ever reaches.
+
+**To recover a `NEEDS_MANUAL_CAPTURE` source**: an admin opens the URL in a real browser by
+hand, saves the rendered HTML, and calls:
+
+```
+POST /api/v1/admin/sources/{source_id}/manual-capture
+{ "raw_html": "<the captured HTML>" }
+```
+
+This resets the source to `ACTIVE`, runs the captured content through the same
+store → extract pipeline as an automated fetch, and the source rejoins future syncs.
 
 ## Database
 
@@ -311,38 +422,44 @@ from db.repositories import (
 
 ## Test Suite
 
+> With real auth restored: **933 passed / 9 skipped / 0 failed**. While the auth bypass
+> in `src/api/routes/auth.py` is active (see banner near the top of this file): **849 passed
+> / 84 failed / 9 skipped** — the 84 failures are all auth/ownership assertions the bypass
+> intentionally defeats, not new regressions.
+
 ```bash
-python -m pytest tests/ -q              # Full suite: 731 tests
+python -m pytest tests/ -q              # Full suite (counts above)
 python -m pytest tests/phase3 -q        # Phase 3 core: 192 tests
 python -m pytest tests/phase3c -q       # Phase 3C eligibility: 97 tests
-python -m pytest tests/phase3d -q       # Phase 3D activation: 134 tests
+python -m pytest tests/phase3d -q       # Phase 3D activation: 120 tests
 python -m pytest tests/db -q            # Database models/repos: 22 tests
 python -m pytest tests/phase2/test_category_prompts.py -q  # Category→prompt wiring: 10 tests
-python -m pytest tests/test_api.py -q   # API routes: 35 tests
-python -m pytest tests/test_auth.py -q  # Authentication: 11 tests
-python -m pytest tests/test_security.py -q  # Security: 40 tests
+python -m pytest tests/test_api.py -q   # API routes: 38 tests
+python -m pytest tests/test_auth.py -q  # Authentication: 13 tests
+python -m pytest tests/test_security.py -q  # Security: 44 tests
 python -m pytest tests/test_llm_governance.py -q  # LLM governance: 30 tests
-python -m pytest tests/test_scheduler.py -q  # Scheduler: 7 tests
+python -m pytest tests/test_scheduler.py -q  # Scheduler: 28 tests
 python -m pytest tests/test_pipeline_runs.py -q  # PipelineRun tracking: 42 tests
 python -m pytest tests/test_e2e_scenarios.py -q  # End-to-end scenarios: 14 tests
 ```
 
 | Layer | Tests | What it proves |
 |-------|-------|----------------|
-| Phase 2 | 51 + 10 + 12 | Schema validation, evidence checking, normalization, dedup + deterministic category→prompt wiring + category-aware gold harness |
+| Phase 2 | 70 (+10 prompt wiring, +12 gold harness) | Schema validation, evidence checking, normalization, dedup, extraction, category→prompt wiring, category-aware gold harness |
 | Phase 3 | 192 | Operators, expression tree, IF/THEN, exceptions, dependencies, versioning |
 | Phase 3C | 97 | Applicant model, applicability, assessment, gap engine, questions |
-| Phase 3D | 134 | Rule persistence, status machine, requirement→rule bridge, admin API, e2e, hardening |
+| Phase 3D | 120 | Rule persistence, status machine, requirement→rule bridge, admin API, e2e, hardening |
 | Database | 22 | ORM models, repositories, CRUD, in-memory SQLite |
 | Logging | 17 | Structured logging, PII redaction, request context |
-| API Routes | 35 | Request/response contracts, error handling, real assessment, G9 regression |
-| Auth | 11 | JWT tokens, register/login, password hashing, duplicate email |
+| API Routes | 38 | Request/response contracts, error handling, real assessment, G9 regression, admin-sync auth (401/403/200) |
+| Auth | 13 | JWT tokens, register/login, password hashing, duplicate email, role in token |
 | LLM Governance | 30 | Rate limiting, caching, budget tracking, retry policy |
-| Security | 40 | JWT secrets, PII redaction, CORS, authorization, password security |
-| Scheduler | 7 | APScheduler start/stop, manual sync trigger |
+| Security | 44 | JWT secrets, PII redaction, CORS, authorization, password security |
+| Scheduler | 28 | APScheduler start/stop, manual sync trigger, concurrent-sync lock |
 | PipelineRun | 42 | Sync audit trail, repo CRUD, API endpoints, computed counters, orchestrator integration |
 | E2E Scenarios | 14 | Multi-program, multi-version, gap engine, evaluation, orchestration |
-| **Total** | **731** | **All passing, 0 failures** |
+| Fetch / Sync lifecycle | 23 | fetch→store→version, change detection, refetch lifecycle, crawl-frequency gating, browser escalation |
+| **Total** | **942** | **933 passed / 9 skipped, 0 failures — with real auth. See the auth-disabled banner above for current suite state (849 passed / 84 failed / 9 skipped).** |
 
 ## Expression Types
 
@@ -379,16 +496,17 @@ immigration-knowledge/
 │   │   ├── main.py                 # App factory, CORS, middleware, lifespan
 │   │   ├── helpers.py              # parse_uuid_or_404 utility
 │   │   ├── routes/
-│   │   │   ├── auth.py             # Register/login/me
-│   │   │   ├── applicants.py       # Applicant CRUD (JWT-protected)
-│   │   │   ├── assessments.py      # Assessment create/list/evaluate
+│   │   │   ├── auth.py             # Register/login/me (JWT), require_admin dependency
+│   │   │   ├── applicants.py       # Applicant CRUD (JWT + ownership)
+│   │   │   ├── assessments.py      # Assessment create/list/get/evaluate (JWT + ownership)
 │   │   │   ├── admin_rules.py      # Admin review/approve/activate
 │   │   │   ├── admin_requirements.py # Admin requirement review
-│   │   │   ├── admin_sources.py    # Source admin API
+│   │   │   ├── admin_sources.py    # Source admin API + discovery + manual capture
 │   │   │   ├── admin_documents.py  # Document admin API (G14)
 │   │   │   ├── admin_knowledge.py  # Knowledge-state endpoint (G15)
+│   │   │   ├── admin_schema.py     # Schema-report endpoint (read-only DB structure)
 │   │   │   ├── pipeline_runs.py    # Pipeline run API (G13 computed counters)
-│   │   │   └── health.py           # Health check
+│   │   │   └── health.py           # /health + /ready (public)
 │   │   └── schemas/
 │   │       └── models.py           # Pydantic request/response models
 │   ├── db/                         # SQLAlchemy ORM layer
@@ -403,12 +521,18 @@ immigration-knowledge/
 │   │   └── requirement_to_rule.py  # Approved requirement → rule compilation bridge
 │   ├── phase3c/                    # Eligibility + Gap Engine
 │   ├── orchestration/
-│   │   └── government_sync.py      # Source sync orchestrator (on-demand)
+│   │   └── government_sync.py      # Source sync orchestrator (always-fetch + crawl gating)
 │   ├── services/
 │   │   ├── auth_service.py         # JWT, bcrypt, secret management
 │   │   ├── applicant_service.py    # Applicant CRUD
 │   │   ├── assessment_service.py   # Assessment management
 │   │   └── eligibility_service.py  # Eligibility evaluation
+│   ├── utils/
+│   │   └── fetch_document.py       # fetch → store → version → change-detect → extract
+│   ├── change_detector.py          # classify_change (INITIAL / CHANGED / UNCHANGED)
+│   ├── fetcher.py                  # Plain-HTTP fetcher (403-classifies blocks)
+│   ├── browser_fetcher.py          # Playwright Chromium escalation (headless=False)
+│   ├── source_discovery.py         # Candidate discovery / robots gate / keyword scoring
 │   ├── llm_governance.py           # RateLimiter, RetryPolicy, ResponseCache, BudgetTracker
 │   ├── logging_config.py           # Structured logging, PII redaction
 │   ├── pipeline.py                 # Phase 1 orchestrator
@@ -440,8 +564,10 @@ immigration-knowledge/
 │   ├── work/requirement_extraction_v2.md
 │   ├── student/requirement_extraction_v2.md
 │   └── visitor/requirement_extraction_v2.md
+├── scripts/
+│   └── manual_playwright_check.py  # Manual browser check (deliberately OUTSIDE tests/ so pytest never launches a browser during collection)
 ├── sources/
-│   └── source_registry.seed.json   # 9 verified government sources (SKILLED only)
+│   └── source_registry.seed.json   # 14 verified government sources (SKILLED / WORK / STUDENT / VISITOR)
 ├── migrations/                     # Alembic migrations
 ├── .env.example                    # CORS_ORIGINS, JWT_SECRET_KEY, all config
 ├── .gitignore
@@ -474,6 +600,8 @@ immigration-knowledge/
 
 ## Security
 
+> ⚠️ **Currently bypassed** — see [Authentication is currently DISABLED](#️-authentication-is-currently-disabled-temporary-2026-09-21) above. Everything below describes the real, designed behavior once the bypass in `src/api/routes/auth.py` is reverted.
+
 - **JWT secret fail-fast**: Production environment requires `JWT_SECRET_KEY` env var. Missing → startup error.
 - **CORS**: Configurable via `CORS_ORIGINS` (comma-separated). Defaults to `http://localhost:3000`. Wildcard `*` with credentials is explicitly avoided.
 - **bcrypt pinned**: `bcrypt==4.2.1` to ensure passlib compatibility.
@@ -482,9 +610,10 @@ immigration-knowledge/
 
 ## LLM Governance
 
+- **Providers**: OpenAI (`gpt-4o-mini`, `gpt-4o`, ...) and Gemini (`gemini-flash-lite-latest`, ...) are both fully supported production extraction providers, selected via `EXTRACTION_MODEL`. `get_client()` in `src/phase2/llm_client.py` routes to `OpenAILLMClient` or `GeminiLLMClient` by model name prefix; both are wired through the same governance stack below. Anthropic/mock models are rejected at the factory (fail-fast, no silent fallback).
 - **RateLimiter**: Per-model request throttling with sliding window
 - **RetryPolicy**: Exponential backoff with configurable max delay
-- **ResponseCache**: SHA256-keyed LRU cache with TTL expiry
+- **ResponseCache**: SHA256-keyed LRU cache with TTL expiry, namespaced per provider
 - **BudgetTracker**: Daily/monthly token budget limits
 - **UsageLog**: Per-request cost tracking and analytics
 - **LLMGovernance**: Facade orchestrating all governance components
@@ -506,13 +635,24 @@ immigration-knowledge/
 | ~~G10 UUID validation~~ | P2 | DONE |
 | ~~G13 computed PipelineRun counters~~ | P2 | DONE |
 | ~~Phase 4 run_extraction category prompt~~ | P2 | DONE (visa_category→prompt wiring + 10 tests) |
-| WORK/STUDENT/VISITOR sources | P3 | OPEN |
+| ~~Admin-only enforcement on every admin endpoint~~ | P1 | DONE (2026-09-15: `POST /admin/sync` was unauthenticated — now admin-gated; all admin routes audited) |
+| ~~Playwright collection crash~~ | P1 | DONE (2026-09-15: manual browser script moved out of `tests/`, suite no longer launches a browser at collection) |
+| WORK/STUDENT/VISITOR **source coverage** | P3 | DONE (2026-09-15: 5 sources added — 482 main + occupation list, 500 main + CRICOS, 600 main) |
+| ~~Missing `_require_admin` on `GET /admin/rules/{rule_id}`~~ | P1 | DONE (2026-09-21: the only route in `admin_rules.py` missing the admin check every sibling route has — fixed + regression test) |
+| ~~Docker deployment could never do real LLM extraction~~ | P0 | DONE (2026-09-21: `docker-compose.yml` never forwarded `OPENAI_API_KEY`/`GEMINI_API_KEY`/`EXTRACTION_MODEL` into the `api` container; `Dockerfile` never copied `prompts/` into the image. Both fixed and verified live.) |
+| ~~Gemini provider support~~ | P2 | DONE (2026-09-21: `GeminiLLMClient` wired through the same governance layer as OpenAI; factory routes by model name) |
+| ~~`POST /applicants` silently dropped `first_name`/`last_name`/`created_at` in its response~~ | P2 | DONE (2026-09-21: `ApplicantService.create()`/`list_for_user()` built incomplete response dicts; data was persisted correctly but the API lied about it) |
+| **Authentication is temporarily disabled** (see banner above) | P0 | OPEN — deliberate, at platform owner's request, to test business logic; must be restored before any shared/public use |
+| `SRC-AU-CRICOS-REGISTER` yields 0 document chunks every fetch | P2 | OPEN — likely a JS-rendered SPA whose static HTML has no real content; needs either render-wait browser fetching or re-sourcing |
+| `SRC-AU-MIGRATION-REGS-1994` URL resolves to an index/citation page, not the regulation text | P2 | OPEN — needs a corrected deep-link URL to the actual legislation text |
+| Real rule lifecycle (DRAFT→VALIDATED→APPROVED→ACTIVE) never exercised with real extracted data | P1 | OPEN — blocked on the two items above; zero requirements exist in any program today |
+| WORK/STUDENT/VISITOR **real gold + live extraction** | P3 | OPEN (sources registered; real evidence capture still pending, no fabricated evidence) |
 | Multi-country | P3 | OPEN |
 | 491 real-world coverage | P3 | OPEN |
 
 ### Next Milestones
 
-1. **WORK/STUDENT/VISITOR source registry** — Add verified government sources for all visa categories
+1. **Real gold + live extraction for WORK/STUDENT/VISITOR** — sources are registered; capture real Home Affairs / CRICOS evidence via the browser path or official API, then fill `data/gold/{work,student,visitor}/` and enable live extraction
 2. **PostgreSQL-native production validation** — UUID, JSONB, TIMESTAMPTZ, proper indexes
 3. **Multi-country support** — NZ, Canada, UK
 4. **491 real-world scenario coverage** — full immigration program validation
@@ -521,19 +661,25 @@ immigration-knowledge/
 ## Running Against Real Data
 
 ```bash
-# Requires OPENAI_API_KEY in .env
+# Requires OPENAI_API_KEY (or GEMINI_API_KEY, with EXTRACTION_MODEL=gemini-flash-lite-latest) in .env
 python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN --model gpt-4o
 
 # Evaluate against real gold standard
 python tests/phase2/test_real_gold_evaluation.py gpt-4o 0
 ```
 
+**Note for Docker deployments**: `docker-compose.yml` forwards `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+and `EXTRACTION_MODEL` from the root `.env` into the `api` container's environment. If you add new
+LLM-related environment variables, add them there too — the container does not otherwise see your
+local `.env` file at all (it isn't copied into the image, and Compose only forwards variables listed
+under `environment:`).
+
 ## Gold Datasets (Phase 3: category-aware)
 
 Each visa category owns its gold dataset under `data/gold/<category>/` and is validated against **its own** prompt contract (`prompts/<category>/requirement_extraction_v2.md`). The harness `src/phase2/category_gold.py` enforces **zero cross-category contamination**: a Student source can never be scored against the Skilled contract.
 
 - **skilled/** — populated with real, verbatim gold: `skilled_189_real.json` (23 items) + `skilled_190_real.json` (6 items).
-- **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items**. The project's anti-hallucination rule forbids fabricating `evidence_text`; live Home Affairs is HTTP 403-blocked to automated fetchers (`SOURCE_REGISTRY_REPORT.md`), so real evidence for these categories cannot be captured in-sandbox yet. They become fillable once real content is available.
+- **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items**. The project's anti-hallucination rule forbids fabricating `evidence_text`; plain-HTTP fetches of live Home Affairs are HTTP 403-blocked (`SOURCE_REGISTRY_REPORT.md`). The browser path (`src/browser_fetcher.py`, headless=False) has been shown to receive HTTP 200 on real Home Affairs pages, so real evidence capture for these categories is feasible but not yet executed/in-sandbox. They become fillable once real content is captured.
 
 Run the integrity check:
 
@@ -551,7 +697,7 @@ python -m pytest tests/phase2/test_category_gold_harness.py -q   # 12 guard test
 
 ### Database-agnostic core (runs on SQLite for tests, PostgreSQL for prod)
 
-The ORM rule lifecycle and Phase 3D pipeline are fully database-agnostic — they run identically against in-memory SQLite (731 tests) and real PostgreSQL.
+The ORM rule lifecycle and Phase 3D pipeline are fully database-agnostic — they run identically against in-memory SQLite (897 passed / 2 skipped) and real PostgreSQL.
 
 ### Real PostgreSQL verification (performed 2026-08-27)
 
@@ -572,14 +718,31 @@ Confirmed:
 
 ```bash
 python src/pipeline.py --source-id SRC-AU-189-MAIN --offline-fixture tests/fixtures/skilled_189_sample.html
-python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN --model mock-llm-v1
+python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN --model gpt-4o-mini
 ```
 
 Verified: fetch → store → hash → change detect → extract, and Phase 2 requirement extraction with category-aware prompt selection (6 requirements extracted from DOC-AU-189-MAIN).
 
-### Real network fetch — current behavior
+### Real network fetch — current behavior (verified live, 2026-09-21)
 
-`https://immi.homeaffairs.gov.au/...` returns **HTTP 403 ACCESS_BLOCKED** to automated fetchers. The fetcher correctly classifies the block, records it in `fetch_log`, and demotes the source status to `ACCESS_BLOCKED` — the designed failure-safe behavior. A real live end-to-end fetch therefore requires running the fetcher from an approved network context (or using the offline fixture / official API).
+Against the actual running stack (`docker compose up`, real Postgres, real network):
+
+- **12 of 14 sources** (every `immi.homeaffairs.gov.au` page in the registry — all of SKILLED
+  189/190/491, WORK 482 + occupation list, STUDENT 500, VISITOR 600, and the SkillSelect EOI
+  page) return **HTTP 403 even after browser escalation** (`src/browser_fetcher.py`,
+  non-headless Chromium), and are demoted to `status = NEEDS_MANUAL_CAPTURE`. No evasion is
+  attempted or added. See [Why does sync only touch 2 of 14 sources?](#why-does-admin-sync-only-touch-2-of-14-sources)
+  above for exactly how this gates `POST /admin/sync`.
+- **2 of 14 sources are currently `ACTIVE` and fetchable**: `SRC-AU-CRICOS-REGISTER`
+  (`cricos.education.gov.au`) and `SRC-AU-MIGRATION-REGS-1994`
+  (`legislation.gov.au/F1996B03551/latest/text`) — different domains, not blocked. Both return
+  real `HTTP 200` on every sync, but neither has yet produced a usable requirement — see the
+  "What works / what doesn't" table above for why (SPA shell with 0 chunks; index page instead
+  of the regulation text, respectively).
+
+Recovering the 12 blocked sources requires an admin to use
+`POST /admin/sources/{id}/manual-capture` with content captured by hand — this is the intended
+production path for `NEEDS_MANUAL_CAPTURE` sources, not a workaround.
 
 ## License
 
