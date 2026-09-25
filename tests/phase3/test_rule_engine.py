@@ -183,3 +183,70 @@ def test_fail_takes_precedence_over_unknown():
     assert result.overall_status == EvaluationStatus.FAIL
     assert result.failed == 1
     assert result.unknown == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 extraction contract -> Phase 3C ApplicantProfile.to_rule_data()
+# integration seam. Requirement fields come from prompts/requirement_extraction_v2.md
+# (dotted "applicant.xxx" names); real applicant data comes from
+# ApplicantProfile.to_rule_data() (flat canonical names). Found via the
+# tests/e2e/test_full_knowledge_to_assessment.py PostgreSQL E2E run, which failed
+# with every rule UNKNOWN despite matching applicant data — every one of these
+# would previously have returned UNKNOWN regardless of what the applicant provided.
+# ---------------------------------------------------------------------------
+
+def test_resolves_applicant_prefixed_field_against_bare_profile_key():
+    """rule.field="applicant.age" must resolve against to_rule_data()'s bare "age"."""
+    rule = _make_rule(field="applicant.age", operator="LT", value=45)
+    result = evaluate_rule(rule, {"age": 30})  # ApplicantProfile.to_rule_data() shape
+    assert result.status == EvaluationStatus.PASS
+    assert result.actual_value == 30
+
+
+def test_resolves_points_score_alias_to_points():
+    rule = _make_rule(field="applicant.points_score", operator="GTE", value=65)
+    result = evaluate_rule(rule, {"points": 80})
+    assert result.status == EvaluationStatus.PASS
+
+
+def test_resolves_required_points_alias_to_points():
+    rule = _make_rule(field="applicant.required_points", operator="GTE", value=65)
+    result = evaluate_rule(rule, {"points": 70})
+    assert result.status == EvaluationStatus.PASS
+
+
+def test_resolves_skills_assessment_alias():
+    # REQUIRED is translated to EQ/True by compile_requirement_to_rule() at compile
+    # time (tests/phase3/test_rule_compiler.py) — a Rule never carries "REQUIRED" here.
+    rule = _make_rule(field="applicant.skills_assessment", operator="EQ", value=True)
+    result = evaluate_rule(rule, {"skills_assessment_status": True})
+    assert result.status == EvaluationStatus.PASS
+
+
+def test_resolves_health_check_alias():
+    rule = _make_rule(field="applicant.health_check", operator="EQ", value=True)
+    result = evaluate_rule(rule, {"health_status": True})
+    assert result.status == EvaluationStatus.PASS
+
+
+def test_resolves_character_check_alias():
+    rule = _make_rule(field="applicant.character_check", operator="EQ", value=True)
+    result = evaluate_rule(rule, {"character_status": True})
+    assert result.status == EvaluationStatus.PASS
+
+
+def test_unmapped_field_still_correctly_unknown_not_fabricated():
+    """A field with no modeled applicant fact (e.g. a program-level fact) must
+    stay UNKNOWN, not be silently matched to something unrelated."""
+    rule = _make_rule(field="applicant.au_govt_debt", operator="EQ", value=False)
+    result = evaluate_rule(rule, {"age": 30, "points": 80})
+    assert result.status == EvaluationStatus.UNKNOWN
+
+
+def test_exact_dotted_match_still_wins_over_alias():
+    """Existing rules/tests that use matching dotted keys on both sides (the
+    pre-fix convention used throughout this file) must keep working unchanged."""
+    rule = _make_rule(field="applicant.points_score", operator="GTE", value=65)
+    result = evaluate_rule(rule, {"applicant.points_score": 70, "points": 1})
+    assert result.status == EvaluationStatus.PASS
+    assert result.actual_value == 70

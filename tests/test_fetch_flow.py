@@ -295,3 +295,6 @@ class TestFetchDocumentAndStoreNoChunks:
         assert outcome.status == "OK"
         assert outcome.requirements_extracted == 0
         assert session.query(ExtractionRun).count() == 0
+        # Real fetch, real content change, zero chunks: the caller must be able
+        # to tell this apart from a genuine "nothing to extract" success.
+        assert outcome.empty_content is True

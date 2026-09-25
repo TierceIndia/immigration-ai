@@ -8,8 +8,17 @@
 > 897 passed / 2 skipped / 0 failures** (30 warnings), the source registry now seeds **14 sources
 > across all four visa categories**, `POST /api/v1/admin/sync` was fixed to be admin-gated (was
 > unauthenticated) and all admin routes re-audited, and the manual Playwright script was moved out
-> of `tests/` so pytest no longer launches a browser at collection. Current, authoritative status:
-> `README.md` → "What works / what doesn't".
+> of `tests/` so pytest no longer launches a browser at collection.
+>
+> **STATUS UPDATE — 2026-09-25**: the provenance/lineage chain this report hardened was
+> **exercised for the first time end-to-end against real PostgreSQL** via
+> `tests/e2e/test_full_knowledge_to_assessment.py` (now passing): a real assessment traces back
+> through rule → requirement → evidence → chunk → document version → document → source, and
+> `Gap.field` was confirmed to preserve the compiled rule's true field name (not a normalized
+> alias) for full traceability. Getting there also surfaced and fixed a severe, previously-latent
+> bug where the *evaluation* layer (not lineage/provenance itself) would have silently returned
+> UNKNOWN for every real rule regardless of applicant data — see `PLAN.md` Section 2 for detail.
+> Current, authoritative status: `README.md` → "What works / what doesn't".
 
 ---
 

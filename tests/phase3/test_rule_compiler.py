@@ -86,3 +86,28 @@ def test_compile_operator_unknown_allowed():
     req = _make_req(operator="UNKNOWN")
     rule = compile_requirement_to_rule(req, "RULE-001")
     assert rule.operator == "UNKNOWN"
+
+
+# ---------------------------------------------------------------------------
+# REQUIRED/NOT_REQUIRED translation. Phase 2's extraction contract
+# (prompts/requirement_extraction_v2.md, MockLLMClient) uses REQUIRED for
+# boolean-flag criteria (health check, character check, skills assessment,
+# values statement, ...) — before this fix, compiling any such requirement
+# raised "Unsupported operator: REQUIRED" and silently prevented a large class
+# of real eligibility criteria from ever becoming a rule.
+# ---------------------------------------------------------------------------
+
+def test_compile_translates_required_to_eq_true():
+    req = _make_req(category="HEALTH", field="applicant.health_check",
+                     operator="REQUIRED", value=None)
+    rule = compile_requirement_to_rule(req, "RULE-HEALTH-001")
+    assert rule.operator == "EQ"
+    assert rule.value is True
+
+
+def test_compile_translates_not_required_to_eq_false():
+    req = _make_req(category="NOMINATION", field="applicant.nomination_required",
+                     operator="NOT_REQUIRED", value=None)
+    rule = compile_requirement_to_rule(req, "RULE-NOM-001")
+    assert rule.operator == "EQ"
+    assert rule.value is False

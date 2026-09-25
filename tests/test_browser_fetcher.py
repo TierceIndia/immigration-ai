@@ -129,3 +129,64 @@ def test_playwright_missing_returns_fetch_failed(monkeypatch):
     res = _playwright_fetch("https://example.gov/page", "HTML", 20)
     assert res.status == FetchStatus.FETCH_FAILED
     assert "playwright not installed" in (res.error or "")
+
+
+def test_chromium_launches_with_headless_false(monkeypatch):
+    """Production must launch Chromium headed (headless=False) — headless mode
+    is fingerprinted and blocked (HTTP 403) by the Home Affairs WAF. This test
+    never launches a real browser: it mocks the Playwright call chain and
+    inspects the exact kwargs passed to chromium.launch()."""
+    import playwright.sync_api as pw_sync_api
+
+    launch_calls = []
+
+    class _Resp:
+        status = 200
+        headers = {"content-type": "text/html"}
+
+    class _Page:
+        def set_default_timeout(self, ms):
+            pass
+
+        def goto(self, url, wait_until=None):
+            return _Resp()
+
+        def content(self):
+            return "<html><body>" + ("OK " * 20) + "</body></html>"
+
+    class _Context:
+        def new_page(self):
+            return _Page()
+
+        def close(self):
+            pass
+
+    class _Browser:
+        def new_context(self, **kwargs):
+            return _Context()
+
+        def close(self):
+            pass
+
+    class _Chromium:
+        def launch(self, **kwargs):
+            launch_calls.append(kwargs)
+            return _Browser()
+
+    class _Playwright:
+        chromium = _Chromium()
+
+    class _SyncPlaywrightCM:
+        def __enter__(self):
+            return _Playwright()
+
+        def __exit__(self, *exc_info):
+            return False
+
+    monkeypatch.setattr(pw_sync_api, "sync_playwright", lambda: _SyncPlaywrightCM())
+
+    result = _playwright_fetch("https://immi.homeaffairs.gov.au/page", "HTML", 20)
+
+    assert len(launch_calls) == 1
+    assert launch_calls[0]["headless"] is False
+    assert result.status == FetchStatus.OK

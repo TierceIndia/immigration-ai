@@ -75,7 +75,7 @@ document_chunks (Phase 1)
 chunk_selector.py       — recall-oriented candidate detection
         │
         ▼
-llm_client.py           — OpenAI only (production); MockLLMClient (unit tests only)
+llm_client.py           — OpenAI or Gemini (production); MockLLMClient (unit tests only)
         │
         ▼
 requirement_validator.py — JSON Schema + logic consistency
@@ -111,13 +111,20 @@ Every extracted requirement must have `evidence_text` that is an exact substring
 Real gold datasets are organized **per visa category** under `data/gold/<category>/` and each is validated against its own prompt contract — enforcing **zero cross-category contamination** (a Student source is never scored with the Skilled contract).
 
 - **skilled/** — populated with real, verbatim gold: `skilled_189_real.json` (23 items) + `skilled_190_real.json` (6 items). The 189 dataset's 17 evidence strings are verified verbatim substrings; it also carries annotations for the 190 cross-source set.
-- **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items** (anti-hallucination: no fabricated `evidence_text`; plain-HTTP fetches of live Home Affairs are HTTP 403-blocked to automated fetchers, see `SOURCE_REGISTRY_REPORT.md`; the browser path `src/browser_fetcher.py` receives HTTP 200 with headless=False, so real capture is feasible but not yet executed).
+- **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items** (anti-hallucination: no fabricated `evidence_text`; plain-HTTP fetches of live Home Affairs are HTTP 403-blocked to automated fetchers, see `SOURCE_REGISTRY_REPORT.md`; the browser path `src/browser_fetcher.py` was fixed 2026-09-25 — it was launching Chromium `headless=True`, which the WAF also fingerprints and blocks; switched to `headless=False` under Xvfb and **live-verified** to receive real HTTP 200 with full content on 2 sample previously-blocked URLs, so real capture is now confirmed feasible; populating the gold datasets from it is still not yet done).
 
 The integrity harness `src/phase2/category_gold.py` fingerprints each category's prompt contract and every gold dataset, and `tests/phase2/test_category_gold_harness.py` (12 tests) asserts the contamination-free + no-fabricated-evidence invariants hold.
 
 ### Production Model
 
 gpt-4o at temperature=0: F1=0.882, Evidence Accuracy=1.0, Critical Recall=1.0 (8/8).
+
+**2026-09-25**: Gemini (`gemini-flash-lite-latest`) was added as a second fully-supported
+production provider alongside OpenAI — `get_client()` in `src/phase2/llm_client.py` routes to
+`OpenAILLMClient` or `GeminiLLMClient` by model name prefix, both wired through the same
+governance layer (rate limiting, budget, response cache, usage logging). Anthropic/mock models
+are still rejected at the factory (fail-fast, no silent fallback). No comparative F1/accuracy
+numbers have been measured for Gemini yet on this project's gold sets.
 
 ---
 
@@ -1010,16 +1017,28 @@ Government Source
 | ~~Admin-only enforcement on every admin endpoint~~ | P1 | DONE | 2026-09-15: `POST /api/v1/admin/sync` was unauthenticated — now gated via shared `require_admin`; all admin routes audited |
 | ~~Playwright collection crash~~ | P1 | DONE | 2026-09-15: manual browser script moved out of `tests/` into `scripts/` — pytest no longer launches a browser at collection |
 | WORK/STUDENT/VISITOR sources | P3 | DONE | 2026-09-15: registry extended to 14 sources across all four categories (482/500/600 mains + occupation list + CRICOS) |
-| Live Home Affairs fetch | P3 | PARTIAL | Plain-HTTP 403 ACCESS_BLOCKED; browser path (headless=False) proven 200 — capture not yet operationalized |
+| ~~Live Home Affairs fetch~~ | P3 | DONE (was PARTIAL) | 2026-09-25: `browser_fetcher.py` was launching Chromium `headless=True`, fingerprinted and blocked by the WAF — fixed to `headless=False` under Xvfb, **live-verified** real HTTP 200 with full content on 2 previously-blocked URLs. Not yet confirmed via a full sync across all affected sources. |
+| ~~Auth temporarily bypassed for manual testing~~ | P0 | DONE | Restored 2026-09-22; bypass fully deleted, not just toggled off |
+| ~~Phase2→Phase3C field-naming mismatch~~ | **P0** | DONE | 2026-09-25: found via the first real E2E run on Postgres — every real extracted rule would have evaluated UNKNOWN forever regardless of applicant data (dotted extraction-contract field names vs. `ApplicantProfile.to_rule_data()`'s flat names, exact-match dict lookup with zero normalization). Fixed in `rule_engine.py`. |
+| ~~Compiler rejects REQUIRED/NOT_REQUIRED operators~~ | P1 | DONE | 2026-09-25: `compile_requirement_to_rule` raised on any requirement using REQUIRED (health/character/skills-assessment/values-statement criteria — common in real government text). Now translated to EQ/True or EQ/False at compile time. |
+| ~~Ordinal string comparison is lexicographic~~ | P2 | DONE | 2026-09-25: `"vocational" >= "competent"` wrongly evaluated `True` (raw Python string comparison). Fixed with an explicit ordinal-scale lookup in `operators.py`. |
+| ~~Zero-chunk extraction silently reports COMPLETED~~ | P2 | DONE | 2026-09-25: a CHANGED/INITIAL fetch yielding 0 chunks now records a visible `PARTIAL` PipelineRun warning instead of an indistinguishable-from-success `COMPLETED`. |
+| `SRC-AU-MIGRATION-REGS-1994` wrong URL | P2 | DONE | 2026-09-25: fixed to a verified-real PDF deep-link (see `SOURCE_REGISTRY_REPORT.md` §2.4) |
+| `SRC-AU-CRICOS-REGISTER` yields 0 chunks | P2 | OPEN | Confirmed (2026-09-25) a genuine search-interface SPA, not fixable via render-wait; needs re-sourcing |
+| Raw immutable snapshot persistence | P1 | OPEN | Production fetch path still discards raw bytes after chunking; not addressed yet |
+| Fresh Docker build can't reach PostgreSQL | **P0, new** | OPEN | 2026-09-25: `ModuleNotFoundError: No module named 'psycopg'` at `alembic upgrade head` — SQLAlchemy resolving the psycopg v3 dialect but only psycopg2-binary installed |
 | Real WORK/STUDENT/VISITOR gold data | P3 | OPEN | Gold dirs scaffolded with zero-item AWAITING_REAL_SOURCE placeholders (no fabricated evidence); skilled/ populated with real verbatim gold |
 | Multi-country deferred | P3 | OPEN | Australia only, NZ/Canada/etc. later |
 | 491 real-world coverage | P3 | OPEN | Partial real scenario validation |
 
-### Verification performed (2026-08-27; re-verified 2026-09-15)
+### Verification performed (2026-08-27; re-verified 2026-09-15; re-verified 2026-09-25)
 
-1. **899 collected / 897 passed / 2 skipped** on SQLite (0 failures, 30 SQLite datetime deprecation warnings).
-2. **Real PostgreSQL**: `docker compose up -d postgres` + `alembic upgrade head`, then full ORM pipeline Country → Program → Source → Document → Version → Chunk → Requirement → Rule (DRAFT → VALIDATED → APPROVED → ACTIVE). FK constraints and NOT NULL enforced correctly.
-3. **Live fetch**: Home Affairs returns 403 ACCESS_BLOCKED to the plain-HTTP fetcher — correctly classified, recorded, and source demoted (failure-safe by design); the Playwright browser path (`headless=False`) returns HTTP 200 on the same pages.
+1. **956 passed / 11 skipped / 0 failed** (2026-09-25), up from 899 collected / 897 passed / 2
+   skipped at the 2026-09-15 checkpoint — the growth is real new regression coverage for every bug
+   found and fixed since (auth restoration, API audit, field-mapping fix, operator translation,
+   ordinal comparison, zero-chunk PARTIAL, headless assertion, source-registry content).
+2. **Real PostgreSQL**: `docker compose up -d postgres` + `alembic upgrade head`, then full ORM pipeline Country → Program → Source → Document → Version → Chunk → Requirement → Rule (DRAFT → VALIDATED → APPROVED → ACTIVE). FK constraints and NOT NULL enforced correctly. **2026-09-25: the full knowledge-to-assessment E2E test now also passes against real PostgreSQL** — sync → extract → approve → compile → validate → approve → activate → PASS/FAIL/UNKNOWN → gaps, with correct provenance (it failed on first run, surfacing the field-mapping and operator bugs above).
+3. **Live fetch**: Home Affairs returns 403 ACCESS_BLOCKED to the plain-HTTP fetcher — correctly classified, recorded, and source demoted (failure-safe by design); the Playwright browser path, now genuinely `headless=False` under Xvfb, returns real HTTP 200 with full content on the same pages (live-verified 2026-09-25, not just claimed).
 4. **CLI Phase 1/2**: offline pipeline + phase2 run_extraction against DOC-AU-189-MAIN extract 6 validated requirements with category-aware prompt wiring.
 5. **Category-aware gold harness**: per-category dirs created; skilled gold (189 + 190, 29 items) migrated; work/student/visitor zero-item placeholders; integrity report clean (no contract violations, no cross-category leak).
 

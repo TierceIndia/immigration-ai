@@ -312,3 +312,49 @@ class TestCrawlFrequencyGating:
         assert len(results) == 1
         assert calls["count"] == 0
         assert session.query(PipelineRun).count() == 1
+
+
+class TestEmptyContentIsVisiblePartial:
+    """A source that fetches real 200 OK content that genuinely changed, but
+    whose extractor produces zero document chunks (e.g. a JS-rendered SPA shell
+    with no static content — the real SRC-AU-CRICOS-REGISTER symptom), must
+    record a visible PARTIAL PipelineRun, not a silent COMPLETED that looks
+    identical to a genuine "nothing to extract" success."""
+
+    def test_zero_chunk_change_is_partial_not_completed(self, session, monkeypatch):
+        _seed_source(session)
+        _patch_fetch(monkeypatch, b"<html><body></body></html>")
+
+        result = sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
+        session.commit()
+
+        assert result.status == "changed"  # fetch + content change were real
+        assert result.requirements_extracted == 0
+        run = _latest_run(session)
+        assert run.status == "PARTIAL"
+        assert any("zero document chunks" in e for e in run.errors)
+
+    def test_zero_chunk_second_fetch_after_real_content_is_also_partial(self, session, monkeypatch):
+        """Content that changes FROM real text TO an empty shell (not just a
+        bootstrap case) must be caught too."""
+        _seed_source_with_doc(session, content_hash=HASH_V1, last_hash=HASH_V1)
+        _patch_fetch(monkeypatch, b"<html><body></body></html>")
+
+        result = sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
+        session.commit()
+
+        assert result.status == "changed"
+        run = _latest_run(session)
+        assert run.status == "PARTIAL"
+
+    def test_normal_content_with_chunks_stays_completed(self, session, monkeypatch):
+        """Sanity check: the fix must not turn every successful sync into PARTIAL."""
+        _seed_source(session)
+        _patch_fetch(monkeypatch, HTML_V1)
+
+        result = sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
+        session.commit()
+
+        assert result.status == "changed"
+        run = _latest_run(session)
+        assert run.status == "COMPLETED"

@@ -10,13 +10,42 @@ from typing import Any
 from phase3.models import Rule, RuleEvaluation, EvaluationStatus, EligibilityResult
 from phase3.operators import evaluate_operator
 
+# Phase 2 extraction (prompts/requirement_extraction_v2.md) documents rule.field
+# using dotted names like "applicant.points_score"; ApplicantProfile.to_rule_data()
+# (Phase 3C) exposes flat canonical names like "points". A handful of these don't
+# match even after stripping the "applicant." prefix — this is the only place that
+# reconciles the two conventions, so neither phase needs to change its own contract.
+_FIELD_ALIASES: dict[str, str] = {
+    "points_score": "points",
+    "required_points": "points",
+    "skills_assessment": "skills_assessment_status",
+    "health_check": "health_status",
+    "character_check": "character_status",
+}
+
+
+def _resolve_field_value(rule_field: str, applicant_data: dict[str, Any]) -> Any:
+    """Look up a rule's field in the applicant-data dict.
+
+    Tries the exact field name first (covers every rule/test using a bare name
+    like "age" that already matches ApplicantProfile.to_rule_data() directly),
+    then the "applicant."-stripped + aliased name. A field with no mapping to a
+    modeled applicant fact (e.g. a program-level fact like invitation validity)
+    correctly stays unresolved -> UNKNOWN, not a bug.
+    """
+    if rule_field in applicant_data:
+        return applicant_data[rule_field]
+    normalized = rule_field[len("applicant."):] if rule_field.startswith("applicant.") else rule_field
+    normalized = _FIELD_ALIASES.get(normalized, normalized)
+    return applicant_data.get(normalized)
+
 
 def evaluate_rule(rule: Rule, applicant_data: dict[str, Any]) -> RuleEvaluation:
     """Evaluate a single rule against applicant data.
 
     Returns RuleEvaluation with status PASS, FAIL, or UNKNOWN.
     """
-    actual_value = applicant_data.get(rule.field)
+    actual_value = _resolve_field_value(rule.field, applicant_data)
 
     if rule.operator in ("EXISTS", "NOT_EXISTS"):
         passed, reason = evaluate_operator(rule.operator, actual_value, None)

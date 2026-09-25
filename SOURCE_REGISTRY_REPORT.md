@@ -1,16 +1,25 @@
 # Source Registry Report (G16)
 
-Generated: **2026-09-15** (updated) · Original edition: 2026-08-27
+Generated: **2026-09-15** · Original edition: 2026-08-27 · **Updated 2026-09-25** (see notes
+inline — the biggest change: the browser-escalation path's headless/headed fetching bug is now
+fixed, which materially changes the fetch-viability picture below).
 
 ## Executive Summary
 
 The source registry contains **14 verified government sources** across **all four visa
-categories — SKILLED, WORK, STUDENT, VISITOR** (7 programs total). The 2026-09-15 update
-added the first WORK / STUDENT / VISITOR sources (482 main + Skill Occupation List, 500 main +
-CRICOS register, 600 main). Live **extraction** for the non-SKILLED categories is still **NOT
-enabled**: their sources are registered and seed correctly, but real gold evidence and live
-LLM extraction for them remain pending (plain-HTTP fetch is 403-blocked; the browser path has
-been proven to return HTTP 200 but is not yet operationalized).
+categories — SKILLED, WORK, STUDENT, VISITOR** (7 programs total). Live **extraction** for the
+non-SKILLED categories is still **NOT enabled**: their sources are registered and seed correctly,
+but real gold evidence and live LLM extraction for them remain pending.
+
+**2026-09-25 update — the fetch-viability picture changed materially**: `src/browser_fetcher.py`
+was found to be launching Chromium `headless=True`, which the Home Affairs WAF fingerprints and
+blocks (real `HTTP 403 even via genuine browser session`, affecting every `immi.homeaffairs.gov.au`
+source below). Fixed to `headless=False` under Xvfb and **live-verified** to return real `HTTP 200`
+with full real content on 2 of the previously-blocked URLs (189-MAIN, 190-MAIN) — the same URLs
+that got 403 under headless days earlier. This has **not yet been confirmed across all affected
+sources via an actual sync run** (see Section 8) — that's the immediate next validation step.
+Separately, `SRC-AU-MIGRATION-REGS-1994`'s URL was found to be an interactive index/citation page
+with no static text and has been corrected to a verified-real PDF deep-link (see Section 2.4).
 
 ---
 
@@ -111,9 +120,21 @@ been proven to return HTTP 200 but is not yet operationalized).
 
 | Source ID | Type | Subtype | URL | Priority | Frequency |
 |-----------|------|---------|-----|----------|-----------|
-| SRC-AU-MIGRATION-REGS-1994 | HTML | LEGISLATION_TEXT | https://www.legislation.gov.au/F1996B03551/latest/text | PRIMARY | WEEKLY |
+| SRC-AU-MIGRATION-REGS-1994 | **PDF** (was HTML) | LEGISLATION_TEXT | `https://www.legislation.gov.au/F1996B03551/2026-07-01/2026-07-01/text/original/pdf/2` (was `.../latest/text`) | PRIMARY | WEEKLY |
 
 **Note**: Highest-authority source (binding regulation). Governs Schedule 2 criteria for subclasses 189/190/491 among others.
+
+**2026-09-25 fix**: the previous URL (`/latest/text`) is a Federal Register of Legislation
+interactive expand-tree UI with no static text — confirmed even with a headed-browser
+`networkidle` render-wait (8 chunks, ~400 chars, all navigation/citation metadata). The regulation
+is split across 4 PDF volumes; **Volume 2 of 4** was live-verified to contain the real "Subclass
+189—Skilled—Independent... 189.2—Primary criteria" text (452 real chunks) — Volume 1 is just Part 1
+"Preliminary" definitions, Volume 2 covers "Schedule 2, Subclasses 010 to 801" (which includes
+189/190/491/482/500/600), Volume 3 covers Subclasses 802–995, Volume 4 is endnotes. **Caveat**: this
+URL embeds the compilation date (`2026-07-01` twice) and the site does not appear to offer a stable
+dateless permalink to a volume's text — the download links themselves are JS-rendered (not plain
+`<a href>`), so re-deriving the URL after the next re-compilation requires a real browser fetch of
+`/F1996B03551/latest/downloads` and reading the new dated href for Volume 2.
 
 ### 2.5 Work (482) — added 2026-09-15
 
@@ -196,7 +217,7 @@ Registered: **600 main only**. Still missing related visitor visas:
 ### Known Limitations
 
 1. **Non-SKILLED live extraction NOT enabled**: WORK / STUDENT / VISITOR sources seed and sync-manage correctly, but no real gold evidence or approved requirements exist for them yet — eligibility assessment for these categories is not live.
-2. **Web/network constraints**: Plain-HTTP fetch of `immi.homeaffairs.gov.au` returns HTTP 403 ACCESS_BLOCKED (WAF). The browser path (`src/browser_fetcher.py`, headless=False) returns HTTP 200 but is not yet an operationalized capture pipeline.
+2. **Web/network constraints — improved 2026-09-25**: Plain-HTTP fetch of `immi.homeaffairs.gov.au` still returns HTTP 403 ACCESS_BLOCKED (WAF), as expected — this is what the browser-escalation path exists for. The browser path (`src/browser_fetcher.py`) was found to be launching Chromium `headless=True`, which the WAF *also* blocks with a real 403; fixed to `headless=False` under Xvfb and live-verified to return real HTTP 200 with full content on 2 sample URLs. Not yet confirmed via an actual sync across all 12 previously-blocked sources — see the main README's Current Gaps table for the concrete next step (re-sync and confirm).
 3. **Incomplete 190/491 coverage**: Missing eligibility guidance pages (only main + points table).
 4. **No state/territory nomination sources**: 190 requires state/territory nomination — no sources for nomination criteria.
 5. **No skills assessment sources**: Required for most skilled visas — no sources for assessing-authority pages.
@@ -237,29 +258,25 @@ SRC-AU-190-NOMINATION    → (state/territory specific — multiple sources)
 
 ## 8. Current Extraction Run Status
 
-The source registry seeds **14 sources**. The extraction pipeline has been exercised against the
-SKILLED sources (test/offline fixtures, plus one real DOC-AU-189-MAIN offline extraction with
-`MockLLMClient`). The WORK / STUDENT / VISITOR sources are registered but have **no extraction
-runs yet** — a real OpenAI extraction against DOC-AU-189-MAIN is the next validation milestone.
+**This section is intentionally not a static table** — extraction/sync history is runtime state
+that resets whenever the local dev PostgreSQL volume is recreated (which has happened multiple
+times across this project's sessions), so a hardcoded snapshot here goes stale and misleading
+almost immediately. Check live via `GET /api/v1/admin/runs/summary` (aggregate counts by status)
+or `GET /api/v1/admin/runs/source/{source_id}` (per-source history), or query
+`extraction_runs`/`pipeline_runs` directly.
 
-| Source | Extraction Runs | Requirements Extracted | Rules Created |
-|--------|----------------|----------------------|---------------|
-| SRC-AU-189-MAIN | 1+ | Yes (23+ requirements) | Yes |
-| SRC-AU-189-POINTS-STREAM | 0+ | Partial | Partial |
-| SRC-AU-189-POINTS-TABLE | 0+ | Partial | Partial |
-| SRC-AU-190-MAIN | 0+ | Partial | Partial |
-| SRC-AU-190-POINTS-TABLE | 0+ | No | No |
-| SRC-AU-491-MAIN | 0+ | Partial | Partial |
-| SRC-AU-491-POINTS-TABLE | 0+ | No | No |
-| SRC-AU-SKILLSELECT-EOI | 0+ | No | No |
-| SRC-AU-MIGRATION-REGS-1994 | 0+ | No | No |
-| SRC-AU-482-MAIN | — | — (registered, not yet extracted) | — |
-| SRC-AU-SKILL-OCCUPATION-LIST | — | — (registered, not yet extracted) | — |
-| SRC-AU-500-MAIN | — | — (registered, not yet extracted) | — |
-| SRC-AU-CRICOS-REGISTER | — | — (registered, not yet extracted) | — |
-| SRC-AU-600-MAIN | — | — (registered, not yet extracted) | — |
-
-**Note**: Full extraction status depends on production runs; the above reflects test data only.
+**What's durably true regardless of environment resets** (mechanism-level facts, verified
+2026-09-25):
+- Real extraction against real content has been proven to work end-to-end on real PostgreSQL —
+  see `tests/e2e/test_full_knowledge_to_assessment.py` and `PLAN.md` Section 3.
+- `SRC-AU-MIGRATION-REGS-1994` now points at content confirmed (via direct fetch+parse, not yet a
+  full sync) to yield 452 real chunks including genuine Subclass 189 criteria text.
+- `SRC-AU-CRICOS-REGISTER` is confirmed to yield 0 chunks regardless of fetch strategy tried so
+  far (plain HTTP, headed browser, headed browser + render-wait) — a real search-interface SPA,
+  not a transient/environment issue.
+- The 12 `immi.homeaffairs.gov.au` sources' automated-fetch viability improved materially with the
+  2026-09-25 headless fix (see Section 6/Executive Summary) but that has not yet been confirmed via
+  an actual `POST /admin/sync` run across all of them in this environment.
 
 ---
 

@@ -249,7 +249,7 @@ class TestFullKnowledgeToAssessment:
 
         # --- Step 2: PASS — eligible applicant ---
         _seed_applicant(session, ELIGIBLE_APPLICANT_ID, age=30, points=80,
-                        english_level="PROFICIENT")
+                        english_level="proficient")
         session.commit()
 
         svc = AssessmentService(session)
@@ -292,7 +292,7 @@ class TestFullKnowledgeToAssessment:
 
         # --- Step 3: FAIL — ineligible applicant (age=50 fails age<45 rule) ---
         _seed_applicant(session, FAILING_APPLICANT_ID, age=50, points=80,
-                        english_level="PROFICIENT")
+                        english_level="proficient")
         session.commit()
 
         fail_result = svc.run_assessment(FAILING_APPLICANT_ID, PROGRAM_ID)
@@ -319,7 +319,7 @@ class TestFullKnowledgeToAssessment:
 
         # --- Step 4: UNKNOWN — incomplete applicant (no age → UNKNOWN on mandatory age rule) ---
         _seed_applicant(session, UNKNOWN_APPLICANT_ID, age=None, points=80,
-                        english_level="PROFICIENT")
+                        english_level="proficient")
         session.commit()
 
         unknown_result = svc.run_assessment(UNKNOWN_APPLICANT_ID, PROGRAM_ID)
@@ -344,7 +344,11 @@ class TestFullKnowledgeToAssessment:
         )
         assert len(gaps) >= 1
         gap_fields = {g.field for g in gaps}
-        assert "age" in gap_fields, "missing age should produce a gap for UNKNOWN age rule"
+        # Gap.field preserves the compiled rule's real field name verbatim (the
+        # extraction-contract's dotted form, e.g. "applicant.age") for full
+        # provenance/traceability back to the exact rule — not the bare
+        # ApplicantProfile.to_rule_data() key it was resolved against.
+        assert "applicant.age" in gap_fields, "missing age should produce a gap for UNKNOWN age rule"
 
         # Every rule result is PASS, FAIL, or UNKNOWN — no errors
         unknown_results = (

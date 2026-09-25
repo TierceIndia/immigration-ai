@@ -462,10 +462,17 @@ def sync_source(session: Session, source_id: str,
 
         result.status = "changed"
         result.requirements_extracted = outcome.requirements_extracted
+        empty_content_warning = (
+            "Fetch succeeded and content changed, but extraction produced zero "
+            "document chunks (e.g. a JS-rendered page with no static content) — "
+            "no extraction was attempted. Content review recommended."
+            if outcome.empty_content else None
+        )
         return _finalize_change(
             session, run_repo, rule_repo, run, result,
             source_id, previous_hash, fresh_hash,
             dry_run=False, requirements_extracted=outcome.requirements_extracted,
+            empty_content_warning=empty_content_warning,
         )
 
     except Exception as e:
@@ -494,6 +501,7 @@ def _finalize_change(
     new_hash: str | None,
     dry_run: bool,
     requirements_extracted: int = 0,
+    empty_content_warning: str | None = None,
 ) -> SyncResult:
     """Run the shared changed-path body: change detection → compile → run record.
 
@@ -501,6 +509,10 @@ def _finalize_change(
     path passes the number of requirements extracted by the fetch step so the
     PipelineRun audit metrics reflect bootstrap/extraction (as the legacy
     zero-document path did).
+
+    ``empty_content_warning`` (real path only): the fetch succeeded and content
+    genuinely changed, but extraction found zero document chunks. Seeded into
+    the run's errors so it lands as a visible PARTIAL, never a silent COMPLETED.
     """
     result.requirements_extracted = requirements_extracted
 
@@ -529,7 +541,7 @@ def _finalize_change(
 
     # 3. Compile approved requirements → DRAFT rules
     #    Failure-safe: if compilation fails, old rules stay ACTIVE
-    errors: list[str] = []
+    errors: list[str] = [empty_content_warning] if empty_content_warning else []
     if approved_count > 0 and not dry_run:
         try:
             compilation_results = compile_approved_requirements(

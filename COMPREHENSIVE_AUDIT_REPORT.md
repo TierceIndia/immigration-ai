@@ -10,7 +10,24 @@
 > across all four visa categories** (WORK / STUDENT / VISITOR added), `POST /api/v1/admin/sync`
 > was fixed to be admin-gated (was unauthenticated; all admin routes re-audited), and the manual
 > Playwright script was moved out of `tests/` so pytest no longer launches a browser during
-> collection. Current, authoritative status: `README.md` → "What works / what doesn't".
+> collection.
+>
+> **STATUS UPDATE — 2026-09-25** (major since the above): suite now **956 passed / 11 skipped /
+> 0 failed**. Real auth confirmed restored (a temporary manual-testing bypass from 2026-09-21/22
+> was fully deleted, not left as a toggle). A full API endpoint audit (50 endpoints) found the
+> admin-auth pairing and route-ordering both clean, no removal candidates. The first real E2E run
+> against PostgreSQL (`tests/e2e/test_full_knowledge_to_assessment.py`) surfaced and fixed a severe
+> bug where every real extracted rule would have evaluated UNKNOWN forever regardless of applicant
+> data (a field-naming mismatch between the Phase 2 extraction contract and Phase 3C's
+> `ApplicantProfile.to_rule_data()`), plus a compiler bug rejecting `REQUIRED`/`NOT_REQUIRED`
+> operators used by real government eligibility text, plus a lexicographic-vs-ordinal string
+> comparison bug. That E2E test now passes on real PostgreSQL. Separately, `src/browser_fetcher.py`
+> was found launching Chromium `headless=True` (fingerprinted and blocked by the Home Affairs WAF)
+> — fixed to `headless=False` under Xvfb and live-verified to turn real 403s into real 200s.
+> `SRC-AU-MIGRATION-REGS-1994`'s URL was fixed to a verified-real PDF deep-link.
+> **New, unfixed gap found**: a fresh `docker compose up -d --build` can't connect to PostgreSQL
+> (`ModuleNotFoundError: No module named 'psycopg'`). Current, authoritative status: `README.md` →
+> "What works / what doesn't", and `PLAN.md` for the strategic view.
 
 ---
 

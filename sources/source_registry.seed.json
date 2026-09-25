@@ -129,13 +129,13 @@
       "program_id": "LEGISLATION_MIGRATION_REGS",
       "visa_category": "SKILLED",
       "authority": "Federal Register of Legislation (Office of Parliamentary Counsel)",
-      "url": "https://www.legislation.gov.au/F1996B03551/latest/text",
-      "source_type": "HTML",
+      "url": "https://www.legislation.gov.au/F1996B03551/2026-07-01/2026-07-01/text/original/pdf/2",
+      "source_type": "PDF",
       "source_subtype": "LEGISLATION_TEXT",
       "priority": "PRIMARY",
       "monitoring_method": "WEB",
       "crawl_frequency": "WEEKLY",
-      "notes": "Highest-authority source (binding regulation). Governs Schedule 2 criteria for subclasses 189/190/491 among others."
+      "notes": "Volume 2 of 4 (PDF) — live-verified 2026-09-25 to contain the real Subclass 189/190/491 Schedule 2 criteria text ('Schedule 2, Subclasses 010 to 801'), not just an index. The previous URL (/latest/text) is an interactive expand-tree UI with no static text; Volume 2's fixed PDF deep-link is the actual authoritative text. CAVEAT: this URL embeds the compilation date (2026-07-01 twice) and Federal Register of Legislation does not appear to offer a stable non-dated permalink to volume text — when this regulation is next amended and re-compiled, the URL will need to be re-derived (fetch /latest/downloads with a real browser, since download links are JS-rendered, and read the new dated href for Volume 2's PDF)."
     },
     {
       "source_id": "SRC-AU-482-MAIN",

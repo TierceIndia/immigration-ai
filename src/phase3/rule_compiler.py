@@ -20,6 +20,16 @@ def compile_requirement_to_rule(requirement: dict, rule_id: str) -> Rule:
     Raises ValueError if requirement is missing required fields or has unsupported operator.
     """
     operator = requirement.get("operator", "UNKNOWN")
+    value = requirement.get("value")
+    # Phase 2's extraction contract (prompts/requirement_extraction_v2.md) documents
+    # REQUIRED/NOT_REQUIRED for boolean-flag criteria (health check, character check,
+    # skills assessment, values statement, ...) — these aren't in Phase 3's 12-operator
+    # vocabulary. Translate here at compile time rather than rejecting the requirement
+    # outright or adding a 13th operator to the rule engine.
+    if operator == "REQUIRED":
+        operator, value = "EQ", True
+    elif operator == "NOT_REQUIRED":
+        operator, value = "EQ", False
     if operator not in SUPPORTED_OPERATORS and operator != "UNKNOWN":
         raise ValueError(f"Unsupported operator: {operator}")
 
@@ -53,7 +63,7 @@ def compile_requirement_to_rule(requirement: dict, rule_id: str) -> Rule:
         category=requirement.get("category", "UNKNOWN"),
         field=requirement.get("field", "UNKNOWN"),
         operator=operator,
-        value=requirement.get("value"),
+        value=value,
         unit=requirement.get("unit"),
         mandatory=requirement.get("mandatory", True),
         critical=critical,

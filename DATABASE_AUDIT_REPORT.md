@@ -13,7 +13,17 @@ audit was originally written against.
 > (SKILLED / WORK / STUDENT / VISITOR), `POST /api/v1/admin/sync` was found and fixed to be
 > admin-gated (it was previously unauthenticated; every admin route was re-audited), and the
 > manual Playwright script was moved out of `tests/` so the suite no longer launches a browser
-> at collection. See `README.md` → "What works / what doesn't" for the authoritative status.
+> at collection.
+>
+> **STATUS UPDATE — 2026-09-25**: one more migration has landed since (`e4f6a1b2c3d4_add_fetch_error_type`,
+> Sep 17 — adds `fetch_status`/`error_type` columns), taking the schema to 30 tables / alembic head
+> `e4f6a1b2c3d4`. `DBSTRUCTURE.md` has been regenerated from this live revision. This session did
+> **not** redo a fresh point-by-point constraint audit against `pg_constraint`/`pg_indexes` the way
+> the original work below did — the two constraints this project has previously flagged as
+> highest-value (`government_sources.url` uniqueness, `uq_rules_active_per_field` partial unique
+> index) were spot-checked live and confirmed still present and enforced, but this file's detailed
+> claims below were not re-verified line-by-line this round. Suite: **956 passed / 11 skipped /
+> 0 failed**. See `README.md` → "What works / what doesn't" for the authoritative status.
 
 Coverage:
 - 873-pass local suite before audit-hardening, **883 passed / 21 warnings** after adding 10

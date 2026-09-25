@@ -73,6 +73,51 @@ def test_gte_fail():
     assert passed is False
 
 
+# ---------------------------------------------------------------------------
+# Ordinal scale comparison (english_level etc.) — LT/LTE/GT/GTE on qualitative
+# strings must use real-world ranking, not raw lexicographic string comparison.
+# "vocational" vs "competent" is the proof case: alphabetically 'v' > 'c', so
+# plain Python string comparison says "vocational" >= "competent" is True —
+# but vocational is actually the LOWER level (none < vocational < competent <
+# proficient < superior), so the correct answer is False.
+# ---------------------------------------------------------------------------
+
+def test_ordinal_disagrees_with_lexicographic_vocational_vs_competent():
+    # Raw string comparison would (wrongly) say True here.
+    assert "vocational" >= "competent"
+    passed, reason = evaluate_operator("GTE", "vocational", "competent")
+    assert passed is False, "vocational is ranked BELOW competent, GTE must fail"
+
+
+def test_ordinal_proficient_meets_competent_requirement():
+    passed, reason = evaluate_operator("GTE", "proficient", "competent")
+    assert passed is True
+
+
+def test_ordinal_case_insensitive():
+    passed, reason = evaluate_operator("GTE", "PROFICIENT", "competent")
+    assert passed is True
+
+
+def test_ordinal_equal_levels_pass_gte():
+    passed, reason = evaluate_operator("GTE", "competent", "competent")
+    assert passed is True
+
+
+def test_ordinal_lt_still_works_for_lower_level():
+    passed, reason = evaluate_operator("LT", "vocational", "competent")
+    assert passed is True
+
+
+def test_non_ordinal_strings_fall_back_to_type_error_unchanged():
+    """A string that isn't a recognized ordinal level must behave exactly as
+    before this fix (TypeError on comparison against a number), not silently
+    match some scale."""
+    passed, reason = evaluate_operator("LT", "not_a_level", 45)
+    assert passed is False
+    assert "Type error" in reason
+
+
 def test_in_pass():
     passed, reason = evaluate_operator("IN", "substantive", ["substantive", "BVA"])
     assert passed is True

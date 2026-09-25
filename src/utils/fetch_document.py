@@ -95,6 +95,13 @@ class FetchStoreOutcome:
     error: str | None = None
     error_type: str | None = None  # machine-readable failure class
     demoted: str | None = None  # GovernmentSource.status set when the source was demoted
+    # True when the fetch succeeded (real 200 OK, real content_hash) and the
+    # content genuinely changed (INITIAL/CHANGED), but extraction produced zero
+    # document chunks — e.g. a JS-rendered SPA shell with no static content.
+    # Must never be indistinguishable from a real "nothing changed" success;
+    # the caller (government_sync.sync_source) turns this into a visible
+    # PARTIAL PipelineRun warning rather than a silent COMPLETED.
+    empty_content: bool = False
 
 
 def _resolve_session(session_or_engine) -> Session:
@@ -491,4 +498,5 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
         document_version=version_number,
         content_hash=content_hash,
         requirements_extracted=requirements_extracted,
+        empty_content=(change_type != "UNCHANGED" and not chunk_rows),
     )

@@ -40,6 +40,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Dockerfile's ENTRYPOINT (docker-entrypoint.sh) starts Xvfb and sets DISPLAY
+    # before running this command, so browser_fetcher.py's headless=False
+    # Chromium has a real X display available.
     command: >
       sh -c "alembic upgrade head && python src/seed_registry.py &&
       uvicorn src.api.main:create_app --factory --host 0.0.0.0 --port 8000"
