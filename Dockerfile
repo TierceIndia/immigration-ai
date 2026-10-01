@@ -7,11 +7,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 
+# gcc/libpq-dev are needed to build the psycopg2 source distribution.
+# No Xvfb/Xauth: the browser runs headless, so no X display is ever required.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
         libpq-dev \
-        xvfb \
-        xauth \
     && rm -rf /var/lib/apt/lists/*
 
 
@@ -19,8 +19,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 
-RUN pip install --no-cache-dir playwright \
-    && playwright install --with-deps chromium \
+# Patchright drives a real Chromium session. It is headless by default, so the
+# browser works with no X server and no DISPLAY; --with-deps pulls the system
+# libraries Chromium needs. The Playwright package is deliberately not installed.
+RUN patchright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
 
@@ -31,15 +33,6 @@ COPY migrations/ migrations/
 COPY prompts/ prompts/
 COPY alembic.ini .
 
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-
 EXPOSE 8000
 
-# browser_fetcher.py launches Chromium with headless=False (headless mode is
-# fingerprinted and blocked by the Home Affairs WAF) — it needs a real X display.
-# docker-entrypoint.sh starts Xvfb directly and waits for its socket rather than
-# using xvfb-run's wrapper, whose SIGUSR1-based readiness handshake hangs under
-# Docker's default (no-init) PID 1 signal handling.
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["uvicorn", "src.api.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

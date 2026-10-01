@@ -113,9 +113,21 @@ def get_run(
     request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    """Get a single pipeline run by ID."""
+    """Get a single pipeline run by ID, or a background sync job's progress.
+
+    A background sync started via POST /api/v1/admin/sync has its own run_id
+    distinct from any per-source PipelineRun (sync_all_sources creates one
+    PipelineRun per source, not one for the whole batch) — checked first here
+    since it's a cheap in-memory lookup, falling back to the PipelineRun table.
+    """
     _require_admin(current_user)
     parse_uuid_or_404(run_id)
+
+    from scheduler import get_sync_job
+    job = get_sync_job(run_id)
+    if job is not None:
+        return job
+
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = PipelineRunRepo(session)

@@ -4,6 +4,7 @@ This is the "real network" path that bootstraps a government source with no stor
 
     fetch (plain HTTP) ─┬─ OK ─────────────────────► extract_html / extract_pdf ──► store
                         │                               document / version / chunks
+                        │                             + persist immutable raw snapshot
                         ├─ ACCESS_BLOCKED ─────────┐
                         │   / REQUIRES_BROWSER      ├─► browser escalation (genuine session)
                         └─ other failure ──────────┴─► FetchLog + source diagnostics
@@ -20,6 +21,7 @@ reused unchanged.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -58,6 +60,144 @@ _BROWSER_ESCALATION_STATUSES = {
     fetcher.FetchStatus.ACCESS_BLOCKED,
     fetcher.FetchStatus.REQUIRES_BROWSER,
 }
+
+
+# ---------------------------------------------------------------------------
+# Immutable raw snapshots.
+#
+# The raw fetched bytes are the evidentiary root of the whole system: every
+# extracted requirement must be verifiable against the literal original
+# government document, so government_documents.raw_path and
+# document_versions.raw_path must be real, dereferenceable filesystem paths.
+#
+# The layout mirrors the legacy CLI (src/pipeline.py):
+#     raw/{country_id}/{visa_category}/{source_id}/content.v{version_number}.{ext}
+# The legacy CLI keys the leaf by calendar date; this path keys it by
+# version_number instead, because a source that changes twice in one day would
+# otherwise overwrite the earlier snapshot while its document_versions row still
+# referenced it — silently destroying a version the system still claims is
+# immutable.
+#
+# RAW_SNAPSHOT_DIR overrides the root (hermetic tests, or a deployment that
+# mounts a durable volume for snapshots).
+# ---------------------------------------------------------------------------
+def _raw_root() -> Path:
+    override = os.getenv("RAW_SNAPSHOT_DIR")
+    if override:
+        return Path(override)
+    from db import ROOT
+
+    return ROOT / "raw"
+
+
+def _raw_snapshot_relpath(source: GovernmentSource, version_number: int) -> Path:
+    source_type = (source.source_type or "HTML").upper()
+    ext = "pdf" if source_type == "PDF" else "html"
+    return (
+        Path(str(source.country_id or "ZZ"))
+        / (source.visa_category or "general").lower()
+        / str(source.source_id)
+        / f"content.v{version_number}.{ext}"
+    )
+
+
+def _manifest_path(path: Path) -> Path:
+    """Sidecar manifest for a raw snapshot: ``content.v1.html`` -> ``content.v1.html.meta.json``."""
+    return path.parent / f"{path.name}.meta.json"
+
+
+def _status_value(status: Any) -> str | None:
+    value = getattr(status, "value", status)
+    return str(value) if value is not None else None
+
+
+def build_raw_metadata(
+    source: GovernmentSource,
+    document_id: str,
+    version_number: int,
+    content_hash: str,
+    retrieved_at: datetime,
+    raw_bytes: bytes,
+    fetch_result: Any = None,
+    acquisition: str = "http",
+) -> dict[str, Any]:
+    """Retrieval metadata for one immutable raw snapshot.
+
+    The raw bytes alone are not sufficient evidence: reproducing what the
+    extractor received requires knowing *which* document and version was
+    fetched, *from where*, *when*, *how* it was obtained, and *whether the
+    acquisition succeeded*.  This dict is written next to the bytes so the
+    artifact is self-describing rather than depending on live DB rows that may
+    later change.
+    """
+    return {
+        "schema_version": 1,
+        "acquisition": acquisition,
+        "source_id": source.source_id,
+        "country_id": source.country_id,
+        "visa_category": source.visa_category,
+        "source_type": (source.source_type or "HTML").upper(),
+        "document_id": document_id,
+        "version_number": version_number,
+        "requested_url": source.url,
+        "final_url": getattr(fetch_result, "url", None) or source.url,
+        "content_type": getattr(fetch_result, "content_type", None),
+        "http_status": getattr(fetch_result, "http_status", None),
+        "fetch_status": _status_value(getattr(fetch_result, "status", None)),
+        "error_type": getattr(fetch_result, "error_type", None),
+        "duration_ms": getattr(fetch_result, "duration_ms", None),
+        "retrieved_at": retrieved_at.isoformat(),
+        "content_hash": content_hash,
+        "content_length": len(raw_bytes),
+    }
+
+
+def persist_raw_snapshot(
+    source: GovernmentSource,
+    version_number: int,
+    raw_bytes: bytes,
+    document_id: str | None = None,
+    content_hash: str | None = None,
+    retrieved_at: datetime | None = None,
+    fetch_result: Any = None,
+    acquisition: str = "http",
+) -> Path:
+    """Write the immutable raw snapshot (and its metadata manifest) and return
+    the path actually written.
+
+    Idempotent: ``version_number`` only advances when the content hash changes,
+    so a given (document_id, version_number) always maps to the same bytes.
+
+    A sidecar ``<snapshot>.meta.json`` manifest records the retrieval metadata
+    (source/document identity, version, URL, content type, HTTP/browser status
+    and timing, content hash) so the stored artifact is sufficient on its own to
+    reproduce what the extractor received.  It is written with sorted keys and a
+    fixed indent so identical retrievals produce byte-identical manifests.
+    """
+    path = _raw_root() / _raw_snapshot_relpath(source, version_number)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw_bytes)
+
+    metadata = build_raw_metadata(
+        source=source,
+        document_id=document_id or f"DOC-{str(source.source_id).replace('SRC-', '')}",
+        version_number=version_number,
+        content_hash=content_hash or sha256_bytes(raw_bytes),
+        retrieved_at=retrieved_at or datetime.now(timezone.utc),
+        raw_bytes=raw_bytes,
+        fetch_result=fetch_result,
+        acquisition=acquisition,
+    )
+    _manifest_path(path).write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return path
+
+
+def read_raw_metadata(path: str | Path) -> dict[str, Any]:
+    """Read back the retrieval manifest written alongside a raw snapshot."""
+    return json.loads(_manifest_path(Path(path)).read_text(encoding="utf-8"))
+
 
 
 def _extraction_model() -> str:
@@ -141,10 +281,23 @@ def _load_chunk_dicts(
 def _record_fetch_failure(
     session: Session, source: GovernmentSource, fetch_result, now: datetime
 ) -> FetchStoreOutcome:
+    """Record a failed retrieval without touching the source's registry status.
+
+    A failed fetch must never remove a source from the sync set.  Demoting it
+    to NEEDS_MANUAL_CAPTURE used to look like an escalation path, but
+    sync_all_sources() selects on status == 'ACTIVE', so the demotion silently
+    and permanently excluded the source from every future run — a dead end that
+    required a manual capture that no production operator performs, and that
+    wrote a non-dereferenceable ``manual:{document_id}`` raw_path.
+
+    The precise failure classification already lives on the source's
+    ``fetch_status``/``last_error``/``error_type`` columns and in the FetchLog
+    row below, so the registry status stays ACTIVE and the source keeps being
+    retried on its normal schedule.  Previously stored documents, versions and
+    activated rules are left untouched — a failure adds no new knowledge, and
+    removes none.
+    """
     demoted: str | None = None
-    if fetch_result.status in _BROWSER_ESCALATION_STATUSES:
-        source.status = "NEEDS_MANUAL_CAPTURE"
-        demoted = source.status
     source.last_checked_at = now
     source.fetch_status = fetch_result.status.value
     source.http_status = fetch_result.http_status
@@ -238,6 +391,29 @@ def run_requirement_extraction(
         return {"document_id": document_id, "status": "NO_VERSION"}
 
     model_name = _extraction_model()
+
+    # Reconcile runs abandoned by a hard-killed process before starting another.
+    # Observed live: a killed extraction left RUNNING rows that nothing ever
+    # revisited, so the audit trail claimed extraction was still in flight for a
+    # version that had long finished failing. A new run supersedes them.
+    stale_runs = (
+        session.query(ExtractionRun)
+        .filter(
+            ExtractionRun.document_id == document_id,
+            ExtractionRun.status == "RUNNING",
+        )
+        .all()
+    )
+    for stale in stale_runs:
+        logger.warning(
+            "Marking stale RUNNING extraction run as ABANDONED",
+            extra={"run_id": stale.run_id, "document_id": document_id},
+        )
+        stale.status = "FAILED"
+        stale.error = "abandoned: superseded by a newer extraction run"
+    if stale_runs:
+        conn.commit()
+
     run = ExtractionRun(
         run_id=new_run_id(),
         document_id=document_id,
@@ -264,26 +440,10 @@ def run_requirement_extraction(
         "title": doc.title,
     }
 
-    try:
-        client = get_client(model_name, visa_category=source.visa_category)
-        outcomes = extract_from_document(
-            source=source_ctx,
-            document=document_ctx,
-            all_chunks=chunks,
-            llm_client=client,
-            context_window=1,
-        )
-    except Exception as exc:
-        try:
-            complete_extraction_run(conn, run_id, {}, status="FAILED", error=str(exc))
-        except Exception:
-            pass
-        raise
-
-    counters = {
+    counters: dict[str, int] = {
         "chunks_seen": len(chunks),
-        "candidate_chunks": len(outcomes),
-        "llm_calls": len(outcomes),
+        "candidate_chunks": 0,
+        "llm_calls": 0,
         "requirements_extracted": 0,
         "validated": 0,
         "needs_review": 0,
@@ -293,10 +453,17 @@ def run_requirement_extraction(
     }
     persisted: list[dict[str, Any]] = []
 
-    for outcome in outcomes:
+    def persist_outcome(outcome) -> None:
+        """Persist one candidate's requirements immediately.
+
+        Invoked as each candidate completes (not after the whole loop) so a
+        provider failure mid-document cannot discard completed work.
+        """
+        counters["candidate_chunks"] += 1
+        counters["llm_calls"] += 1
         if getattr(outcome, "schema_errors", None):
             counters["schema_failures"] += 1
-            continue
+            return
         for req in outcome.accepted_requirements:
             counters["requirements_extracted"] += 1
             counters["validated"] += 1
@@ -337,6 +504,32 @@ def run_requirement_extraction(
             if any("evidence" in r.lower() or "fabricat" in r.lower() for r in item["reasons"]):
                 counters["evidence_failures"] += 1
 
+    # Persist each candidate's requirements as soon as it is produced, so a
+    # provider failure part-way through a long document keeps everything already
+    # extracted instead of discarding the whole run.
+    def _stream(outcome) -> None:
+        persist_outcome(outcome)
+
+    try:
+        client = get_client(model_name, visa_category=source.visa_category)
+        extract_from_document(
+            source=source_ctx,
+            document=document_ctx,
+            all_chunks=chunks,
+            llm_client=client,
+            context_window=1,
+            on_outcome=_stream,
+        )
+    except Exception as exc:
+        # Requirements extracted before the failure are already durable; record
+        # them on the FAILED run so partial progress is visible rather than the
+        # run looking as though it produced nothing.
+        try:
+            complete_extraction_run(conn, run_id, counters, status="FAILED", error=str(exc))
+        except Exception:
+            pass
+        raise
+
     complete_extraction_run(conn, run_id, counters, status="COMPLETED")
     return {
         "run_id": run_id,
@@ -361,6 +554,7 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
     source_type = (source.source_type or "HTML").upper()
 
     fetch_result = fetcher.fetch(source.url, source_type=source_type)
+    acquisition = "http"
     if fetch_result.status in _BROWSER_ESCALATION_STATUSES:
         logger.info(
             "Plain fetch blocked; escalating to genuine browser session",
@@ -369,6 +563,7 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
         fetch_result = browser_fetcher.fetch_with_browser(
             source.url, source_type=source_type
         )
+        acquisition = "browser"
     if not fetch_result.ok:
         return _record_fetch_failure(session, source, fetch_result, now)
 
@@ -399,6 +594,21 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
         change_type = "CHANGED"
         version_number = (existing.current_version or 0) + 1
 
+    # Persist the real fetched bytes before any row references them, so every
+    # raw_path written below dereferences to the actual original document.
+    raw_path_str = str(
+        persist_raw_snapshot(
+            source,
+            version_number,
+            raw_bytes,
+            document_id=document_id,
+            content_hash=content_hash,
+            retrieved_at=now,
+            fetch_result=fetch_result,
+            acquisition=acquisition,
+        )
+    )
+
     doc = existing
     if doc is None:
         doc = GovernmentDocument(
@@ -414,7 +624,7 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
             content_hash=content_hash,
             current_version=version_number,
             language="en",
-            raw_path=f"fetch:{document_id}:v{version_number}",
+            raw_path=raw_path_str,
             status="NEEDS_OCR" if needs_ocr else "CURRENT",
         )
         session.add(doc)
@@ -424,6 +634,8 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
         doc.current_version = version_number
         doc.url = fetch_result.url
         doc.status = "NEEDS_OCR" if needs_ocr else "CURRENT"
+        # Keep the document row pointing at the current version's snapshot.
+        doc.raw_path = raw_path_str
         if doc.title is None:
             doc.title = title
 
@@ -444,7 +656,7 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
             version_number=version_number,
             content_hash=content_hash,
             retrieved_at=now,
-            raw_path=f"fetch:{document_id}:v{version_number}",
+            raw_path=raw_path_str,
             change_type=change_type,
         )
         session.add(dv)

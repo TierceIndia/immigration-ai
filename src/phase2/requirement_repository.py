@@ -18,6 +18,25 @@ from datetime import datetime, timezone
 
 from requirement_deduplicator import decide, semantic_key
 
+# Must match db.models.Requirement.requirement_id's column width (see migration
+# a3c5e7f9b1d3). A long program_id (e.g. "LEGISLATION_MIGRATION_REGS") pushed a
+# generated id past the old 48-char limit and PostgreSQL silently dropped the
+# insert (StringDataRightTruncation) — SQLite doesn't enforce VARCHAR length at
+# all, so this never surfaced in local/test runs. Failing loudly here, before
+# the INSERT is even attempted, means a too-long id is a clear, immediate
+# ValueError instead of a database-specific silent data-loss bug.
+MAX_REQUIREMENT_ID_LENGTH = 96
+
+
+def _checked_requirement_id(requirement_id: str) -> str:
+    if len(requirement_id) > MAX_REQUIREMENT_ID_LENGTH:
+        raise ValueError(
+            f"generated requirement_id is {len(requirement_id)} chars, exceeding "
+            f"MAX_REQUIREMENT_ID_LENGTH={MAX_REQUIREMENT_ID_LENGTH}: {requirement_id!r}. "
+            "Refusing to insert — this would silently truncate on PostgreSQL."
+        )
+    return requirement_id
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -149,7 +168,7 @@ def persist_requirement(conn, *, program_id: str, country_id: str, requirement: 
     document_version_id = _resolve_document_version_id(conn, document_id, document_version)
 
     if decision.relationship == "NEW":
-        requirement_id = f"REQ-{program_id}-{sem_key}"
+        requirement_id = _checked_requirement_id(f"REQ-{program_id}-{sem_key}")
         conn.execute(
             """
             INSERT INTO requirements
@@ -197,7 +216,9 @@ def persist_requirement(conn, *, program_id: str, country_id: str, requirement: 
                 "semantic_key": sem_key, "reason": decision.reason}
 
     # CONFLICT
-    requirement_id = f"REQ-{program_id}-{sem_key}-{uuid.uuid4().hex[:6]}"
+    requirement_id = _checked_requirement_id(
+        f"REQ-{program_id}-{sem_key}-{uuid.uuid4().hex[:6]}"
+    )
     conn.execute(
         """
         INSERT INTO requirements

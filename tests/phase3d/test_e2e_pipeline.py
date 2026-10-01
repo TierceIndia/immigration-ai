@@ -288,7 +288,7 @@ class TestEndToEndPipeline:
         assert dc_v1.status == RuleStatus.SUPERSEDED
         assert dc_v1.value == 45  # original value preserved
 
-    def test_extraction_failure_keeps_old_active(self, session, repo):
+    def test_no_new_approved_requirements_keeps_old_active(self, session, repo):
         """
         SCENARIO: Government changed but LLM extraction failed.
         Expected: Old ACTIVE rule stays ACTIVE, no new rule created.

@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
+
 import pytest
 from unittest.mock import patch
 from sqlalchemy import create_engine, inspect
@@ -11,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from db.models import Base
 from api.main import app
+from scheduler import _sync_lock
 
 
 @pytest.fixture()
@@ -960,12 +964,114 @@ class TestAdminSyncAuth:
             assert "Admin role required" in resp.json()["detail"]
         mock_sync.assert_not_called()
 
-    def test_admin_token_returns_200_and_triggers_sync(self, client):
+    def test_admin_token_returns_202_and_starts_background_sync(self, client):
+        """A full source sync must not block the HTTP request.
+
+        Returns 202 + a run_id immediately and does the work on a background
+        thread, so a slow multi-source crawl can never time out the caller.
+        """
         headers = self._register_and_login(client, "admin-sync@example.com")
         self._promote_to_admin(client, "admin-sync@example.com")
-        with patch("scheduler.trigger_sync_now") as mock_sync:
-            mock_sync.return_value = {"status": "ok", "total_sources": 0}
+
+        with patch("scheduler.start_sync_background") as mock_start:
+            mock_start.return_value = {"run_id": "bg-1234", "status": "STARTED"}
             resp = client.post("/api/v1/admin/sync", headers=headers)
-            assert resp.status_code == 200
-            assert resp.json() == {"status": "ok", "total_sources": 0}
-        mock_sync.assert_called_once()
+
+        assert resp.status_code == 202
+        assert resp.json() == {"run_id": "bg-1234", "status": "STARTED"}
+        mock_start.assert_called_once()
+
+    def test_admin_token_returns_409_when_sync_already_running(self, client):
+        """Only one sync ever runs at a time, however it was triggered."""
+        headers = self._register_and_login(client, "admin-sync-busy@example.com")
+        self._promote_to_admin(client, "admin-sync-busy@example.com")
+
+        with patch("scheduler.start_sync_background") as mock_start:
+            mock_start.return_value = {
+                "status": "busy", "detail": "A sync is already in progress",
+            }
+            resp = client.post("/api/v1/admin/sync", headers=headers)
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "A sync is already in progress"
+
+
+class TestAdminSyncBackgroundE2E:
+    """End-to-end behaviour of the background sync started via POST /admin/sync."""
+
+    def _admin_headers(self, client, db_engine, email):
+        client.post(
+            "/api/v1/auth/register",
+            json={"email": email, "password": "pass123", "full_name": "Sync E2E"},
+        )
+        resp = client.post(
+            "/api/v1/auth/login", json={"email": email, "password": "pass123"},
+        )
+        from db.connection import get_session
+        from db.models import ApiUser
+
+        with get_session(db_engine) as s:
+            user = s.query(ApiUser).filter(ApiUser.email == email).first()
+            user.role = "admin"
+            s.commit()
+        return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+
+    def test_second_sync_returns_409_while_first_is_running(self, client, db_engine):
+        """A genuinely in-flight sync makes a concurrent request 409."""
+        headers = self._admin_headers(client, db_engine, "bg-second@example.com")
+
+        gate = threading.Event()
+        try:
+            def _slow_sync(session, dry_run=False, trigger_type=None):
+                gate.wait(timeout=10)
+                return []
+
+            with patch("orchestration.government_sync.sync_all_sources", _slow_sync):
+                first = client.post("/api/v1/admin/sync", headers=headers)
+                assert first.status_code == 202
+                run_id = first.json()["run_id"]
+
+                second = client.post("/api/v1/admin/sync", headers=headers)
+                assert second.status_code == 409
+
+                # Give the worker a moment to actually reach the stub.
+                deadline = time.time() + 5
+                while time.time() < deadline and not gate.is_set():
+                    if not _sync_lock.locked():
+                        time.sleep(0.01)
+                        continue
+                    break
+                gate.set()
+        finally:
+            gate.set()
+            deadline = time.time() + 5
+            while time.time() < deadline and _sync_lock.locked():
+                time.sleep(0.01)
+            assert not _sync_lock.locked(), "background sync leaked the lock"
+
+        assert run_id
+
+    def test_sync_then_poll_run_id_reaches_completed(self, client, db_engine):
+        """The returned run_id is pollable and reaches a terminal state."""
+        headers = self._admin_headers(client, db_engine, "bg-poll@example.com")
+
+        with patch("orchestration.government_sync.sync_all_sources",
+                   lambda session, dry_run=False, trigger_type=None: []):
+            started = client.post("/api/v1/admin/sync", headers=headers)
+        assert started.status_code == 202
+        run_id = started.json()["run_id"]
+
+        deadline = time.time() + 10
+        body = None
+        while time.time() < deadline:
+            poll = client.get(f"/api/v1/admin/runs/{run_id}", headers=headers)
+            assert poll.status_code == 200, poll.text
+            body = poll.json()
+            if body.get("status") in ("COMPLETED", "FAILED", "PARTIAL"):
+                break
+            time.sleep(0.02)
+
+        assert body is not None
+        assert body["run_id"] == run_id
+        assert body["status"] == "COMPLETED", body
+        assert body["result"]["total_sources"] == 0

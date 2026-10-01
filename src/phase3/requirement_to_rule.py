@@ -24,6 +24,14 @@ from logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# Must match phase2.requirement_repository.MAX_REQUIREMENT_ID_LENGTH and
+# db.models.Rule.rule_id's column width (see migration a3c5e7f9b1d3). Kept as
+# its own constant here rather than importing across phase2/phase3 — the
+# phase2 module relies on src/phase2/ being separately added to sys.path by
+# utils/fetch_document.py before its own flat internal imports resolve, and
+# this file must not depend on that import-order side effect to be safe.
+MAX_RULE_ID_LENGTH = 96
+
 
 def _load_requirement_dict(session: Session, req_orm: Requirement) -> dict[str, Any]:
     """Convert a DB Requirement ORM object into the dict format expected by
@@ -116,6 +124,18 @@ def compile_approved_requirements(
         rule_id = f"RULE-{req_orm.requirement_id}"
 
         try:
+            # rule_id is derived from requirement_id (db.models.Rule.rule_id is
+            # widened to match requirement_id's width — see migration
+            # a3c5e7f9b1d3), but a defensive check here means a too-long id is
+            # still a clear, immediate error instead of a silent PostgreSQL
+            # truncation — same failure-safe guarantee as
+            # requirement_repository._checked_requirement_id, and it's caught by
+            # the same except below so one bad requirement never stops the batch.
+            if len(rule_id) > MAX_RULE_ID_LENGTH:
+                raise ValueError(
+                    f"generated rule_id is {len(rule_id)} chars, exceeding "
+                    f"MAX_RULE_ID_LENGTH={MAX_RULE_ID_LENGTH}: {rule_id!r}"
+                )
             compiled = compile_requirement_to_rule(req_dict, rule_id)
         except Exception as e:
             logger.warning("Failed to compile requirement",

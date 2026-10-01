@@ -30,9 +30,10 @@ from __future__ import annotations
 
 import os
 import threading
+import uuid
 from typing import Any
 
-from datetime import timezone as _tz
+from datetime import datetime, timezone as _tz
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
@@ -118,6 +119,140 @@ def _acquired_sync_lock() -> bool:
 
 def _release_sync_lock() -> None:
     _sync_lock.release()
+
+
+# ---------------------------------------------------------------------------
+# Background sync jobs (POST /api/v1/admin/sync) — in-memory, single-process.
+#
+# sync_all_sources() creates one PipelineRun row PER SOURCE (its own run_id),
+# not one row for the whole batch — so a batch-level "how is my sync going"
+# handle needs its own id, tracked here rather than in the DB. This matches
+# _sync_lock's existing single-process-only scope (no Redis/shared state yet;
+# see PLAN.md), so it does not survive a process restart or multiple workers.
+# ---------------------------------------------------------------------------
+_sync_jobs: dict[str, dict[str, Any]] = {}
+_sync_jobs_lock = threading.Lock()
+
+
+def _set_job(run_id: str, **fields: Any) -> None:
+    with _sync_jobs_lock:
+        job = _sync_jobs.setdefault(run_id, {"run_id": run_id})
+        job.update(fields)
+
+
+def get_sync_job(run_id: str) -> dict[str, Any] | None:
+    """Look up a background sync job started via start_sync_background().
+
+    Returns a shallow copy (never the live dict) so callers can't mutate
+    internal state. Returns None if run_id is not a known background job
+    (e.g. it's a per-source PipelineRun id instead, or unknown).
+    """
+    with _sync_jobs_lock:
+        job = _sync_jobs.get(run_id)
+        return dict(job) if job is not None else None
+
+
+def _run_sync_job(run_id: str, engine, trigger_type: str) -> None:
+    """Background-thread body: run the sync, record progress, release the lock.
+
+    Mirrors trigger_sync_now's sync_all_sources call exactly — the only
+    difference is where the result goes (the in-memory job registry instead of
+    a direct function return) and that the _sync_lock release happens here,
+    at the end of the actual work, not when the HTTP request returns.
+    """
+    from db.connection import get_session
+    from orchestration.government_sync import sync_all_sources
+
+    _set_job(run_id, status="RUNNING", started_at=datetime.now(_tz.utc).isoformat())
+
+    summary: dict[str, Any] | None = None
+    error: str | None = None
+    try:
+        with get_session(engine) as session:
+            results = sync_all_sources(session, dry_run=False, trigger_type=trigger_type)
+            summary = {
+                "total_sources": len(results),
+                "changed": sum(1 for r in results if r.status == "changed"),
+                "unchanged": sum(1 for r in results if r.status == "unchanged"),
+                "errors": sum(1 for r in results if r.status == "error"),
+                "results": [
+                    {"source_id": r.source_id, "status": r.status} for r in results
+                ],
+            }
+    except Exception as e:
+        error = str(e)
+    finally:
+        # Release the lock EXACTLY ONCE, on every path, and always BEFORE the
+        # terminal status is published. Two properties matter here:
+        #
+        # 1. Ordering — a caller polling GET /admin/runs/{run_id} that observes
+        #    COMPLETED/FAILED must never still see the lock held, or its
+        #    follow-up POST /admin/sync would get a spurious 409 for a sync that
+        #    has externally already finished.
+        # 2. Exactly-once — the release lives in `finally` and nowhere else, so a
+        #    failure while recording or logging the result (below, OUTSIDE this
+        #    try) cannot fall back into a second release of a free lock, which
+        #    would raise "release unlocked lock" and leave the job unfinalised.
+        _release_sync_lock()
+
+    try:
+        if error is None and summary is not None:
+            _set_job(
+                run_id, status="COMPLETED", result=summary,
+                completed_at=datetime.now(_tz.utc).isoformat(),
+            )
+            logger.info(
+                "Background sync completed",
+                extra={"run_id": run_id, "total_sources": summary["total_sources"],
+                       "changed": summary["changed"], "errors": summary["errors"]},
+            )
+        else:
+            _set_job(
+                run_id, status="FAILED", error=error or "Background sync produced no result",
+                completed_at=datetime.now(_tz.utc).isoformat(),
+            )
+            logger.error(
+                "Background sync failed",
+                extra={"run_id": run_id, "error": error or "Background sync produced no result"},
+            )
+    except Exception:
+        # The lock is already free at this point, so a failure to record the
+        # terminal state must not leave the process wedged — log and move on.
+        logger.exception("Failed to record terminal state for background sync %s", run_id)
+
+
+def start_sync_background(engine, trigger_type: str = "MANUAL") -> dict[str, Any]:
+    """Start a government source sync in a background thread and return immediately.
+
+    Reuses the same _sync_lock as the scheduled job and trigger_sync_now, so at
+    most one sync ever runs at a time regardless of how it was triggered. The
+    lock is acquired synchronously (in the caller's thread) before the background
+    thread is spawned, so a concurrent call that arrives while a sync is already
+    running is rejected immediately — never blocks, never starts a second thread.
+
+    Returns {"run_id": <uuid>, "status": "STARTED"} on success, or
+    {"status": "busy", "detail": ...} if a sync is already running (the caller,
+    e.g. the HTTP route, is expected to translate that into 409).
+
+    Progress/result is then readable via get_sync_job(run_id).
+    """
+    if not _acquired_sync_lock():
+        logger.warning("Background sync rejected — another sync is already running")
+        return {"status": "busy", "detail": "A sync is already in progress"}
+
+    run_id = str(uuid.uuid4())
+    _set_job(
+        run_id,
+        status="STARTED", trigger_type=trigger_type,
+        started_at=None, completed_at=None, result=None, error=None,
+    )
+    thread = threading.Thread(
+        target=_run_sync_job, args=(run_id, engine, trigger_type),
+        name=f"sync-job-{run_id}", daemon=True,
+    )
+    thread.start()
+    logger.info("Background sync started", extra={"run_id": run_id, "trigger_type": trigger_type})
+    return {"run_id": run_id, "status": "STARTED"}
 
 
 def _sync_job(engine) -> None:

@@ -358,3 +358,286 @@ class TestEmptyContentIsVisiblePartial:
         assert result.status == "changed"
         run = _latest_run(session)
         assert run.status == "COMPLETED"
+
+
+class TestFailedFetchDoesNotPoisonKnownGoodKnowledge:
+    """A later failure must never damage knowledge that already worked.
+
+    These are genuine failure injections: the fetch result or the extraction/LLM
+    call actually raises, and the assertions then check that the previously
+    ACTIVE rule, the immutable document versions and the source row survive.
+    """
+
+    HTML_MULTI = (
+        b"<html><head><title>Skilled 189</title></head><body>"
+        b"<h1>Age</h1><p>Applicants must be under 45 years of age.</p>"
+        b"<h1>English</h1><p>Applicants must have competent English.</p>"
+        b"<h1>Experience</h1>"
+        b"<p>Applicants must have at least 3 years of work experience.</p>"
+        b"</body></html>"
+    )
+
+    @staticmethod
+    def _make_active_rule(session):
+        from phase3.rule_repository import EnhancedRuleRepo
+
+        EnhancedRuleRepo(session).create(
+            rule_id="RULE-AGE-189", requirement_id="REQ-AGE-189",
+            program_id="SKILLED_189", category="age", field="age",
+            operator="LT", value_json="45", mandatory=True, critical=True,
+            message="Age must be under 45", status="ACTIVE", current_version=1,
+            source_id="SRC-AU-189", document_id="DOC-AU-189",
+            document_version=1, chunk_id=1, evidence_text="Under 45",
+        )
+        session.commit()
+
+    def test_failure_preserves_document_versions_and_source(self, session, monkeypatch):
+        """A failed re-fetch must not create a version or clear last_hash.
+
+        Losing last_hash would make the next sync re-bootstrap the document and
+        duplicate knowledge; losing a version would destroy immutable history.
+        """
+        _seed_source_with_doc(session, content_hash=HASH_V1, last_hash=HASH_V1)
+        self._make_active_rule(session)
+
+        def _fetch_fails(url, source_type=None, **kw):
+            raise RuntimeError("injected network failure")
+
+        monkeypatch.setattr(fetcher, "fetch", _fetch_fails)
+
+        result = sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
+        session.commit()
+
+        assert result.status == "error"
+        assert any("injected network failure" in e for e in result.errors)
+
+        # Exactly the one pre-existing version - no new version invented.
+        versions = session.query(DocumentVersion).filter_by(
+            document_id="DOC-AU-189").all()
+        assert len(versions) == 1
+        assert versions[0].version_number == 1
+        assert versions[0].content_hash == HASH_V1
+
+        # The source keeps its known-good hash and stays in the sync set.
+        src = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+        assert src.last_hash == HASH_V1
+        assert src.status == "ACTIVE"
+
+    def test_failure_after_good_sync_does_not_touch_activated_rules(self, session, monkeypatch):
+        """Do the good sync, then fail the next one; the rule must be untouched."""
+        from phase3.rule_repository import EnhancedRuleRepo
+
+        _seed_source(session)
+        _patch_fetch(monkeypatch, HTML_V1)
+        sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
+        session.commit()
+
+        # Plant an activated rule as the governance stage would have.
+        src = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+        doc = session.query(GovernmentDocument).filter_by(document_id="DOC-AU-189").first()
+        assert doc is not None and src.last_hash == HASH_V1
+        self._make_active_rule(session)
+
+        def _fetch_fails(url, source_type=None, **kw):
+            raise RuntimeError("injected outage on second sync")
+
+        monkeypatch.setattr(fetcher, "fetch", _fetch_fails)
+        sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
+        session.commit()
+
+        active = EnhancedRuleRepo(session).list_active("SKILLED_189")
+        assert len(active) == 1
+        assert active[0].rule_id == "RULE-AGE-189"
+        assert active[0].status == "ACTIVE"
+        assert active[0].document_version == 1
+        assert active[0].value_json == "45"
+
+    def test_extraction_failure_keeps_previously_active_rule(self, session, monkeypatch):
+        """The extraction entry point itself raising must not disturb rules."""
+        from phase3.rule_repository import EnhancedRuleRepo
+
+        _seed_source_with_doc(session, content_hash=HASH_V1, last_hash=HASH_V1)
+        self._make_active_rule(session)
+
+        # Genuinely changed content so extraction is actually reached.
+        _patch_fetch(monkeypatch, HTML_V2)
+
+        def _extract_raises(*a, **k):
+            raise RuntimeError("injected extraction failure")
+
+        monkeypatch.setattr(
+            "utils.fetch_document.run_requirement_extraction", _extract_raises
+        )
+
+        result = sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
+        session.commit()
+
+        assert result.status == "error"
+        assert any("injected extraction failure" in e for e in result.errors)
+
+        active = EnhancedRuleRepo(session).list_active("SKILLED_189")
+        assert len(active) == 1
+        assert active[0].rule_id == "RULE-AGE-189"
+        assert active[0].status == "ACTIVE"
+        assert active[0].document_version == 1
+
+    def test_llm_failure_preserves_active_rule(self, session, monkeypatch):
+        """A real LLM failure must not disturb the previously ACTIVE rule.
+
+        This genuinely raises from the client factory the extraction path calls
+        (``utils.fetch_document.get_client``), rather than asserting an untouched
+        row is still untouched.
+        """
+        from phase3.rule_repository import EnhancedRuleRepo
+
+        _seed_source_with_doc(session, content_hash=HASH_V1, last_hash=HASH_V1)
+        EnhancedRuleRepo(session).create(
+            rule_id="RULE-AGE-189", requirement_id="REQ-AGE-189",
+            program_id="SKILLED_189", category="age", field="age",
+            operator="LT", value_json="45", mandatory=True, critical=True,
+            message="Age must be under 45", status="ACTIVE", current_version=1,
+            source_id="SRC-AU-189", document_id="DOC-AU-189",
+            document_version=1, chunk_id=1, evidence_text="Under 45",
+        )
+        session.commit()
+
+        # A genuinely changed document arrives (hermetic - never hits the network).
+        _patch_fetch(monkeypatch, HTML_V2)
+
+        def _llm_explodes(*a, **k):
+            raise RuntimeError("injected LLM provider failure")
+
+        monkeypatch.setattr("utils.fetch_document.get_client", _llm_explodes)
+
+        result = sync_source(session, "SRC-AU-189", trigger_type="SCHEDULED")
+        session.commit()
+
+        assert result.status == "error"
+        assert any("injected LLM provider failure" in e for e in result.errors)
+        assert _latest_run(session).status == "FAILED"
+
+        # Still exactly one ACTIVE rule, unchanged, still traced to v1.
+        active = EnhancedRuleRepo(session).list_active("SKILLED_189")
+        assert len(active) == 1
+        assert active[0].rule_id == "RULE-AGE-189"
+        assert active[0].status == "ACTIVE"
+        assert active[0].document_version == 1
+
+
+class TestPartialExtractionIsDurable:
+    """Requirements already extracted must survive a later provider failure.
+
+    The live Migration Regulations 1994 run made 139 real LLM calls, then hit a
+    provider quota wall. Persisting only after the whole loop meant all 139
+    calls were discarded and the FAILED run looked as though it had produced
+    nothing. Each candidate is now persisted as it completes.
+    """
+
+    HTML_MULTI = (
+        b"<html><head><title>Skilled 189</title></head><body>"
+        b"<h1>Age</h1><p>Applicants must be under 45 years of age.</p>"
+        b"<h1>English</h1><p>Applicants must have competent English.</p>"
+        b"<h1>Experience</h1>"
+        b"<p>Applicants must have at least 3 years of work experience.</p>"
+        b"</body></html>"
+    )
+
+    def test_requirements_before_failure_are_kept(self, session, monkeypatch):
+        from phase2.llm_client import MockLLMClient
+        from db.models import ExtractionRun
+
+        _seed_source(session)
+        _patch_fetch(monkeypatch, self.HTML_MULTI)
+
+        real = MockLLMClient()
+        state = {"calls": 0}
+
+        class _FailOnThird:
+            """Delegates to the deterministic mock, then fails on the 3rd call."""
+
+            def get_system_prompt(self, visa_category=None):
+                return ""
+
+            def extract(self, input_context):
+                state["calls"] += 1
+                if state["calls"] >= 3:
+                    raise RuntimeError("injected quota exhaustion mid-document")
+                return real.extract(input_context)
+
+        monkeypatch.setattr(
+            "utils.fetch_document.get_client", lambda *a, **k: _FailOnThird()
+        )
+
+        result = sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
+        session.commit()
+
+        # The failure is surfaced honestly, never swallowed.
+        assert result.status == "error"
+        assert any("quota exhaustion" in e for e in result.errors)
+        assert state["calls"] == 3
+
+        run = (
+            session.query(ExtractionRun)
+            .order_by(ExtractionRun.run_id.desc())
+            .first()
+        )
+        assert run.status == "FAILED"
+        assert "quota exhaustion" in (run.error or "")
+
+        # The run must not report zero llm_calls: real calls were made before
+        # the provider gave up.
+        assert int(run.llm_calls) == 2
+
+        # The requirement extracted from the second candidate is still durable.
+        requirements = session.query(Requirement).all()
+        assert len(requirements) >= 1
+        assert any(
+            "English" in (r.description or "") for r in requirements
+        ), [r.description for r in requirements]
+
+    def test_stale_running_run_is_abandoned_before_a_new_run(self, session, monkeypatch):
+        """A RUNNING row left by a killed process must not stay RUNNING forever."""
+        from db.models import DocumentVersion, ExtractionRun
+
+        _seed_source(session)
+        _patch_fetch(monkeypatch, self.HTML_MULTI)
+
+        # First, plant a RUNNING run the way a hard-killed process would leave it.
+        sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
+        session.commit()
+
+        version = (
+            session.query(DocumentVersion)
+            .filter_by(document_id="DOC-AU-189", version_number=1)
+            .first()
+        )
+        stale = ExtractionRun(
+            run_id="RUN-STALE000000000001",
+            document_id="DOC-AU-189",
+            document_version=1,
+            document_version_id=version.version_id,
+            model="gemini-flash-lite-latest",
+            prompt_version="v1",
+            status="RUNNING",
+            dry_run=0,
+        )
+        session.add(stale)
+        session.commit()
+        assert stale.status == "RUNNING"
+
+        # A later extraction over the same document must reconcile it.
+        _patch_fetch(monkeypatch, self.HTML_MULTI.replace(b"45", b"50"))
+        sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
+        session.commit()
+
+        session.refresh(stale)
+        assert stale.status == "FAILED"
+        assert "abandoned" in (stale.error or "")
+
+        # Only the stale row was reconciled; the completed run is untouched.
+        statuses = {
+            r.run_id: r.status
+            for r in session.query(ExtractionRun).all()
+        }
+        assert statuses["RUN-STALE000000000001"] == "FAILED"
+        assert "COMPLETED" in statuses.values()

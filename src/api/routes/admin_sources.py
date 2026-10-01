@@ -5,22 +5,14 @@ All mutations require admin role.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
-
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from api.routes.auth import get_current_user
 from db.connection import get_session, get_db_engine
-from db.models import (
-    DiscoveredSource, DocumentChunk, DocumentVersion, GovernmentDocument, GovernmentSource,
-)
+from db.models import DiscoveredSource, GovernmentSource
 from db.repositories import DiscoveredSourceRepo, SourceRepo
-from extractor_html import extract_html
-from extractor_pdf import extract_pdf
-from hashing import sha256_bytes
 from logging_config import get_logger
 from source_discovery import discover_sources
 
@@ -48,12 +40,33 @@ class SourceCreateRequest(BaseModel):
     notes: str | None = None
 
 
+# Statuses an admin may explicitly set via PATCH. Other government_sources.status
+# values (ACCESS_BLOCKED, NETWORK_RESTRICTED, REQUIRES_BROWSER, REQUIRES_MANUAL_DOWNLOAD,
+# BROKEN) are system-detected fetch outcomes set automatically by the sync pipeline
+# (src/utils/fetch_document.py) — an admin imposing one of those by hand would
+# misrepresent what the fetcher actually observed, so PATCH does not allow them.
+_ADMIN_SETTABLE_SOURCE_STATUSES = {"ACTIVE", "DISABLED", "NEEDS_MANUAL_CAPTURE"}
+
+
 class SourceUpdateRequest(BaseModel):
-    status: str | None = Field(None, description="ACTIVE or DISABLED")
+    status: str | None = Field(
+        None,
+        description=f"One of {sorted(_ADMIN_SETTABLE_SOURCE_STATUSES)}. Other statuses are "
+                     "set automatically by the fetch pipeline, not by admin PATCH.",
+    )
     priority: str | None = Field(None, description="PRIMARY or SECONDARY")
     crawl_frequency: str | None = None
     notes: str | None = None
     url: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _validate_status(cls, v: str | None) -> str | None:
+        if v is not None and v not in _ADMIN_SETTABLE_SOURCE_STATUSES:
+            raise ValueError(
+                f"status must be one of {sorted(_ADMIN_SETTABLE_SOURCE_STATUSES)}, got {v!r}"
+            )
+        return v
 
 
 class SourceResponse(BaseModel):
@@ -176,15 +189,6 @@ class DiscoveryApproveRequest(BaseModel):
 
 class DiscoveryRejectRequest(BaseModel):
     reason: str = Field(..., description="Why the candidate was rejected")
-
-
-class ManualCaptureRequest(BaseModel):
-    """Raw content captured manually (e.g. from a browser the admin used by hand
-    after automatic retrieval was ACCESS_BLOCKED). Feeds the pipeline exactly like
-    an automated fetch's output, tagged with retrieval_method MANUAL_CAPTURE."""
-    raw_html: str = Field(..., description="Raw HTML captured manually")
-    content_type: str | None = Field("text/html", description="Content type of raw_html")
-    source_type: str | None = Field(None, description="Override source type (HTML/PDF)")
 
 
 @router.post("/discover")
@@ -331,159 +335,6 @@ def get_source(
         return _source_to_response(obj)
 
 
-@router.post("/{source_id}/manual-capture", response_model=SourceResponse)
-def manual_capture(
-    source_id: str,
-    body: ManualCaptureRequest,
-    request: Request,
-    current_user: dict = Depends(get_current_user),
-):
-    """Resolve a source stuck in NEEDS_MANUAL_CAPTURE by ingesting raw content an
-    admin captured by hand. Computes the content hash exactly like the automated
-    path (hashing.sha256_bytes), creates a document_versions row tagged with
-    retrieval_method=MANUAL_CAPTURE, and resets the source to ACTIVE so scheduled
-    runs resume normally. Admin-gated."""
-    _require_admin(current_user)
-    engine = get_db_engine(request)
-    with get_session(engine) as session:
-        repo = SourceRepo(session)
-        obj = repo.get(source_id)
-        if not obj:
-            raise HTTPException(status_code=404, detail="Source not found")
-
-        raw_bytes = body.raw_html.encode("utf-8")
-        if not raw_bytes:
-            raise HTTPException(status_code=400, detail="raw_html must not be empty")
-
-        source_type = (body.source_type or obj.source_type).upper()
-        content_hash = sha256_bytes(raw_bytes)
-        now = datetime.now(timezone.utc)
-        document_id = f"DOC-{obj.source_id.replace('SRC-', '')}"
-
-        doc = session.get(GovernmentDocument, document_id)
-
-        # Idempotency: re-capturing content we already hold is UNCHANGED — it must never open
-        # a second document_versions row for the same (document_id, content_hash).
-        existing_snapshot = None
-        if doc is not None:
-            existing_snapshot = (
-                session.query(DocumentVersion)
-                .filter(
-                    DocumentVersion.document_id == document_id,
-                    DocumentVersion.content_hash == content_hash,
-                )
-                .order_by(DocumentVersion.version_id.desc())
-                .first()
-            )
-
-        is_new_content = doc is None or existing_snapshot is None
-
-        if doc is None:
-            doc = GovernmentDocument(
-                document_id=document_id,
-                source_id=obj.source_id,
-                country_id=obj.country_id,
-                program_id=obj.program_id,
-                visa_category=obj.visa_category,
-                document_type=obj.source_subtype or "GENERAL",
-                url=obj.url,
-                retrieved_at=now,
-                content_hash=content_hash,
-                current_version=1,
-                language="en",
-                raw_path=f"manual:{document_id}",
-                status="CURRENT",
-            )
-            session.add(doc)
-        elif existing_snapshot is None:
-            doc.content_hash = content_hash
-            doc.retrieved_at = now
-            doc.current_version = (doc.current_version or 0) + 1
-            doc.status = "CURRENT"
-
-        version_number = (
-            existing_snapshot.version_number if existing_snapshot is not None
-            else (doc.current_version or 1)
-        )
-
-        # Reset the source so scheduled runs resume. Clear failure diagnostics.
-        for field, value in (
-            ("status", "ACTIVE"),
-            ("fetch_status", "OK"),
-            ("http_status", 200),
-            ("last_error", None),
-            ("consecutive_failures", 0),
-            ("last_hash", content_hash),
-            ("last_checked_at", now),
-            ("last_successful_fetch_at", now),
-        ):
-            setattr(obj, field, value)
-
-        if existing_snapshot is None:
-            dv = DocumentVersion(
-                document_id=document_id,
-                version_number=version_number,
-                content_hash=content_hash,
-                retrieved_at=now,
-                raw_path=f"manual:{document_id}",
-                change_type="MANUAL_CAPTURE",
-                # Provenance tag on the version (no schema change — this column is Text)
-                diff_summary=f"retrieval_method=MANUAL_CAPTURE; captured_by={current_user.get('user_id')}; source_status_before={obj.status}",
-            )
-            session.add(dv)
-
-            # Chunk the captured content and run Phase-2 requirement extraction so the manual
-            # capture feeds the review queue exactly like an automated fetch would.
-            session.flush()
-            try:
-                if source_type == "PDF":
-                    parsed = extract_pdf(raw_bytes)
-                else:
-                    parsed = extract_html(raw_bytes, obj.url)
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Could not parse captured content: {exc}",
-                )
-            if doc is not None and doc.title is None and parsed.title:
-                doc.title = parsed.title
-            for c in parsed.chunks:
-                session.add(DocumentChunk(
-                    document_id=document_id,
-                    version_id=dv.version_id,
-                    chunk_type=c.chunk_type,
-                    heading_path=c.heading_path,
-                    order_index=c.order_index,
-                    raw_text=c.raw_text,
-                    page_number=getattr(c, "page_number", None),
-                ))
-            session.flush()
-            if parsed.chunks:
-                try:
-                    from utils.fetch_document import run_requirement_extraction
-                    extraction_report = run_requirement_extraction(
-                        session, obj, document_id, version_number,
-                    )
-                    logger.info(
-                        "Manual-capture extraction complete",
-                        extra={
-                            "source_id": source_id,
-                            "requirements_extracted": extraction_report.get(
-                                "requirements_extracted", 0
-                            ),
-                        },
-                    )
-                except Exception as exc:
-                    # Content is already stored; extraction failure must not reject the capture.
-                    logger.warning(
-                        "Manual-capture extraction failed; content stored",
-                        extra={"source_id": source_id, "error": str(exc)},
-                    )
-
-        session.commit()
-        return _source_to_response(obj)
-
-
 @router.post("", response_model=SourceResponse, status_code=201)
 def create_source(
     body: SourceCreateRequest,
@@ -533,6 +384,12 @@ def update_source(
         if not obj:
             raise HTTPException(status_code=404, detail="Source not found")
         update_fields = body.model_dump(exclude_unset=True)
+        # government_sources.status is NOT NULL — an explicit "status": null in the
+        # request body would otherwise reach setattr() and fail as a raw 500
+        # IntegrityError at commit time instead of a clean 422. Omitting the field
+        # entirely is fine (exclude_unset drops it, status is simply left unchanged).
+        if "status" in update_fields and update_fields["status"] is None:
+            raise HTTPException(status_code=422, detail="status must not be null")
         for k, v in update_fields.items():
             setattr(obj, k, v)
         session.commit()

@@ -253,7 +253,7 @@ class TestScenario4_IrrelevantChange:
 class TestScenario5_LLMFailure:
     """LLM extraction fails during sync → existing ACTIVE rule is untouched."""
 
-    def test_llm_failure_preserves_active_rule(self, session, seed_country_program):
+    def test_no_new_rules_leaves_existing_active_rule_intact(self, session, seed_country_program):
         rule_repo = EnhancedRuleRepo(session)
 
         rule_repo.create(

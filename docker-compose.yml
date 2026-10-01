@@ -24,7 +24,7 @@ services:
     # than passing --disable-dev-shm-usage at runtime; see Docker docs on /dev/shm.
     shm_size: '1gb'
     environment:
-      DATABASE_URL: postgresql://immigration:immigration_dev@postgres:5432/immigration
+      DATABASE_URL: postgresql+psycopg2://immigration:immigration_dev@postgres:5432/immigration
       JWT_SECRET_KEY: change-me-in-production
       JWT_ALGORITHM: HS256
       JWT_EXPIRATION_MINUTES: "1440"

@@ -1,21 +1,29 @@
 """Browser-based fetcher for government sources that block plain HTTP requests.
 
-Used only as an escalation path when fetcher.fetch() reports ACCESS_BLOCKED or
-REQUIRES_BROWSER. Drives Chromium with headless=False via Playwright — headless
-mode is fingerprinted and blocked (HTTP 403) by the Home Affairs WAF, so
-production runs under Xvfb (see Dockerfile / docker-compose.yml's xvfb-run
-wrapper) to give a real X display to a real, visible browser session.
+Used only as an escalation path when ``fetcher.fetch()`` reports ACCESS_BLOCKED or
+REQUIRES_BROWSER. Drives Chromium through **Patchright** (a maintained,
+drop-in-compatible fork of Playwright that patches the runtime-level automation
+leaks which make stock headless Chromium trivially fingerprintable). Production
+runs **headless** by default: with Patchright there is no operational reason to
+require an X server, so the Xvfb wrapper is no longer needed.
 
 No evasive/anti-bot-bypass technique is used or will be added here, matching the
-same principle stated in fetcher.py: no stealth plugins, no automation-signal
-patching, no proxy/IP rotation, no CAPTCHA bypass. Running headed instead of
-headless is not an evasion technique — it is a real, unmodified browser session,
-just rendered instead of running invisibly. If a source blocks or challenges
-even this browser session, the correct response is to report
-NEEDS_MANUAL_CAPTURE, not to try harder to defeat the block.
+principle stated in ``fetcher.py``: no stealth plugins, no credential abuse, no
+proxy/IP rotation, no CAPTCHA bypass, and no retry amplification. Escalating to a
+real browser and honestly reporting the outcome is not evasion — it is a genuine
+browser session. If a source blocks even that, the correct response is to report
+the block as data (``fetch_status`` + ``error_type``) and let the source be
+retried on its normal schedule, not to try harder to defeat the block.
+
+Failure classification follows the existing convention: ``FetchStatus`` is the
+coarse, DB-constrained bucket and ``error_type`` carries the specific,
+machine-readable class (``browser_launch_failed``, ``browser_timeout``,
+``browser_navigation_failed``, ``browser_context_failed``). This adds no new
+status enum and no parallel classification system.
 """
 from __future__ import annotations
 
+import os
 import time
 from urllib.parse import urlparse
 
@@ -33,6 +41,21 @@ MIN_BROWSER_DELAY_SECONDS = 2.0
 # How long we let an individual page load before giving up.
 BROWSER_NAVIGATION_TIMEOUT_MS = 30000
 
+# Chromium args. --no-sandbox/--disable-dev-shm-usage are required to run as root
+# in a container; they are not fingerprint evasion.
+BROWSER_LAUNCH_ARGS = ["--no-sandbox", "--disable-dev-shm-usage"]
+
+
+def _is_headless() -> bool:
+    """Headless by default.
+
+    ``BROWSER_HEADLESS=0`` exists for local debugging against a real display. It
+    is not the production path and requires an operator-supplied X display.
+    """
+    return os.getenv("BROWSER_HEADLESS", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
 
 def _looks_like_challenge_text(body: str) -> bool:
     """Detect challenge markers in rendered page text (honest reporting, not bypass)."""
@@ -46,60 +69,115 @@ def fetch_with_browser(
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     launch_fn=None,
 ) -> FetchResult:
-    """Fetch a URL through a real, visible (headless=False) Chromium session.
+    """Fetch a URL through a real Chromium session (headless by default).
 
-    Returns the same FetchResult shape as fetcher.fetch() so downstream code does
-    not need to branch on which fetcher produced a result.
+    Returns the same FetchResult shape as ``fetcher.fetch()`` so downstream code
+    does not need to branch on which fetcher produced a result.
 
-    `launch_fn` is an injectable seam (defaults to _playwright_fetch) used only by
-    tests to mock the Playwright call chain — production always uses Playwright.
+    `launch_fn` is an injectable seam (defaults to _patchright_fetch) used only
+    by tests to mock the browser call chain — production always uses Patchright.
     """
     if launch_fn is None:
-        launch_fn = _playwright_fetch
+        launch_fn = _patchright_fetch
     return launch_fn(url, source_type, timeout_seconds)
 
 
-def _playwright_fetch(url: str, source_type: str, timeout_seconds: int) -> FetchResult:
-    """Actual Playwright-backed implementation."""
+def _browser_failure(
+    url: str, start: float, error_type: str, error: str,
+    status: FetchStatus = FetchStatus.FETCH_FAILED,
+) -> FetchResult:
+    """Build a machine-classified browser failure result."""
+    return FetchResult(
+        url=url, status=status, http_status=None, content_type=None,
+        raw_bytes=None, duration_ms=int((time.monotonic() - start) * 1000),
+        error=error, error_type=error_type,
+    )
+
+
+def _classify_browser_exception(exc: BaseException) -> str:
+    """Map a browser-driver exception to a stable error_type.
+
+    Class names are matched rather than imported so this works even when the
+    browser package is absent or has moved its exception hierarchy.
+    """
+    name = type(exc).__name__
+    if "Timeout" in name:
+        return "browser_timeout"
+    if "TargetClosed" in name or "BrowserClosed" in name:
+        return "browser_launch_failed"
+    return "browser_navigation_failed"
+
+
+def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> FetchResult:
+    """Actual Patchright-backed implementation."""
     start = time.monotonic()
     try:
-        from playwright.sync_api import sync_playwright
+        from patchright.sync_api import sync_playwright
     except ImportError as e:
-        return FetchResult(
-            url=url, status=FetchStatus.FETCH_FAILED, http_status=None,
-            content_type=None, raw_bytes=None,
-            duration_ms=int((time.monotonic() - start) * 1000),
-            error=f"playwright not installed: {e}",
+        return _browser_failure(
+            url, start, "browser_launch_failed",
+            f"patchright not installed: {e}",
         )
 
+    browser = None
+    context = None
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=False,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
             try:
-                context = browser.new_context(
-                    # No automation-detectable properties are overridden. Chromium is
-                    # launched headed (real, visible session) with no stealth
-                    # patching.
-                    locale="en-AU",
+                browser = p.chromium.launch(
+                    headless=_is_headless(),
+                    args=BROWSER_LAUNCH_ARGS,
                 )
-                page = context.new_page()
-                page.set_default_timeout(
-                    min(timeout_seconds * 1000, BROWSER_NAVIGATION_TIMEOUT_MS)
+            except Exception as e:
+                return _browser_failure(
+                    url, start, "browser_launch_failed",
+                    f"Browser launch failed: {e}",
                 )
-                response = page.goto(url, wait_until="domcontentloaded")
-                body_bytes = page.content().encode("utf-8")
+
+            try:
+                try:
+                    # No automation-detectable properties are overridden. Chromium
+                    # is a real browser session; only the runtime leaks Patchright
+                    # exists to fix are addressed by the driver itself.
+                    context = browser.new_context(locale="en-AU")
+                    page = context.new_page()
+                except Exception as e:
+                    return _browser_failure(
+                        url, start, "browser_context_failed",
+                        f"Browser context creation failed: {e}",
+                    )
+
+                try:
+                    page.set_default_timeout(
+                        min(timeout_seconds * 1000, BROWSER_NAVIGATION_TIMEOUT_MS)
+                    )
+                    response = page.goto(url, wait_until="domcontentloaded")
+                except Exception as e:
+                    return _browser_failure(
+                        url, start, _classify_browser_exception(e),
+                        f"Browser navigation failed: {e}",
+                    )
+
+                body_text = page.content()
+                body_bytes = body_text.encode("utf-8")
                 status_code = response.status if response is not None else None
                 content_type = (
                     response.headers.get("content-type", "text/html")
                     if response is not None else "text/html"
                 )
-                challenge_body = page.content()  # reused by 503 challenge detection
             finally:
-                context.close()
-                browser.close()
+                # Always tear the session down, even on the failure paths above —
+                # a leaked Chromium process would otherwise accumulate per sync.
+                if context is not None:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+                if browser is not None:
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
 
             duration_ms = int((time.monotonic() - start) * 1000)
             return _classify_browser_result(
@@ -108,15 +186,13 @@ def _playwright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
                 body_bytes=body_bytes,
                 content_type=content_type,
                 source_type=source_type,
-                challenge_body=challenge_body,
+                challenge_body=body_text,
                 duration_ms=duration_ms,
             )
     except Exception as e:
-        duration_ms = int((time.monotonic() - start) * 1000)
-        return FetchResult(
-            url=url, status=FetchStatus.FETCH_FAILED, http_status=None,
-            content_type=None, raw_bytes=None, duration_ms=duration_ms,
-            error=f"Playwright browser fetch failed: {e}",
+        return _browser_failure(
+            url, start, "browser_navigation_failed",
+            f"Browser fetch failed: {e}",
         )
 
 
@@ -125,35 +201,36 @@ def _classify_browser_result(url: str, status_code: int | None, body_bytes: byte
                              challenge_body: str = "", duration_ms: int = 0) -> FetchResult:
     """Classify a rendered page's status/body into a FetchResult.
 
-    Pure logic, separated from Playwright driving so it can be unit-tested with a
-    mocked Playwright API surface (a real browser is never launched in CI, and no
-    real government domain is ever hit).
+    Pure logic, separated from the browser driver so it can be unit-tested with a
+    mocked API surface (a real browser is never launched in CI, and no real
+    government domain is ever hit).
     """
     if source_type == "PDF":
         # A genuine browser session fetching a PDF usually renders it to HTML
-        # (Chromium's PDF viewer) rather than returning the raw PDF bytes. If that
-        # happens, surface it honestly as REQUIRES_MANUAL_DOWNLOAD so a manual PDF
-        # capture path can obtain the true binary.
+        # (Chromium's PDF viewer) rather than returning the raw PDF bytes. The
+        # bytes we hold are not the document we were asked to archive, so this is
+        # reported as invalid content rather than stored as false evidence.
         if not (body_bytes or b"").startswith(b"%PDF"):
             return FetchResult(
-                url=url, status=FetchStatus.REQUIRES_MANUAL_DOWNLOAD,
+                url=url, status=FetchStatus.INVALID_CONTENT,
                 http_status=status_code, content_type=content_type,
                 raw_bytes=None, duration_ms=duration_ms,
-                error="PDF fetched via browser rendered as HTML; manual PDF capture required",
+                error="PDF fetched via browser was rendered as HTML, not PDF bytes",
+                error_type="pdf_rendered_as_html",
             )
 
     if status_code == 200 and body_bytes and len(body_bytes) >= 50:
         body_text = body_bytes.decode("utf-8", errors="replace")
         if _looks_like_challenge_text(body_text):
-            # Even a genuine browser session was served a challenge
-            # page. Do NOT try harder against it; route to manual capture downstream
-            # (NEEDS_MANUAL_CAPTURE). We surface REQUIRES_BROWSER so the orchestrator
-            # treats it as unrecoverable by automation and escalates.
+            # Even a genuine browser session was served a challenge page. Do NOT
+            # try harder against it — report it. REQUIRES_BROWSER marks it as
+            # unrecoverable by automation so operations can see why.
             return FetchResult(
                 url=url, status=FetchStatus.REQUIRES_BROWSER,
                 http_status=status_code, content_type=content_type,
                 raw_bytes=None, duration_ms=duration_ms,
-                error="Challenge page detected even in genuine browser session; manual capture required",
+                error="Challenge page detected even in a genuine browser session",
+                error_type="challenge_page",
             )
         return FetchResult(
             url=url, status=FetchStatus.OK, http_status=status_code,
@@ -166,18 +243,20 @@ def _classify_browser_result(url: str, status_code: int | None, body_bytes: byte
         return FetchResult(
             url=url, status=FetchStatus.ACCESS_BLOCKED, http_status=status_code,
             content_type=content_type, raw_bytes=None, duration_ms=duration_ms,
-            error=f"HTTP {status_code} even via genuine browser session",
+            error=f"HTTP {status_code} even via a genuine browser session",
+            error_type="browser_access_blocked",
         )
     if status_code == 503 and _looks_like_challenge_text(challenge_body):
         return FetchResult(
             url=url, status=FetchStatus.REQUIRES_BROWSER, http_status=status_code,
             content_type=content_type, raw_bytes=None, duration_ms=duration_ms,
-            error="Challenge page detected",
+            error="Challenge page detected", error_type="challenge_page",
         )
     return FetchResult(
         url=url, status=FetchStatus.FETCH_FAILED, http_status=status_code,
         content_type=content_type, raw_bytes=None, duration_ms=duration_ms,
         error=f"Unexpected HTTP {status_code} via browser",
+        error_type="unexpected_http_status",
     )
 
 

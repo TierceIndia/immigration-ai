@@ -12,7 +12,7 @@ _SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from logging_config import get_logger, set_request_context, setup_logging
@@ -179,13 +179,25 @@ app.include_router(admin_knowledge.router, prefix="/api/v1/admin/knowledge-state
 app.include_router(admin_schema.router, prefix="/api/v1/admin/schema", tags=["admin-schema"])
 
 
-@app.post("/api/v1/admin/sync", tags=["admin-sync"])
+@app.post("/api/v1/admin/sync", tags=["admin-sync"], status_code=202)
 def trigger_sync(request: Request, current_user: dict = Depends(require_admin)):
-    """Manually trigger government source sync (admin only)."""
+    """Start a government source sync in the background (admin only).
+
+    Returns immediately with {"run_id", "status": "STARTED"} — the sync itself
+    runs on a background thread so a long-running sync never blocks or times out
+    the HTTP request. Returns 409 if a sync (scheduled or manual) is already
+    running — only one ever runs at a time. Poll progress via
+    GET /api/v1/admin/runs/{run_id}.
+    """
     from db.connection import get_db_engine
-    from scheduler import trigger_sync_now
+    from scheduler import start_sync_background
     engine = get_db_engine(request)
-    return trigger_sync_now(engine)
+    result = start_sync_background(engine, trigger_type="MANUAL")
+    if result.get("status") == "busy":
+        raise HTTPException(
+            status_code=409, detail=result.get("detail", "A sync is already in progress")
+        )
+    return result
 
 
 def create_app() -> FastAPI:

@@ -15,7 +15,17 @@ from dataclasses import dataclass, field
 
 from bs4 import BeautifulSoup
 
-NOISE_TAGS = ["script", "style", "nav", "header", "footer", "noscript", "svg", "form"]
+# "form" is deliberately NOT in this list. Some government pages (e.g. an ASP.NET
+# CMS page hosting an embedded Angular content widget, seen on
+# immi.homeaffairs.gov.au/visas/.../visitor-600) wrap the entire real page body -
+# headings, paragraphs, lists - in a top-level <form id="aspnetForm"> postback
+# wrapper. Decomposing every <form> outright (as this used to do) deleted that
+# whole page's content, producing 0 chunks from a page that fetched successfully
+# and genuinely has content. Form *controls* (input/button/select/textarea/label)
+# are never extracted anyway - the chunk walk below only looks at
+# headings/p/table/ul/ol - so unwrapping (not decomposing) forms below is safe:
+# it drops the <form> wrapper itself while keeping any real content nested inside.
+NOISE_TAGS = ["script", "style", "nav", "header", "footer", "noscript", "svg"]
 NOISE_SELECTORS = [
     "[class*=cookie]", "[id*=cookie]",
     "[class*=skip-link]",
@@ -52,6 +62,8 @@ def _clean_soup(soup: BeautifulSoup) -> BeautifulSoup:
     for selector in NOISE_SELECTORS:
         for tag in soup.select(selector):
             tag.decompose()
+    for form in soup.find_all("form"):
+        form.unwrap()
     return soup
 
 

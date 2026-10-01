@@ -30,6 +30,7 @@ class ExtractionOutcome:
 def extract_from_document(
     *, source: dict, document: dict, all_chunks: list[dict], llm_client: LLMClient,
     context_window: int = 1,
+    on_outcome=None,
 ) -> list[ExtractionOutcome]:
     """all_chunks: list of dicts (chunk_id, chunk_type, heading_path, order_index, raw_text, page_number)
     for the CURRENT version of this document only.
@@ -122,5 +123,12 @@ def extract_from_document(
                 outcome.accepted_requirements.append(normalized)
 
         outcomes.append(outcome)
+        # Stream each completed candidate to the caller so it can be persisted
+        # durably as it is produced. Without this, a provider failure part-way
+        # through a long document (quota exhaustion, rate limit) discards every
+        # LLM call already made — a real loss observed against the live
+        # Migration Regulations 1994 extraction.
+        if on_outcome is not None:
+            on_outcome(outcome)
 
     return outcomes

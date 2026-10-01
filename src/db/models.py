@@ -321,7 +321,13 @@ class ExtractionRun(Base, TimestampMixin):
 
 class Requirement(Base, TimestampMixin):
     __tablename__ = "requirements"
-    requirement_id = Column(String(48), primary_key=True)
+    # 96, not 48: "REQ-{program_id}-{sem_key}-{uuid6}" (the CONFLICT-path format)
+    # can exceed 48 once program_id is long (e.g. "LEGISLATION_MIGRATION_REGS") —
+    # confirmed in production as a PostgreSQL StringDataRightTruncation that
+    # silently dropped a correctly-extracted requirement. See migration
+    # a3c5e7f9b1d3 and the MAX_REQUIREMENT_ID_LENGTH guard in
+    # phase2/requirement_repository.py.
+    requirement_id = Column(String(96), primary_key=True)
     semantic_key = Column(String(256), nullable=False)
     program_id = Column(String(32), ForeignKey("immigration_programs.program_id"), nullable=False)
     country_id = Column(String(8), ForeignKey("countries.country_id"), nullable=False)
@@ -377,7 +383,7 @@ class Requirement(Base, TimestampMixin):
 class RequirementEvidence(Base, TimestampMixin):
     __tablename__ = "requirement_evidence"
     evidence_id = Column(Integer, primary_key=True, autoincrement=True)
-    requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
+    requirement_id = Column(String(96), ForeignKey("requirements.requirement_id"), nullable=False)
     document_id = Column(String(32), ForeignKey("government_documents.document_id"), nullable=False)
     document_version = Column(Integer, nullable=False)
     # canonical audit lineage: chunk -> owner document version (proves the evidence
@@ -414,7 +420,7 @@ class RequirementEvidence(Base, TimestampMixin):
 class RequirementVersion(Base, TimestampMixin):
     __tablename__ = "requirement_versions"
     version_id = Column(Integer, primary_key=True, autoincrement=True)
-    requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
+    requirement_id = Column(String(96), ForeignKey("requirements.requirement_id"), nullable=False)
     version_number = Column(Integer, nullable=False)
     snapshot_json = Column(Text, nullable=False)
     document_version = Column(Integer, nullable=False)
@@ -434,7 +440,7 @@ class RequirementVersion(Base, TimestampMixin):
 class RequirementReview(Base, TimestampMixin):
     __tablename__ = "requirement_review"
     review_id = Column(Integer, primary_key=True, autoincrement=True)
-    requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
+    requirement_id = Column(String(96), ForeignKey("requirements.requirement_id"), nullable=False)
     reviewer = Column(String(64), nullable=False)
     action = Column(String(32), nullable=False)
     old_state_json = Column(Text)
@@ -447,7 +453,7 @@ class RequirementReview(Base, TimestampMixin):
 class RequirementReference(Base, TimestampMixin):
     __tablename__ = "requirement_references"
     reference_id = Column(Integer, primary_key=True, autoincrement=True)
-    requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
+    requirement_id = Column(String(96), ForeignKey("requirements.requirement_id"), nullable=False)
     reference_type = Column(String(32), nullable=False, default="LEGAL_CROSS_REFERENCE")
     target_text = Column(Text, nullable=False)
     resolved_chunk_id = Column(Integer, ForeignKey("document_chunks.chunk_id"))
@@ -462,8 +468,12 @@ class RequirementReference(Base, TimestampMixin):
 
 class Rule(Base, TimestampMixin):
     __tablename__ = "rules"
-    rule_id = Column(String(48), primary_key=True)
-    requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
+    # 96, matching requirement_id: requirement_to_rule.py builds
+    # rule_id = f"RULE-{requirement_id}" directly from it, so rule_id must be at
+    # least as wide as "RULE-" + the widened requirement_id or the same
+    # truncation bug just resurfaces one stage later, at rule compilation.
+    rule_id = Column(String(96), primary_key=True)
+    requirement_id = Column(String(96), ForeignKey("requirements.requirement_id"), nullable=False)
     program_id = Column(String(32), ForeignKey("immigration_programs.program_id"), nullable=False)
     # canonical audit lineage: the exact immutable requirement version this rule was
     # compiled from (rules.requirement_version_id -> requirement_versions.version_id
@@ -518,7 +528,7 @@ class Rule(Base, TimestampMixin):
 class RuleVersion(Base, TimestampMixin):
     __tablename__ = "rule_versions"
     version_id = Column(Integer, primary_key=True, autoincrement=True)
-    rule_id = Column(String(48), ForeignKey("rules.rule_id"), nullable=False)
+    rule_id = Column(String(96), ForeignKey("rules.rule_id"), nullable=False)
     version_number = Column(Integer, nullable=False)
     snapshot_json = Column(JSON, nullable=False)
     change_type = Column(String(16), nullable=False)
@@ -649,7 +659,7 @@ class AssessmentRuleResult(Base, TimestampMixin):
     __tablename__ = "assessment_rule_results"
     result_id = UUIDColumn(primary_key=True)
     assessment_id = Column(UUID(as_uuid=False), ForeignKey("assessments.assessment_id"), nullable=False)
-    rule_id = Column(String(48), ForeignKey("rules.rule_id"), nullable=False)
+    rule_id = Column(String(96), ForeignKey("rules.rule_id"), nullable=False)
     rule_version = Column(Integer, nullable=False)
     # canonical audit lineage: the exact immutable rule_versions row this result came from
     rule_version_id = Column(Integer, ForeignKey("rule_versions.version_id"))
@@ -680,7 +690,7 @@ class Gap(Base, TimestampMixin):
     field = Column(String(128), nullable=False)
     priority = Column(String(16), nullable=False)  # CRITICAL/HIGH/MEDIUM/LOW
     message = Column(Text, nullable=False)
-    rule_id = Column(String(48))
+    rule_id = Column(String(96))
     evidence_text = Column(Text)
     answer = Column(Text)
     source_chunk_ids = Column(JSON, default=list)

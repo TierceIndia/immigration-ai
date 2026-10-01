@@ -246,7 +246,13 @@ class TestFetchDocumentAndStoreFailure:
         assert len(logs) == 1
         assert logs[0].status == "FETCH_FAILED"
 
-    def test_blocked_source_gets_demoted(self, session, monkeypatch):
+    def test_blocked_source_stays_in_the_sync_set(self, session, monkeypatch):
+        """A blocked fetch records diagnostics but must NOT remove the source.
+
+        Demoting to NEEDS_MANUAL_CAPTURE used to look like escalation, but
+        sync_all_sources() selects on status == 'ACTIVE', so the demotion
+        silently and permanently excluded the source from every future run.
+        """
         _seed_source(session)
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
 
@@ -257,8 +263,21 @@ class TestFetchDocumentAndStoreFailure:
         outcome = fetch_document_and_store(session, source)
         session.commit()
 
-        assert outcome.demoted == "NEEDS_MANUAL_CAPTURE"
-        assert source.status == "NEEDS_MANUAL_CAPTURE"
+        # Still ACTIVE, still in the sync set, still retried on schedule.
+        assert source.status == "ACTIVE"
+        assert outcome.demoted is None
+
+        # The failure is still fully visible via diagnostics + FetchLog.
+        assert outcome.status == "ACCESS_BLOCKED"
+        assert source.fetch_status == "ACCESS_BLOCKED"
+        assert source.http_status == 403
+        assert source.last_error
+        assert source.consecutive_failures == 1
+        assert session.query(FetchLog).filter_by(source_id="SRC-AU-189").count() == 1
+
+        # And it really is still selectable for scheduled syncs.
+        due = session.query(GovernmentSource).filter_by(status="ACTIVE").all()
+        assert [s.source_id for s in due] == ["SRC-AU-189"]
 
 
 class TestFetchDocumentAndStoreUnchanged:
