@@ -38,10 +38,19 @@ class _FakeResponse:
 
 
 class _FakePage:
-    def __init__(self, body, response=None, goto_exc=None):
+    def __init__(self, body, response=None, goto_exc=None,
+                 body_before_render=None, wait_for_selector_exc=None):
         self._body = body
         self._response = response or _FakeResponse()
         self._goto_exc = goto_exc
+        # When set, content() returns this until wait_for_selector() is called
+        # (simulating a page whose real content only exists after client-side
+        # JS finishes rendering it) — proves the fetcher actually waits before
+        # capturing, rather than just tolerating a wait_for_selector call.
+        self._body_before_render = body_before_render
+        self._rendered = body_before_render is None
+        self.wait_for_selector_calls = []
+        self._wait_for_selector_exc = wait_for_selector_exc
 
     def set_default_timeout(self, ms):
         self.timeout_ms = ms
@@ -51,7 +60,15 @@ class _FakePage:
             raise self._goto_exc
         return self._response
 
+    def wait_for_selector(self, selector, timeout=None):
+        self.wait_for_selector_calls.append((selector, timeout))
+        if self._wait_for_selector_exc is not None:
+            raise self._wait_for_selector_exc
+        self._rendered = True
+
     def content(self):
+        if not self._rendered:
+            return self._body_before_render
         return self._body
 
 
@@ -119,6 +136,8 @@ def _install_fake_patchright(
     launch_exc=None,
     goto_exc=None,
     context_exc=None,
+    body_before_render=None,
+    wait_for_selector_exc=None,
 ):
     """Install a fake `patchright.sync_api` and return the call-recording sink.
 
@@ -126,7 +145,9 @@ def _install_fake_patchright(
     dev venv, so the module is synthesised here rather than imported.
     """
     sink = []
-    page = _FakePage(body, response=response, goto_exc=goto_exc)
+    page = _FakePage(body, response=response, goto_exc=goto_exc,
+                      body_before_render=body_before_render,
+                      wait_for_selector_exc=wait_for_selector_exc)
     browser = _FakeBrowser(page, sink, context_exc=context_exc)
     chromium = _FakeChromium(browser, sink, launch_exc=launch_exc)
 
@@ -309,6 +330,63 @@ def test_browser_context_failure_is_classified(monkeypatch):
     res = _patchright_fetch("https://example.gov/page", "HTML", 20)
     assert res.status == FetchStatus.FETCH_FAILED
     assert res.error_type == "browser_context_failed"
+
+
+# ---------------------------------------------------------------------------
+# Client-side (Angular) rendering race — several immi.homeaffairs.gov.au pages
+# ship their real content as an HTML-escaped JSON blob inside a hidden
+# <input>'s value attribute and only materialise real <p>/<ul>/<table> DOM
+# nodes via client-side JS *after* domcontentloaded fires. Capturing
+# page.content() immediately produced 0 extractable chunks even on a
+# successful 200 fetch (confirmed live against real saved raw snapshots for
+# SRC-AU-600-MAIN and SRC-AU-189-MAIN, not a hypothetical). Waiting for a real
+# structural element to exist before capturing fixes this.
+# ---------------------------------------------------------------------------
+_PRE_RENDER_BODY = (
+    '<html><body><main role="main">'
+    '<input type="hidden" value="{&quot;eligibility&quot;:&quot;'
+    '\\u003cul\\u003e\\n\\t\\u003cli\\u003ebe a genuine visitor\\u003c/li\\u003e\\n'
+    '\\u003c/ul\\u003e\\n&quot;}">'
+    '</main></body></html>'
+)
+_POST_RENDER_BODY = (
+    '<html><body><main role="main">'
+    '<h1>Visitor visa</h1>'
+    '<ul><li>be a genuine visitor</li></ul>'
+    '</main></body></html>'
+)
+
+
+def test_waits_for_real_content_before_capturing(monkeypatch):
+    """The exact bug found live: a page that is served with only the
+    pre-hydration JSON blob immediately after domcontentloaded, but renders
+    real content shortly after, must have its RENDERED content captured, not
+    the pre-render blob."""
+    _install_fake_patchright(
+        monkeypatch, body=_POST_RENDER_BODY, body_before_render=_PRE_RENDER_BODY,
+    )
+    res = _patchright_fetch("https://immi.homeaffairs.gov.au/visas/visitor-600", "HTML", 20)
+    assert res.status == FetchStatus.OK
+    assert b"be a genuine visitor" in res.raw_bytes
+    assert b"eligibility&quot;" not in res.raw_bytes
+
+
+def test_genuinely_contentless_page_is_still_captured_after_wait_times_out(monkeypatch):
+    """A page that never renders structural content (e.g. CRICOS's
+    search-interface SPA) must not hang or fail — it's captured honestly as
+    whatever is there, exactly as before this wait was added."""
+    never_renders = (
+        '<html><body><main role="main">'
+        '<div>Course Search — no results without a query</div>'
+        '</main></body></html>'
+    )
+    _install_fake_patchright(
+        monkeypatch, body=never_renders, body_before_render=never_renders,
+        wait_for_selector_exc=TimeoutError("Timeout waiting for selector"),
+    )
+    res = _patchright_fetch("https://cricos.education.gov.au", "HTML", 20)
+    assert res.status == FetchStatus.OK
+    assert b"Course Search" in res.raw_bytes
 
 
 def test_browser_navigation_timeout_is_classified(monkeypatch):

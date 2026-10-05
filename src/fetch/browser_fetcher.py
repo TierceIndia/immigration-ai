@@ -41,6 +41,20 @@ MIN_BROWSER_DELAY_SECONDS = 2.0
 # How long we let an individual page load before giving up.
 BROWSER_NAVIGATION_TIMEOUT_MS = 30000
 
+# How long we give a page's own client-side JS to render real content after
+# domcontentloaded fires, before giving up and capturing whatever is there.
+# Several immi.homeaffairs.gov.au pages are Angular apps that ship their real
+# content as an HTML-escaped JSON blob inside a hidden <input>'s value
+# attribute (hydration state) and only materialise it into real <p>/<ul>/<table>
+# DOM nodes via client-side JS *after* domcontentloaded — with no further
+# network activity, so "networkidle" would not help here. Waiting for this
+# selector is not evasion: it is giving the same real page the time it already
+# needs to finish its own normal rendering before looking at it. A genuinely
+# contentless page (e.g. a search-interface SPA with nothing to show) times
+# out here and is captured/classified exactly as it would have been before.
+CONTENT_READY_SELECTOR = "main :is(p, h1, h2, h3, h4, h5, h6, ul, ol, table)"
+CONTENT_READY_TIMEOUT_MS = 8000
+
 # Chromium args. --no-sandbox/--disable-dev-shm-usage are required to run as root
 # in a container; they are not fingerprint evasion.
 BROWSER_LAUNCH_ARGS = ["--no-sandbox", "--disable-dev-shm-usage"]
@@ -157,6 +171,17 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
                         url, start, _classify_browser_exception(e),
                         f"Browser navigation failed: {e}",
                     )
+
+                try:
+                    page.wait_for_selector(
+                        CONTENT_READY_SELECTOR, timeout=CONTENT_READY_TIMEOUT_MS
+                    )
+                except Exception:
+                    # Times out for pages that never render structural content
+                    # (e.g. a genuinely contentless search-interface SPA) —
+                    # that is real, honest information, not an error: capture
+                    # whatever is there now, same as before this wait existed.
+                    pass
 
                 body_text = page.content()
                 body_bytes = body_text.encode("utf-8")
