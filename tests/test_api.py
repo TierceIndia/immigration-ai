@@ -346,7 +346,7 @@ class TestAssessments:
                 session.add(req)
             session.flush()
 
-            from phase3.rule_repository import EnhancedRuleRepo
+            from rules.rule_repository import EnhancedRuleRepo
             rule_repo = EnhancedRuleRepo(session)
 
             # Create two ACTIVE rules
@@ -417,7 +417,7 @@ class TestAssessments:
         from db.connection import get_session
         from db.repositories import ProgramRepo, CountryRepo
         from db.models import ExtractionRun, Requirement as RequirementModel
-        from phase3.rule_repository import EnhancedRuleRepo
+        from rules.rule_repository import EnhancedRuleRepo
 
         headers = self._auth_headers(client)
 
@@ -488,7 +488,7 @@ class TestAssessments:
         from db.connection import get_session
         from db.repositories import ProgramRepo, CountryRepo
         from db.models import ExtractionRun, Requirement as RequirementModel
-        from phase3.rule_repository import EnhancedRuleRepo
+        from rules.rule_repository import EnhancedRuleRepo
 
         headers = self._auth_headers(client)
 
@@ -579,7 +579,7 @@ class TestAssessments:
         from db.connection import get_session
         from db.repositories import ProgramRepo, CountryRepo
         from db.models import ExtractionRun, Requirement as RequirementModel
-        from phase3.rule_repository import EnhancedRuleRepo
+        from rules.rule_repository import EnhancedRuleRepo
 
         with get_session(client.app.state.db_engine) as session:
             CountryRepo(session).upsert("AU", "Australia", "AU")
@@ -794,7 +794,7 @@ class TestApplicantSnapshot:
         from db.connection import get_session
         from db.repositories import ProgramRepo, CountryRepo
         from db.models import ExtractionRun, Requirement as RequirementModel
-        from phase3.rule_repository import EnhancedRuleRepo
+        from rules.rule_repository import EnhancedRuleRepo
 
         resp = client.post(
             "/api/v1/applicants",

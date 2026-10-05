@@ -17,7 +17,7 @@ Hard constraints enforced here:
   - Polite rate limiting between same-domain requests.
   - No new fetch path: reuses fetcher.fetch().
   - No direct provider LLM calls: any classification LLM second-opinion goes through
-    the governance layer (src/llm_governance.py) + phase2.llm_client, and is skipped
+    the governance layer (src/llm_governance.py) + extraction.llm_client, and is skipped
     gracefully when no real LLM is configured.
   - Deduplicates against existing government_sources.url values (exact match).
   - Never invents classifications: an ambiguous page leaves
@@ -35,7 +35,7 @@ import dotenv
 from bs4 import BeautifulSoup
 
 from db.repositories import DiscoveredSourceRepo, SourceRepo
-from fetcher import FetchResult, fetch as _default_fetch
+from fetch.fetcher import FetchResult, fetch as _default_fetch
 
 # In TESTS, dotenv loading is suppressed so a developer's .env cannot leak
 # keys into the hermetic suite (conftest strips them at module load).
@@ -350,7 +350,7 @@ def _apply_llm_second_opinion(candidates, suggested_category, report):
     third of the range). Degrades gracefully: if a real LLM client cannot be obtained
     or the governance gate blocks/would raise, the keyword result is kept unchanged."""
     try:
-        from phase2.llm_client import get_client
+        from extraction.llm_client import get_client
         from llm_governance import LLMGovernance
 
         # get_client is OpenAI-only and fails fast on missing key / bad model —

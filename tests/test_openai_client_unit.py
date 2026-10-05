@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from llm_governance import LLMGovernance, ResponseCache, UsageLog
-from phase2.llm_client import (
+from extraction.llm_client import (
     PROMPT_VERSION, OPENAI_PROVIDER, SCHEMA_VERSION,
     MockLLMClient, OpenAILLMClient,
 )

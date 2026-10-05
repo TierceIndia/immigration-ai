@@ -14,8 +14,8 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src"))
 
-import fetcher
-import browser_fetcher
+import fetch.fetcher as fetcher
+import fetch.browser_fetcher as browser_fetcher
 from db.models import (
     Base, Country, ImmigrationProgram,
     GovernmentSource, GovernmentDocument, DocumentVersion,
@@ -282,7 +282,7 @@ class TestFetchDocumentAndStoreFailure:
 
 class TestFetchDocumentAndStoreUnchanged:
     def test_matching_hash_creates_no_new_version(self, session, monkeypatch):
-        from hashing import sha256_bytes
+        from change_detection.hashing import sha256_bytes
         content_hash = sha256_bytes(HTML_OK)
         _seed_source_with_doc(session, content_hash=content_hash)
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()

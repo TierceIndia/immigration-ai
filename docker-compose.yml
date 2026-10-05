@@ -23,6 +23,17 @@ services:
     # (well-documented Chromium-in-Docker requirement). We bump it here rather
     # than passing --disable-dev-shm-usage at runtime; see Docker docs on /dev/shm.
     shm_size: '1gb'
+    volumes:
+      # Raw government snapshots (utils/fetch_document.py:persist_raw_snapshot)
+      # write to /app/raw inside the container. Without a named volume here,
+      # that directory is part of the container's writable layer: every
+      # container recreation (a rebuild, an `--rm` one-off run, a crash
+      # restart) silently loses every previously fetched raw snapshot, while
+      # government_documents.raw_path in Postgres keeps pointing at paths that
+      # no longer exist on disk. Found by checking a raw_path from the DB
+      # against the actual file on disk and discovering only files written by
+      # the single still-running container since its last start survived.
+      - raw_snapshots:/app/raw
     environment:
       DATABASE_URL: postgresql+psycopg2://immigration:immigration_dev@postgres:5432/immigration
       JWT_SECRET_KEY: change-me-in-production
@@ -40,12 +51,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # Dockerfile's ENTRYPOINT (docker-entrypoint.sh) starts Xvfb and sets DISPLAY
-    # before running this command, so browser_fetcher.py's headless=False
-    # Chromium has a real X display available.
     command: >
       sh -c "alembic upgrade head && python src/seed_registry.py &&
       uvicorn src.api.main:create_app --factory --host 0.0.0.0 --port 8000"
 
 volumes:
   pgdata:
+  raw_snapshots:

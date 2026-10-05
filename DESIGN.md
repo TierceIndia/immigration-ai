@@ -113,14 +113,14 @@ Real gold datasets are organized **per visa category** under `data/gold/<categor
 - **skilled/** — populated with real, verbatim gold: `skilled_189_real.json` (23 items) + `skilled_190_real.json` (6 items). The 189 dataset's 17 evidence strings are verified verbatim substrings; it also carries annotations for the 190 cross-source set.
 - **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items** (anti-hallucination: no fabricated `evidence_text`; plain-HTTP fetches of live Home Affairs are HTTP 403-blocked to automated fetchers, see `SOURCE_REGISTRY_REPORT.md`; the browser path `src/browser_fetcher.py` was fixed 2026-09-25 — it was launching Chromium `headless=True`, which the WAF also fingerprints and blocks; switched to `headless=False` under Xvfb and **live-verified** to receive real HTTP 200 with full content on 2 sample previously-blocked URLs, so real capture is now confirmed feasible; populating the gold datasets from it is still not yet done).
 
-The integrity harness `src/phase2/category_gold.py` fingerprints each category's prompt contract and every gold dataset, and `tests/phase2/test_category_gold_harness.py` (12 tests) asserts the contamination-free + no-fabricated-evidence invariants hold.
+The integrity harness `src/extraction/category_gold.py` fingerprints each category's prompt contract and every gold dataset, and `tests/extraction/test_category_gold_harness.py` (12 tests) asserts the contamination-free + no-fabricated-evidence invariants hold.
 
 ### Production Model
 
 gpt-4o at temperature=0: F1=0.882, Evidence Accuracy=1.0, Critical Recall=1.0 (8/8).
 
 **2026-09-25**: Gemini (`gemini-flash-lite-latest`) was added as a second fully-supported
-production provider alongside OpenAI — `get_client()` in `src/phase2/llm_client.py` routes to
+production provider alongside OpenAI — `get_client()` in `src/extraction/llm_client.py` routes to
 `OpenAILLMClient` or `GeminiLLMClient` by model name prefix, both wired through the same
 governance layer (rate limiting, budget, response cache, usage logging). Anthropic/mock models
 are still rejected at the factory (fail-fast, no silent fallback). No comparative F1/accuracy
@@ -893,23 +893,23 @@ Government Source
 
 ### Phase 3
 
-- `src/phase3/models.py` — Rule, Provenance, RuleEvaluation, EligibilityResult
-- `src/phase3/operators.py` — 12 declarative operators
-- `src/phase3/expressions.py` — 7 expression types, recursive evaluator
-- `src/phase3/rule_compiler.py` — Phase 2 requirement → Phase 3 rule
-- `src/phase3/rule_engine.py` — Single rule + aggregate evaluation
-- `src/phase3/explanations.py` — Human-readable evaluation explanations
-- `src/phase3/rule_activation.py` — Status machine (DRAFT→ACTIVE lifecycle)
-- `src/phase3/rule_repository.py` — EnhancedRuleRepo (CRUD, versioning, activation)
-- `src/phase3/requirement_to_rule.py` — Approved requirement → rule compilation bridge
+- `src/rules/models.py` — Rule, Provenance, RuleEvaluation, EligibilityResult
+- `src/rules/operators.py` — 12 declarative operators
+- `src/rules/expressions.py` — 7 expression types, recursive evaluator
+- `src/rules/rule_compiler.py` — Phase 2 requirement → Phase 3 rule
+- `src/rules/rule_engine.py` — Single rule + aggregate evaluation
+- `src/rules/explanations.py` — Human-readable evaluation explanations
+- `src/rules/rule_activation.py` — Status machine (DRAFT→ACTIVE lifecycle)
+- `src/rules/rule_repository.py` — EnhancedRuleRepo (CRUD, versioning, activation)
+- `src/rules/requirement_to_rule.py` — Approved requirement → rule compilation bridge
 
 ### Phase 3C
 
-- `src/phase3c/applicant.py` — ApplicantProfile, VisaSelection
-- `src/phase3c/applicability.py` — Program/status/version filtering
-- `src/phase3c/assessment.py` — ELIGIBLE/INELIGIBLE/INCOMPLETE mapping
-- `src/phase3c/gap_engine.py` — Missing field detection + prioritization
-- `src/phase3c/questions.py` — Deterministic question templates + validation
+- `src/assessment/applicant.py` — ApplicantProfile, VisaSelection
+- `src/assessment/applicability.py` — Program/status/version filtering
+- `src/assessment/assessment.py` — ELIGIBLE/INELIGIBLE/INCOMPLETE mapping
+- `src/assessment/gap_engine.py` — Missing field detection + prioritization
+- `src/assessment/questions.py` — Deterministic question templates + validation
 
 ### API & Auth
 
@@ -946,8 +946,7 @@ Government Source
 
 ### Baselines
 
-- `validation/phase3_baseline_manifest.json` — Phase 3 frozen checkpoint
-- `validation/run_report.json` — Phase 1 pipeline results
+- `validation/run_report.json` — Phase 1 pipeline results (gitignored, regenerated on each run)
 
 ---
 
@@ -1015,7 +1014,7 @@ Government Source
 | ~~G13 computed PipelineRun counters~~ | P2 | DONE | rules_validated/approved/activated computed at query time |
 | ~~G16/Phase 4 category prompts~~ | P2 | DONE | run_extraction.py derives visa_category → category prompt |
 | ~~Admin-only enforcement on every admin endpoint~~ | P1 | DONE | 2026-09-15: `POST /api/v1/admin/sync` was unauthenticated — now gated via shared `require_admin`; all admin routes audited |
-| ~~Playwright collection crash~~ | P1 | DONE | 2026-09-15: manual browser script moved out of `tests/` into `scripts/` — pytest no longer launches a browser at collection |
+| ~~Playwright collection crash~~ | P1 | DONE | 2026-09-15: browser script moved out of `tests/` into `scripts/` — pytest no longer launches a browser at collection (driver is now Patchright) |
 | WORK/STUDENT/VISITOR sources | P3 | DONE | 2026-09-15: registry extended to 14 sources across all four categories (482/500/600 mains + occupation list + CRICOS) |
 | ~~Live Home Affairs fetch~~ | P3 | DONE (was PARTIAL) | 2026-09-25: `browser_fetcher.py` was launching Chromium `headless=True`, fingerprinted and blocked by the WAF — fixed to `headless=False` under Xvfb, **live-verified** real HTTP 200 with full content on 2 previously-blocked URLs. Not yet confirmed via a full sync across all affected sources. |
 | ~~Auth temporarily bypassed for manual testing~~ | P0 | DONE | Restored 2026-09-22; bypass fully deleted, not just toggled off |
@@ -1038,8 +1037,8 @@ Government Source
    found and fixed since (auth restoration, API audit, field-mapping fix, operator translation,
    ordinal comparison, zero-chunk PARTIAL, headless assertion, source-registry content).
 2. **Real PostgreSQL**: `docker compose up -d postgres` + `alembic upgrade head`, then full ORM pipeline Country → Program → Source → Document → Version → Chunk → Requirement → Rule (DRAFT → VALIDATED → APPROVED → ACTIVE). FK constraints and NOT NULL enforced correctly. **2026-09-25: the full knowledge-to-assessment E2E test now also passes against real PostgreSQL** — sync → extract → approve → compile → validate → approve → activate → PASS/FAIL/UNKNOWN → gaps, with correct provenance (it failed on first run, surfacing the field-mapping and operator bugs above).
-3. **Live fetch**: Home Affairs returns 403 ACCESS_BLOCKED to the plain-HTTP fetcher — correctly classified, recorded, and source demoted (failure-safe by design); the Playwright browser path, now genuinely `headless=False` under Xvfb, returns real HTTP 200 with full content on the same pages (live-verified 2026-09-25, not just claimed).
-4. **CLI Phase 1/2**: offline pipeline + phase2 run_extraction against DOC-AU-189-MAIN extract 6 validated requirements with category-aware prompt wiring.
+3. **Live fetch**: Home Affairs returns 403 ACCESS_BLOCKED to the plain-HTTP fetcher — correctly classified, recorded, and source demoted (failure-safe by design). **Correction (2026-10-01): the earlier claim that a headed Playwright browser returned HTTP 200 with full content on these pages is false.** A genuine headless Patchright Chromium was run live against the same Home Affairs URLs and still received 403 — headed mode never defeated the WAF, and the browser tier does not raise source coverage. The browser tier remains a generic escalation path for JS-rendered or bot-protected sources, not a Home Affairs workaround.
+4. **CLI Phase 1/2**: offline pipeline + extraction run_extraction against DOC-AU-189-MAIN extract 6 validated requirements with category-aware prompt wiring.
 5. **Category-aware gold harness**: per-category dirs created; skilled gold (189 + 190, 29 items) migrated; work/student/visitor zero-item placeholders; integrity report clean (no contract violations, no cross-category leak).
 
 ### Next Milestones

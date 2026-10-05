@@ -24,8 +24,8 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src"))
 
-import fetcher
-from hashing import sha256_bytes
+import fetch.fetcher as fetcher
+from change_detection.hashing import sha256_bytes
 from db.models import (
     Base, Country, ImmigrationProgram,
     GovernmentSource, GovernmentDocument, DocumentVersion,
@@ -379,7 +379,7 @@ class TestFailedFetchDoesNotPoisonKnownGoodKnowledge:
 
     @staticmethod
     def _make_active_rule(session):
-        from phase3.rule_repository import EnhancedRuleRepo
+        from rules.rule_repository import EnhancedRuleRepo
 
         EnhancedRuleRepo(session).create(
             rule_id="RULE-AGE-189", requirement_id="REQ-AGE-189",
@@ -425,7 +425,7 @@ class TestFailedFetchDoesNotPoisonKnownGoodKnowledge:
 
     def test_failure_after_good_sync_does_not_touch_activated_rules(self, session, monkeypatch):
         """Do the good sync, then fail the next one; the rule must be untouched."""
-        from phase3.rule_repository import EnhancedRuleRepo
+        from rules.rule_repository import EnhancedRuleRepo
 
         _seed_source(session)
         _patch_fetch(monkeypatch, HTML_V1)
@@ -454,7 +454,7 @@ class TestFailedFetchDoesNotPoisonKnownGoodKnowledge:
 
     def test_extraction_failure_keeps_previously_active_rule(self, session, monkeypatch):
         """The extraction entry point itself raising must not disturb rules."""
-        from phase3.rule_repository import EnhancedRuleRepo
+        from rules.rule_repository import EnhancedRuleRepo
 
         _seed_source_with_doc(session, content_hash=HASH_V1, last_hash=HASH_V1)
         self._make_active_rule(session)
@@ -488,7 +488,7 @@ class TestFailedFetchDoesNotPoisonKnownGoodKnowledge:
         (``utils.fetch_document.get_client``), rather than asserting an untouched
         row is still untouched.
         """
-        from phase3.rule_repository import EnhancedRuleRepo
+        from rules.rule_repository import EnhancedRuleRepo
 
         _seed_source_with_doc(session, content_hash=HASH_V1, last_hash=HASH_V1)
         EnhancedRuleRepo(session).create(
@@ -543,7 +543,7 @@ class TestPartialExtractionIsDurable:
     )
 
     def test_requirements_before_failure_are_kept(self, session, monkeypatch):
-        from phase2.llm_client import MockLLMClient
+        from extraction.llm_client import MockLLMClient
         from db.models import ExtractionRun
 
         _seed_source(session)

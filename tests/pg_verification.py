@@ -19,7 +19,7 @@ from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker
 from db.models import Base, ApiUser, ApplicantProfile, Rule, Requirement, ImmigrationProgram, Country
 from db.repositories import UserRepo, ApplicantRepo
-from phase3.rule_repository import EnhancedRuleRepo
+from rules.rule_repository import EnhancedRuleRepo
 from api.helpers import parse_uuid_or_404
 from fastapi import HTTPException
 

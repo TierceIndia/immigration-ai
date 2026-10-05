@@ -17,7 +17,7 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from db import SCHEMA_PATH, PHASE2_SCHEMA_PATH  # noqa: E402
-from fetcher import FetchResult, FetchStatus  # noqa: E402
+from fetch.fetcher import FetchResult, FetchStatus  # noqa: E402
 
 
 OK_BYTES = (
@@ -84,7 +84,7 @@ def test_escalates_to_browser_when_plain_fetch_blocked(conn, monkeypatch):
 
     browser_called = {}
     monkeypatch.setattr(
-        "browser_fetcher.fetch_with_browser",
+        "fetch.browser_fetcher.fetch_with_browser",
         lambda url, source_type="HTML": (browser_called.setdefault("url", url), _ok_result(url))[1],
     )
 
@@ -106,7 +106,7 @@ def test_no_escalation_when_plain_fetch_succeeds(conn, monkeypatch):
 
     called = {}
     monkeypatch.setattr(
-        "browser_fetcher.fetch_with_browser",
+        "fetch.browser_fetcher.fetch_with_browser",
         lambda url, source_type="HTML": called.setdefault("called", True) or _ok_result(url),
     )
 
@@ -121,7 +121,7 @@ def test_sets_needs_manual_capture_when_browser_also_blocked(conn, monkeypatch):
 
     monkeypatch.setattr(pl, "fetch", lambda url, source_type="HTML", **kw: _blocked_result(url))
     monkeypatch.setattr(
-        "browser_fetcher.fetch_with_browser",
+        "fetch.browser_fetcher.fetch_with_browser",
         lambda url, source_type="HTML": _blocked_result(url),
     )
 

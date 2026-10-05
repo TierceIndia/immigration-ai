@@ -26,8 +26,8 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src"))
 
-import fetcher
-from hashing import sha256_bytes
+import fetch.fetcher as fetcher
+from change_detection.hashing import sha256_bytes
 from db.models import (
     Base, Country, ImmigrationProgram,
     GovernmentSource, GovernmentDocument, DocumentVersion,

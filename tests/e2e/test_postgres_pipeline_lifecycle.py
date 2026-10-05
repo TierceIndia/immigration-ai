@@ -42,11 +42,11 @@ from db.models import (
 )
 from db.connection import get_session_factory
 from db.repositories import PipelineRunRepo
-from fetcher import FetchResult, FetchStatus, fetch
-from hashing import sha256_bytes
+from fetch.fetcher import FetchResult, FetchStatus, fetch
+from change_detection.hashing import sha256_bytes
 from orchestration.government_sync import sync_source
-from phase3.rule_repository import EnhancedRuleRepo
-from phase3.requirement_to_rule import compile_approved_requirements
+from rules.rule_repository import EnhancedRuleRepo
+from rules.requirement_to_rule import compile_approved_requirements
 
 pytestmark = [
     pytest.mark.postgres_e2e,
@@ -282,7 +282,7 @@ class TestPostgresPipelineLifecycle:
         run_repo = PipelineRunRepo(session)
 
         # ===================== STEP 1: government v1 =====================
-        monkeypatch.setattr("fetcher.fetch", _sandbox_fetch(FIXTURE_V1))
+        monkeypatch.setattr("fetch.fetcher.fetch", _sandbox_fetch(FIXTURE_V1))
         result_v1 = sync_source(session, SOURCE_ID, trigger_type="ON_DEMAND")
         session.expire_all()
         session.commit()
@@ -364,7 +364,7 @@ class TestPostgresPipelineLifecycle:
         assert active[0].value_json == "45"
 
         # ===================== STEP 3: government changes to v2 =====================
-        monkeypatch.setattr("fetcher.fetch", _sandbox_fetch(FIXTURE_V2))
+        monkeypatch.setattr("fetch.fetcher.fetch", _sandbox_fetch(FIXTURE_V2))
         result_v2 = sync_source(session, SOURCE_ID, trigger_type="ON_DEMAND")
         session.expire_all()
         session.commit()

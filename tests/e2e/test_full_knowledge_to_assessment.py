@@ -32,11 +32,11 @@ from db.models import (
 )
 from db.connection import get_session_factory
 from db.repositories import PipelineRunRepo
-from fetcher import FetchResult, FetchStatus
+from fetch.fetcher import FetchResult, FetchStatus
 from services.assessment_service import AssessmentService
 from orchestration.government_sync import sync_source
-from phase3.rule_repository import EnhancedRuleRepo
-from phase3.requirement_to_rule import compile_approved_requirements
+from rules.rule_repository import EnhancedRuleRepo
+from rules.requirement_to_rule import compile_approved_requirements
 
 pytestmark = [
     pytest.mark.postgres_e2e,
@@ -211,7 +211,7 @@ class TestFullKnowledgeToAssessment:
         session.commit()
 
         # --- Step 1: Sync government source → extract → compile → activate rules ---
-        monkeypatch.setattr("fetcher.fetch", _ok_fetch(FIXTURE_AU_189))
+        monkeypatch.setattr("fetch.fetcher.fetch", _ok_fetch(FIXTURE_AU_189))
         result = sync_source(session, SOURCE_ID, trigger_type="ON_DEMAND")
         assert result.status == "changed"
         session.commit()

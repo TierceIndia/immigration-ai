@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from extractor_ha_api import strip_html  # noqa: E402
+from fetch.extractor_ha_api import strip_html  # noqa: E402
 
 
 def test_inline_elements_preserve_word_boundaries():

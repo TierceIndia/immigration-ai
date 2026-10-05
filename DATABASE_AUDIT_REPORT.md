@@ -12,7 +12,7 @@ audit was originally written against.
 > warning), the source registry now seeds **14 sources across all four visa categories**
 > (SKILLED / WORK / STUDENT / VISITOR), `POST /api/v1/admin/sync` was found and fixed to be
 > admin-gated (it was previously unauthenticated; every admin route was re-audited), and the
-> manual Playwright script was moved out of `tests/` so the suite no longer launches a browser
+> manual browser script was moved out of `tests/` so the suite no longer launches a browser
 > at collection.
 >
 > **STATUS UPDATE — 2026-09-25**: one more migration has landed since (`e4f6a1b2c3d4_add_fetch_error_type`,
@@ -125,7 +125,7 @@ local 883-test suite exercises the identical rules.
 
 > **Note on scope creep prevention:** during test-suite validation two value-set gaps were
 > found by the constraints (not by guessing): the extraction `status='DRY_RUN'` written by
-> `src/phase2/run_extraction.py`, and the `government_sources.status` health-flag vocabulary
+> `src/extraction/run_extraction.py`, and the `government_sources.status` health-flag vocabulary
 > (`BROKEN`, `NEEDS_MANUAL_CAPTURE`, `ACCESS_BLOCKED`, …) written by `src/pipeline.py` /
 > `src/utils/fetch_document.py`. Both were folded into the CHECKs so **no application logic
 > changed**; a handful of test fixtures that used a non-canonical lowercase `"completed"`
@@ -135,7 +135,7 @@ local 883-test suite exercises the identical rules.
 
 ## 3. Verification evidence
 
-Local suite: `PYTHONPATH="src;src/phase2"; python -m pytest tests -q`
+Local suite: `PYTHONPATH="src;src/extraction"; python -m pytest tests -q`
 → `883 passed, 21 warnings in 62s` (873 baseline + 10 new `TestAuditHardening` tests).
 
 Live PostgreSQL probe matrix (ran inside the container against live DB, then cleaned up):

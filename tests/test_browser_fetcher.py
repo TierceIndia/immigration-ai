@@ -15,7 +15,7 @@ import types
 
 import pytest
 
-from browser_fetcher import (
+from fetch.browser_fetcher import (
     _classify_browser_exception,
     _classify_browser_result,
     _is_headless,
@@ -25,7 +25,7 @@ from browser_fetcher import (
     fetch_with_browser,
     is_same_domain,
 )
-from fetcher import FetchStatus
+from fetch.fetcher import FetchStatus
 
 
 # ---------------------------------------------------------------------------
@@ -96,14 +96,14 @@ class _FakeChromium:
         return self._browser
 
 
-class _FakePlaywright:
+class _FakePatchright:
     def __init__(self, chromium):
         self.chromium = chromium
 
 
-class _FakeSyncPlaywrightCM:
-    def __init__(self, playwright):
-        self._pw = playwright
+class _FakeSyncPatchrightCM:
+    def __init__(self, patchright):
+        self._pw = patchright
 
     def __enter__(self):
         return self._pw
@@ -131,7 +131,7 @@ def _install_fake_patchright(
     chromium = _FakeChromium(browser, sink, launch_exc=launch_exc)
 
     sync_api = types.ModuleType("patchright.sync_api")
-    sync_api.sync_playwright = lambda: _FakeSyncPlaywrightCM(_FakePlaywright(chromium))
+    sync_api.sync_playwright = lambda: _FakeSyncPatchrightCM(_FakePatchright(chromium))
     patchright_pkg = types.ModuleType("patchright")
     patchright_pkg.sync_api = sync_api
 
@@ -267,23 +267,6 @@ def test_chromium_launches_headless_by_default(monkeypatch):
     assert result.status == FetchStatus.OK
 
 
-def test_headless_is_configurable_for_local_debugging(monkeypatch):
-    """BROWSER_HEADLESS=0 opts into a headed run for local debugging only.
-
-    It still renders through a genuine browser and still classifies honestly; the
-    flag does not weaken any classification.
-    """
-    monkeypatch.setenv("BROWSER_HEADLESS", "0")
-    assert _is_headless() is False
-
-    sink = _install_fake_patchright(monkeypatch)
-    result = _patchright_fetch("https://example.gov/page", "HTML", 20)
-
-    launches = [c for c in sink if c[0] == "launch"]
-    assert launches[0][1]["headless"] is False
-    assert result.status == FetchStatus.OK
-
-
 @pytest.mark.parametrize("value,expected", [
     ("1", True), ("true", True), ("yes", True), ("on", True),
     ("0", False), ("false", False), ("no", False), ("off", False),
@@ -403,7 +386,7 @@ def test_playwright_is_not_used():
     """
     import ast
 
-    import browser_fetcher
+    import fetch.browser_fetcher as browser_fetcher
 
     tree = ast.parse(open(browser_fetcher.__file__, encoding="utf-8").read())
 

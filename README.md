@@ -69,16 +69,15 @@ new access token.
 > case-only rename to `dockerfile` can silently reuse a stale image on case-insensitive
 > filesystems — do not rename it.
 
-The `api` container's entrypoint (`docker-entrypoint.sh`) starts a real Xvfb X server and
-sets `DISPLAY` before running `alembic upgrade head` → `python src/seed_registry.py` (idempotent
-seed of countries / programs / 14 verified government sources across all four visa categories:
-SKILLED, WORK, STUDENT, VISITOR) → uvicorn. The Dockerfile
-builds the Python 3.12-slim base plus Playwright's Chromium and `xvfb`/`xauth` (for browser-based
-source retrieval inside the `src/browser_fetcher.py` path — which requires `headless=False` because
-headless mode is fingerprinted and blocked with HTTP 403 by the Home Affairs WAF; live-verified
-2026-09-25, see the table above). `docker-entrypoint.sh` starts Xvfb directly and polls for its
-socket rather than using `xvfb-run`'s wrapper, whose SIGUSR1-based readiness handshake hangs under
-Docker's default (no-init) PID 1 signal handling.
+The `api` container runs migrations and seeds before serving: `docker-compose.yml`'s `command` runs
+`alembic upgrade head` → `python src/seed_registry.py` (idempotent seed of countries / programs /
+14 verified government sources across all four visa categories: SKILLED, WORK, STUDENT, VISITOR) →
+uvicorn.
+
+The Dockerfile builds the Python 3.12-slim base plus **Patchright's** Chromium via
+`patchright install --with-deps chromium`. The browser is **headless**, so nothing needs an X server:
+no `DISPLAY`, no Xvfb, no `xauth`, and no Xvfb entrypoint. The stock `playwright` package is
+deliberately not installed (see `src/browser_fetcher.py` for the rationale).
 
 Diagnostics: `GET /health` is a pure liveness probe (always 200). `GET /ready` reports
 DB connectivity — 200 when connected, else 503 with safe, credential-scrubbed context
@@ -206,8 +205,8 @@ LLM-based structured requirement extraction with evidence validation, deduplicat
 **Key outputs**: `requirements` rows with `status=APPROVED`, full evidence provenance.
 
 ```bash
-python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN
-python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN --model gpt-4o
+python src/extraction/run_extraction.py --document-id DOC-AU-189-MAIN
+python src/extraction/run_extraction.py --document-id DOC-AU-189-MAIN --model gpt-4o
 ```
 
 ### Phase 3 — Deterministic Rule Engine
@@ -418,11 +417,11 @@ from db.repositories import (
 
 ```bash
 python -m pytest tests/ -q              # Full suite (counts above)
-python -m pytest tests/phase3 -q        # Phase 3 core: 192 tests
-python -m pytest tests/phase3c -q       # Phase 3C eligibility: 97 tests
+python -m pytest tests/rules -q        # Phase 3 core: 192 tests
+python -m pytest tests/assessment -q       # Phase 3C eligibility: 97 tests
 python -m pytest tests/phase3d -q       # Phase 3D activation: 120 tests
 python -m pytest tests/db -q            # Database models/repos: 22 tests
-python -m pytest tests/phase2/test_category_prompts.py -q  # Category→prompt wiring: 10 tests
+python -m pytest tests/extraction/test_category_prompts.py -q  # Category→prompt wiring: 10 tests
 python -m pytest tests/test_api.py -q   # API routes: 38 tests
 python -m pytest tests/test_auth.py -q  # Authentication: 13 tests
 python -m pytest tests/test_security.py -q  # Security: 44 tests
@@ -503,12 +502,15 @@ immigration-knowledge/
 │   │   ├── models.py               # 25+ ORM models
 │   │   └── repositories.py         # 20+ repository classes
 │   ├── phase1/                     # Government source registry
-│   ├── phase2/                     # Knowledge extraction (LLM, validation, dedup)
-│   ├── phase3/                     # Rule engine (operators, expressions, compiler)
+│   ├── extraction/                 # Knowledge extraction (LLM, validation, dedup) — was phase2/
+│   ├── rules/                      # Rule engine (operators, expressions, compiler) — was phase3/
 │   │   ├── rule_activation.py      # Status machine (DRAFT→ACTIVE lifecycle)
 │   │   ├── rule_repository.py      # EnhancedRuleRepo (CRUD, versioning, activation)
 │   │   └── requirement_to_rule.py  # Approved requirement → rule compilation bridge
-│   ├── phase3c/                    # Eligibility + Gap Engine
+│   ├── assessment/                 # Eligibility + Gap Engine — was phase3c/
+│   ├── change_detection/           # change_detector.py, hashing.py
+│   ├── fetch/                      # fetcher.py, browser_fetcher.py, extractor_html.py,
+│   │                                #   extractor_pdf.py, extractor_ha_api.py
 │   ├── orchestration/
 │   │   └── government_sync.py      # Source sync orchestrator (always-fetch + crawl gating)
 │   ├── services/
@@ -518,24 +520,20 @@ immigration-knowledge/
 │   │   └── eligibility_service.py  # Eligibility evaluation
 │   ├── utils/
 │   │   └── fetch_document.py       # fetch → store → version → change-detect → extract
-│   ├── change_detector.py          # classify_change (INITIAL / CHANGED / UNCHANGED)
-│   ├── fetcher.py                  # Plain-HTTP fetcher (403-classifies blocks)
-│   ├── browser_fetcher.py          # Playwright Chromium escalation (headless=False)
 │   ├── source_discovery.py         # Candidate discovery / robots gate / keyword scoring
 │   ├── llm_governance.py           # RateLimiter, RetryPolicy, ResponseCache, BudgetTracker
 │   ├── logging_config.py           # Structured logging, PII redaction
 │   ├── pipeline.py                 # Phase 1 orchestrator
 │   └── seed_registry.py            # Source registry seeder
 ├── tests/
-│   ├── phase3/                     # 192 tests (expression tree, operators, versioning)
-│   ├── phase3c/                    # 97 tests (applicant, assessment, gaps)
+│   ├── rules/                      # 192 tests (expression tree, operators, versioning) — was phase3/
+│   ├── assessment/                 # 97 tests (applicant, assessment, gaps) — was phase3c/
 │   ├── phase3d/                    # 134 tests (activation, repo, bridge, admin API, e2e, hardening)
 │   ├── db/                         # 22 tests (models, repositories)
 │   ├── logging/                    # 17 tests (structured logging, PII redaction)
 │   └── test_*.py                   # API, auth, LLM governance, pipeline, security tests
 ├── validation/
-│   ├── phase3_baseline_manifest.json
-│   └── run_report.json
+│   └── run_report.json             # gitignored; regenerated by src/pipeline.py runs
 ├── schema/
 │   ├── schema.sql
 │   └── requirements.schema.json
@@ -554,7 +552,7 @@ immigration-knowledge/
 │   ├── student/requirement_extraction_v2.md
 │   └── visitor/requirement_extraction_v2.md
 ├── scripts/
-│   └── manual_playwright_check.py  # Manual browser check (deliberately OUTSIDE tests/ so pytest never launches a browser during collection)
+│   └── browser_smoke.py            # Hermetic offline Chromium launch check (not collected by pytest)
 ├── sources/
 │   └── source_registry.seed.json   # 14 verified government sources (SKILLED / WORK / STUDENT / VISITOR)
 ├── migrations/                     # Alembic migrations
@@ -597,7 +595,7 @@ immigration-knowledge/
 
 ## LLM Governance
 
-- **Providers**: OpenAI (`gpt-4o-mini`, `gpt-4o`, ...) and Gemini (`gemini-flash-lite-latest`, ...) are both fully supported production extraction providers, selected via `EXTRACTION_MODEL`. `get_client()` in `src/phase2/llm_client.py` routes to `OpenAILLMClient` or `GeminiLLMClient` by model name prefix; both are wired through the same governance stack below. Anthropic/mock models are rejected at the factory (fail-fast, no silent fallback).
+- **Providers**: OpenAI (`gpt-4o-mini`, `gpt-4o`, ...) and Gemini (`gemini-flash-lite-latest`, ...) are both fully supported production extraction providers, selected via `EXTRACTION_MODEL`. `get_client()` in `src/extraction/llm_client.py` routes to `OpenAILLMClient` or `GeminiLLMClient` by model name prefix; both are wired through the same governance stack below. Anthropic/mock models are rejected at the factory (fail-fast, no silent fallback).
 - **RateLimiter**: Per-model request throttling with sliding window
 - **RetryPolicy**: Exponential backoff with configurable max delay
 - **ResponseCache**: SHA256-keyed LRU cache with TTL expiry, namespaced per provider
@@ -623,7 +621,7 @@ immigration-knowledge/
 | ~~G13 computed PipelineRun counters~~ | P2 | DONE |
 | ~~Phase 4 run_extraction category prompt~~ | P2 | DONE (visa_category→prompt wiring + 10 tests) |
 | ~~Admin-only enforcement on every admin endpoint~~ | P1 | DONE (2026-09-15: `POST /admin/sync` was unauthenticated — now admin-gated; all admin routes audited) |
-| ~~Playwright collection crash~~ | P1 | DONE (2026-09-15: manual browser script moved out of `tests/`, suite no longer launches a browser at collection) |
+| ~~Playwright collection crash~~ | P1 | DONE (2026-09-15: browser script moved out of `tests/`, suite no longer launches a browser at collection; driver is now Patchright) |
 | WORK/STUDENT/VISITOR **source coverage** | P3 | DONE (2026-09-15: 5 sources added — 482 main + occupation list, 500 main + CRICOS, 600 main) |
 | ~~Missing `_require_admin` on `GET /admin/rules/{rule_id}`~~ | P1 | DONE (2026-09-21: the only route in `admin_rules.py` missing the admin check every sibling route has — fixed + regression test) |
 | ~~Docker deployment could never do real LLM extraction~~ | P0 | DONE (2026-09-21: `docker-compose.yml` never forwarded `OPENAI_API_KEY`/`GEMINI_API_KEY`/`EXTRACTION_MODEL` into the `api` container; `Dockerfile` never copied `prompts/` into the image. Both fixed and verified live.) |
@@ -652,10 +650,10 @@ immigration-knowledge/
 
 ```bash
 # Requires OPENAI_API_KEY (or GEMINI_API_KEY, with EXTRACTION_MODEL=gemini-flash-lite-latest) in .env
-python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN --model gpt-4o
+python src/extraction/run_extraction.py --document-id DOC-AU-189-MAIN --model gpt-4o
 
 # Evaluate against real gold standard
-python tests/phase2/test_real_gold_evaluation.py gpt-4o 0
+python tests/extraction/test_real_gold_evaluation.py gpt-4o 0
 ```
 
 **Note for Docker deployments**: `docker-compose.yml` forwards `OPENAI_API_KEY`, `GEMINI_API_KEY`,
@@ -666,7 +664,7 @@ under `environment:`).
 
 ## Gold Datasets (Phase 3: category-aware)
 
-Each visa category owns its gold dataset under `data/gold/<category>/` and is validated against **its own** prompt contract (`prompts/<category>/requirement_extraction_v2.md`). The harness `src/phase2/category_gold.py` enforces **zero cross-category contamination**: a Student source can never be scored against the Skilled contract.
+Each visa category owns its gold dataset under `data/gold/<category>/` and is validated against **its own** prompt contract (`prompts/<category>/requirement_extraction_v2.md`). The harness `src/extraction/category_gold.py` enforces **zero cross-category contamination**: a Student source can never be scored against the Skilled contract.
 
 - **skilled/** — populated with real, verbatim gold: `skilled_189_real.json` (23 items) + `skilled_190_real.json` (6 items).
 - **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items**. The project's anti-hallucination rule forbids fabricating `evidence_text`; plain-HTTP fetches of live Home Affairs are HTTP 403-blocked (`SOURCE_REGISTRY_REPORT.md`). The browser path (`src/browser_fetcher.py`, headless=False) has been shown to receive HTTP 200 on real Home Affairs pages, so real evidence capture for these categories is feasible but not yet executed/in-sandbox. They become fillable once real content is captured.
@@ -674,14 +672,13 @@ Each visa category owns its gold dataset under `data/gold/<category>/` and is va
 Run the integrity check:
 
 ```bash
-python -m phase2.category_gold   # prints contract + dataset integrity report
-python -m pytest tests/phase2/test_category_gold_harness.py -q   # 12 guard tests
+python -m extraction.category_gold   # prints contract + dataset integrity report
+python -m pytest tests/extraction/test_category_gold_harness.py -q   # 12 guard tests
 ```
 
 ## Baseline Manifests
 
-- `validation/phase3_baseline_manifest.json` — Phase 3 frozen checkpoint
-- `validation/run_report.json` — Phase 1 pipeline run results
+- `validation/run_report.json` — Phase 1 pipeline run results (gitignored, regenerated on each run)
 
 ## Verification
 
@@ -708,7 +705,7 @@ Confirmed:
 
 ```bash
 python src/pipeline.py --source-id SRC-AU-189-MAIN --offline-fixture tests/fixtures/skilled_189_sample.html
-python src/phase2/run_extraction.py --document-id DOC-AU-189-MAIN --model gpt-4o-mini
+python src/extraction/run_extraction.py --document-id DOC-AU-189-MAIN --model gpt-4o-mini
 ```
 
 Verified: fetch → store → hash → change detect → extract, and Phase 2 requirement extraction with category-aware prompt selection (6 requirements extracted from DOC-AU-189-MAIN).

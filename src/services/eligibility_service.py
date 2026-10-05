@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from phase3.models import Rule, EvaluationStatus
-from phase3.expressions import ExpressionNode, evaluate_expression
-from phase3c.applicant import ApplicantProfile, VisaSelection
-from phase3c.assessment import assess_eligibility as _assess, EligibilityOutcome
-from phase3c.gap_engine import GapEngine, Gap
-from phase3c.questions import QuestionBank
+from rules.models import Rule, EvaluationStatus
+from rules.expressions import ExpressionNode, evaluate_expression
+from assessment.applicant import ApplicantProfile, VisaSelection
+from assessment.assessment import assess_eligibility as _assess, EligibilityOutcome
+from assessment.gap_engine import GapEngine, Gap
+from assessment.questions import QuestionBank
 from logging_config import get_logger
 
 logger = get_logger(__name__)

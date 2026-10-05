@@ -12,8 +12,8 @@ from db.models import (
     Rule as RuleORM,
 )
 from db.connection import get_session_factory
-from phase3.requirement_to_rule import compile_approved_requirements, _load_requirement_dict
-from phase3.rule_repository import EnhancedRuleRepo
+from rules.requirement_to_rule import compile_approved_requirements, _load_requirement_dict
+from rules.rule_repository import EnhancedRuleRepo
 
 
 @pytest.fixture()

@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from extractor_html import extract_html
+from fetch.extractor_html import extract_html
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "real_600_homeaffairs.html"
 URL = "https://immi.homeaffairs.gov.au/visas/getting-a-visa/visa-listing/visitor-600"

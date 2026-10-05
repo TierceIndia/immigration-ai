@@ -5,7 +5,7 @@ sys.path.insert(0, 'src')
 # First, let's check if the issue is specifically with 'list' name in enum classes
 # by looking at what comes right before ExtractedRequirement
 
-with open('src/phase2/models.py', 'r') as f:
+with open('src/extraction/models.py', 'r') as f:
     lines = f.readlines()
 
 # Print lines 130-175 (around ExtractedRequirement)

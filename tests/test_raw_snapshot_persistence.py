@@ -23,7 +23,7 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-import fetcher
+import fetch.fetcher as fetcher
 from db.connection import get_session_factory
 from db.models import (
     Base,
@@ -40,7 +40,7 @@ from utils.fetch_document import (
     persist_raw_snapshot,
     read_raw_metadata,
 )
-from hashing import sha256_bytes
+from change_detection.hashing import sha256_bytes
 
 HTML_V1 = (
     b"<html><head><title>Skilled 189</title></head><body>"
@@ -279,7 +279,7 @@ class TestRawSnapshotPathConvention:
 # ---------------------------------------------------------------------------
 class TestRawSnapshotMetadata:
     def test_manifest_records_full_retrieval_provenance(self, source, raw_root):
-        from fetcher import FetchResult, FetchStatus
+        from fetch.fetcher import FetchResult, FetchStatus
 
         retrieved_at = datetime(2026, 3, 1, 12, 30, tzinfo=timezone.utc)
         result = FetchResult(
@@ -318,7 +318,7 @@ class TestRawSnapshotMetadata:
     def test_manifest_is_deterministic_for_identical_retrieval(self, source, raw_root):
         """Identical retrievals must produce byte-identical manifests — the
         manifest is part of the evidence trail, so it cannot drift."""
-        from fetcher import FetchResult, FetchStatus
+        from fetch.fetcher import FetchResult, FetchStatus
 
         def _result():
             return FetchResult(
@@ -346,7 +346,7 @@ class TestRawSnapshotMetadata:
     def test_metadata_preserves_failure_diagnostics(self, source, raw_root):
         """A failure classification written into the manifest must stay
         machine-readable, not collapse into free text."""
-        from fetcher import FetchResult, FetchStatus
+        from fetch.fetcher import FetchResult, FetchStatus
 
         result = FetchResult(
             url=source.url,

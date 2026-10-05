@@ -39,10 +39,10 @@ from db.models import (
     GovernmentSource, GovernmentDocument, DocumentVersion,
     DocumentChunk, Requirement, PipelineRun,
 )
-from change_detector import ChangeType, classify_change
+from change_detection.change_detector import ChangeType, classify_change
 from db.repositories import PipelineRunRepo
-from phase3.requirement_to_rule import compile_approved_requirements
-from phase3.rule_repository import EnhancedRuleRepo
+from rules.requirement_to_rule import compile_approved_requirements
+from rules.rule_repository import EnhancedRuleRepo
 from logging_config import get_logger
 from utils.fetch_document import fetch_document_and_store
 

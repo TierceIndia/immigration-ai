@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import dotenv
-import fetcher
+import fetch.fetcher as fetcher
 
 # In TESTS, dotenv loading is suppressed so a developer's .env cannot leak
 # keys into the hermetic suite (confest strips them at module load).
@@ -46,13 +46,13 @@ from db.models import (
     GovernmentDocument,
     GovernmentSource,
 )
-from extractor_html import extract_html as _extract_html
-from extractor_pdf import extract_pdf as _extract_pdf
-from hashing import sha256_bytes
+from fetch.extractor_html import extract_html as _extract_html
+from fetch.extractor_pdf import extract_pdf as _extract_pdf
+from change_detection.hashing import sha256_bytes
 from logging_config import get_logger
 from sqlalchemy.orm import Session
 
-import browser_fetcher
+import fetch.browser_fetcher as browser_fetcher
 
 logger = get_logger(__name__)
 
@@ -211,10 +211,10 @@ def _extraction_model() -> str:
     from llm_client import DEFAULT_OPENAI_MODEL
     return os.getenv("EXTRACTION_MODEL", DEFAULT_OPENAI_MODEL)
 
-# Phase-2 modules rely on flat imports against src/phase2.
-_PHASE2_DIR = Path(__file__).resolve().parent.parent / "phase2"
-if str(_PHASE2_DIR) not in sys.path:
-    sys.path.insert(0, str(_PHASE2_DIR))
+# Extraction modules rely on flat imports against src/extraction.
+_EXTRACTION_DIR = Path(__file__).resolve().parent.parent / "extraction"
+if str(_EXTRACTION_DIR) not in sys.path:
+    sys.path.insert(0, str(_EXTRACTION_DIR))
 from llm_client import PROMPT_VERSION, get_client  # noqa: E402
 from requirement_extractor import extract_from_document  # noqa: E402
 from requirement_repository import (  # noqa: E402
@@ -376,7 +376,7 @@ def run_requirement_extraction(
     conn = SqliteConn(session)
 
     # Record the extraction run via the ORM so counters defaults apply on every engine; the
-    # legacy phase2 repository is then reused unchanged for requirement persistence. The model
+    # legacy extraction repository is then reused unchanged for requirement persistence. The model
     # is configurable via EXTRACTION_MODEL (defaults to the deterministic offline mock).
     dv = (
         session.query(DocumentVersion)

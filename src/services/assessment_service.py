@@ -24,12 +24,12 @@ from db.repositories import (
     ApplicantRepo,
     RulesetRepo,
 )
-from phase3.expressions import ANDNode, RuleLeaf
-from phase3.models import Rule, RuleStatus, EvaluationStatus
-from phase3c.applicant import ApplicantProfile as Phase3CProfile, VisaSelection
-from phase3c.assessment import assess_eligibility as _assess, EligibilityOutcome
-from phase3c.gap_engine import GapEngine, Gap
-from phase3.rule_repository import EnhancedRuleRepo, orm_to_dataclass
+from rules.expressions import ANDNode, RuleLeaf
+from rules.models import Rule, RuleStatus, EvaluationStatus
+from assessment.applicant import ApplicantProfile as Phase3CProfile, VisaSelection
+from assessment.assessment import assess_eligibility as _assess, EligibilityOutcome
+from assessment.gap_engine import GapEngine, Gap
+from rules.rule_repository import EnhancedRuleRepo, orm_to_dataclass
 from db.models import RuleVersion
 from logging_config import get_logger
 from sqlalchemy import select
@@ -355,7 +355,7 @@ def _build_profile_data(applicant_orm) -> dict:
 def _compute_ruleset_hash(program_id: str, rules) -> str:
     """Compute a deterministic hash of the exact rule-version set used in an assessment.
 
-    Accepts a list of ``(rule_id, version_number)`` tuples OR a list of ``phase3.models.Rule``
+    Accepts a list of ``(rule_id, version_number)`` tuples OR a list of ``rules.models.Rule``
     dataclasses (both are used by callers/tests). If any rule version changes, the hash changes.
     """
     def _fingerprints(rules):

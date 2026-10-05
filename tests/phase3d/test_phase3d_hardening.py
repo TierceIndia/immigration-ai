@@ -22,13 +22,13 @@ from db.models import RequirementEvidence as EvidenceORM
 from db.models import DocumentChunk as ChunkORM, DocumentVersion as DocVersionORM
 from db.models import GovernmentDocument as DocORM, GovernmentSource as SourceORM
 from db.models import ImmigrationProgram as ProgramORM, Country as CountryORM
-from phase3.rule_repository import EnhancedRuleRepo, orm_to_dataclass
-from phase3.rule_activation import (
+from rules.rule_repository import EnhancedRuleRepo, orm_to_dataclass
+from rules.rule_activation import (
     can_transition, validate_transition, RuleActivationError,
     RuleLifecycleStatus,
 )
-from phase3.models import RuleStatus, Provenance
-from phase3.requirement_to_rule import compile_approved_requirements
+from rules.models import RuleStatus, Provenance
+from rules.requirement_to_rule import compile_approved_requirements
 
 
 @pytest.fixture()
@@ -140,6 +140,27 @@ class TestOneActiveVersionInvariant:
         _seed_rule(session, "RULE-POINTS", category="points", field="points", status="ACTIVE")
         active = repo.list_active("SKILLED_189")
         assert len(active) == 2
+
+    def test_same_field_different_category_both_active(self, session):
+        """The logical key is (program_id, category, field), not (program_id,
+        field) alone: two rules that share a field but differ by category are
+        different logical rules and must both be allowed ACTIVE at once.
+
+        Regression test: uq_rules_active_per_field used to cover only
+        (program_id, field), which incorrectly rejected this exact case with a
+        DB-level unique violation, even though activate_rule's own
+        _find_active_for_logical_key (program_id, category, field) never
+        considered these two rules to conflict. See migration 7c9e2a4f1b6d.
+        """
+        _seed_program(session)
+        repo = EnhancedRuleRepo(session)
+        _seed_rule(session, "RULE-POINTS-ELIGIBILITY", category="eligibility",
+                   field="applicant.points_score", status="ACTIVE")
+        _seed_rule(session, "RULE-POINTS-SCORING", category="points",
+                   field="applicant.points_score", status="ACTIVE")
+        session.commit()
+        active = repo.list_active("SKILLED_189")
+        assert {r.rule_id for r in active} == {"RULE-POINTS-ELIGIBILITY", "RULE-POINTS-SCORING"}
 
     def test_different_programs_same_field_both_active(self, session):
         """Rules for different programs with same field can both be ACTIVE."""
@@ -518,7 +539,7 @@ class TestFailureSafety:
 
     def test_missing_rule_in_expression_returns_error(self, session):
         """Expression referencing a missing rule returns ERROR in individual evaluation."""
-        from phase3.expressions import RuleLeaf, evaluate_expression
+        from rules.expressions import RuleLeaf, evaluate_expression
         _seed_program(session)
         _seed_rule(session, "EXISTING", status="ACTIVE")
         session.commit()
@@ -530,15 +551,15 @@ class TestFailureSafety:
         # Evaluate a single missing rule leaf directly
         leaf = RuleLeaf("NONEXISTENT")
         status, evals = evaluate_expression(leaf, rules_by_id, {"age": 30})
-        from phase3.models import EvaluationStatus
+        from rules.models import EvaluationStatus
         assert status == EvaluationStatus.ERROR
         assert len(evals) == 1
         assert "not found" in evals[0].reason.lower()
 
     def test_empty_applicant_data_unknown_status(self, session):
         """Empty applicant data produces UNKNOWN for rules with missing fields."""
-        from phase3.expressions import ANDNode, RuleLeaf, evaluate_expression
-        from phase3.models import EvaluationStatus
+        from rules.expressions import ANDNode, RuleLeaf, evaluate_expression
+        from rules.models import EvaluationStatus
         _seed_program(session)
         _seed_rule(session, "R-AGE", category="age", field="age",
                    operator="LT", value=45, status="ACTIVE")

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from phase3.rule_activation import (
+from rules.rule_activation import (
     can_transition, validate_transition, RuleLifecycleStatus,
     _VALID_TRANSITIONS,
 )

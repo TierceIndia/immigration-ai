@@ -14,14 +14,14 @@ ROOT = Path(__file__).resolve().parent.parent
 MODULES = [
     "tests/test_pipeline_offline.py",
     "tests/test_extractor_ha_api.py",
-    "tests/phase2/test_schema.py",
-    "tests/phase2/test_evidence.py",
-    "tests/phase2/test_normalization.py",
-    "tests/phase2/test_deduplication.py",
-    "tests/phase2/test_extraction.py",
-    "tests/phase2/test_versioning.py",
-    "tests/phase2/test_gold_dataset.py",
-    "tests/phase2/test_real_gold_evaluation.py",
+    "tests/extraction/test_schema.py",
+    "tests/extraction/test_evidence.py",
+    "tests/extraction/test_normalization.py",
+    "tests/extraction/test_deduplication.py",
+    "tests/extraction/test_extraction.py",
+    "tests/extraction/test_versioning.py",
+    "tests/extraction/test_gold_dataset.py",
+    "tests/extraction/test_real_gold_evaluation.py",
 ]
 
 

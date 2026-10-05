@@ -42,7 +42,7 @@ from db.models import AssessmentRuleResult as ArrORM
 from db.models import ApplicantProfile as ApplicantORM
 from db.models import PipelineRun as PipelineRunORM
 from db.repositories import SourceRepo, RulesetRepo
-from phase3.models import Rule as RuleDC, Provenance as ProvenanceDC
+from rules.models import Rule as RuleDC, Provenance as ProvenanceDC
 
 NOW = datetime.now(timezone.utc)
 
@@ -613,7 +613,7 @@ class TestFallbackGuard:
 class TestExtractionRunIdempotency:
     def test_reuse_completed_and_never_reuse_failed(self, tmp_path):
         from db import init_schema, get_connection
-        from phase2.requirement_repository import (
+        from extraction.requirement_repository import (
             create_extraction_run,
             complete_extraction_run,
         )
@@ -633,7 +633,7 @@ class TestExtractionRunIdempotency:
 
     def test_missing_document_version_raises(self, tmp_path):
         from db import init_schema, get_connection
-        from phase2.requirement_repository import create_extraction_run
+        from extraction.requirement_repository import create_extraction_run
 
         db_path = tmp_path / "legacy_missing.db"
         init_schema(get_connection(db_path), db_path)

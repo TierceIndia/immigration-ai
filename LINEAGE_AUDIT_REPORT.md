@@ -7,7 +7,7 @@
 > hardening; its findings remain valid). Since publication the suite has grown to **899 collected /
 > 897 passed / 2 skipped / 0 failures** (30 warnings), the source registry now seeds **14 sources
 > across all four visa categories**, `POST /api/v1/admin/sync` was fixed to be admin-gated (was
-> unauthenticated) and all admin routes re-audited, and the manual Playwright script was moved out
+> unauthenticated) and all admin routes re-audited, and the manual browser script was moved out
 > of `tests/` so pytest no longer launches a browser at collection.
 >
 > **STATUS UPDATE — 2026-09-25**: the provenance/lineage chain this report hardened was
@@ -105,7 +105,7 @@ as explicit `ALTER TABLE … ADD CONSTRAINT`):
   content produces an `UNCHANGED` re-version-path once, without duplicating versions/chunks/
   extraction work.
 - `src/api/schemas/models.py`: `ruleset_id`/`rule_version_id` surfaced on responses.
-- `src/phase2/requirement_repository.py`: `create_extraction_run` now resolves
+- `src/extraction/requirement_repository.py`: `create_extraction_run` now resolves
   `document_version_id`, reuses matching RUNNING/COMPLETED runs (never FAILED), and its dedup
   SELECT dropped a legacy-only `ORDER BY started_at` (drift resolver rewrites INSERTs only,
   not SELECTs).
@@ -116,7 +116,7 @@ as explicit `ALTER TABLE … ADD CONSTRAINT`):
 
 | Check | Result |
 |---|---|
-| Full test suite | **873 passed** (847 baseline + 26 new `tests/test_lineage_integrity.py`) in ~65 s, `PYTHONPATH="src;src/phase2"` |
+| Full test suite | **873 passed** (847 baseline + 26 new `tests/test_lineage_integrity.py`) in ~65 s, `PYTHONPATH="src;src/extraction"` |
 | New integrity tests cover | CHECK vocab, UNIQUE (incl. partial active-semantic dedup), FK enforcement under `PRAGMA foreign_keys=ON`, ruleset idempotency/immutability/trace, fallback guard, legacy-SQLite extraction-run idempotency |
 | Live PostgreSQL | `alembic current` = `f7a6d5c4b3a2` (head); migrations now ship in the image (`docker compose build api` + recreate, container start runs `alembic upgrade head`) |
 | Live-schema smoke probes | **11/11 PASS**: trigger blocks UPDATE/DELETE on `document_versions` and `rulesets` (P0001), fallback self-ref rejected, FK pair/lineage violations (23503), CHECK vocab (23514), UNIQUE dup (23505) |
@@ -153,7 +153,7 @@ as explicit `ALTER TABLE … ADD CONSTRAINT`):
 docker exec immigration-knowledge-api-1 alembic current        # => f7a6d5c4b3a2 (head)
 docker exec immigration-knowledge-api-1 alembic history
 # integrity suite (local)
-$env:PYTHONPATH="src;src/phase2"; python -m pytest tests -q    # 873 passed
+$env:PYTHONPATH="src;src/extraction"; python -m pytest tests -q    # 873 passed
 # live DDL dump (see DBSTRUCTURE.md, regenerated from live PG)
 docker exec immigration-knowledge-postgres-1 pg_dump -U immigration -d immigration --schema-only
 # rollback path

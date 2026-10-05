@@ -326,7 +326,7 @@ class Requirement(Base, TimestampMixin):
     # confirmed in production as a PostgreSQL StringDataRightTruncation that
     # silently dropped a correctly-extracted requirement. See migration
     # a3c5e7f9b1d3 and the MAX_REQUIREMENT_ID_LENGTH guard in
-    # phase2/requirement_repository.py.
+    # extraction/requirement_repository.py.
     requirement_id = Column(String(96), primary_key=True)
     semantic_key = Column(String(256), nullable=False)
     program_id = Column(String(32), ForeignKey("immigration_programs.program_id"), nullable=False)
@@ -516,9 +516,19 @@ class Rule(Base, TimestampMixin):
             name="ck_rule_status",
         ),
         CheckConstraint("current_version > 0", name="ck_rule_current_version"),
-        # at most one ACTIVE rule per (program_id, field) — enforced at DB level too
+        # At most one ACTIVE rule per (program_id, category, field) — matches
+        # EnhancedRuleRepo.activate_rule's own logical key
+        # (_find_active_for_logical_key(program_id, category, field)). The
+        # previous version of this index covered only (program_id, field),
+        # which is narrower than the invariant it's meant to enforce: it
+        # rejected a legitimate second ACTIVE rule that shares a field but has
+        # a different category, something activate_rule's own supersede logic
+        # explicitly treats as a different, non-conflicting logical rule (see
+        # migration 7c9e2a4f1b6d). Found by driving a real rule through
+        # approve->compile->activate and then testing the DB constraint
+        # directly with raw INSERTs.
         Index(
-            "uq_rules_active_per_field", "program_id", "field", unique=True,
+            "uq_rules_active_per_field", "program_id", "category", "field", unique=True,
             postgresql_where=text("status = 'ACTIVE'"),
             sqlite_where=text("status = 'ACTIVE'"),
         ),

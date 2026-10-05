@@ -9,7 +9,7 @@
 > 897 passed / 2 skipped / 0 failures** (30 warnings), the source registry now seeds **14 sources
 > across all four visa categories** (WORK / STUDENT / VISITOR added), `POST /api/v1/admin/sync`
 > was fixed to be admin-gated (was unauthenticated; all admin routes re-audited), and the manual
-> Playwright script was moved out of `tests/` so pytest no longer launches a browser during
+> Browser script was moved out of `tests/` so pytest no longer launches a browser during
 > collection.
 >
 > **STATUS UPDATE — 2026-09-25** (major since the above): suite now **956 passed / 11 skipped /
@@ -36,7 +36,7 @@
 | Aspect | Status | Details |
 |--------|--------|---------|
 | **Overall Health** | ✅ GOOD | All tests pass, no errors, clean architecture |
-| **Test Coverage** | ✅ 496/496 PASSING | Across all phases (phase2, phase3, phase3c, admin APIs) |
+| **Test Coverage** | ✅ 496/496 PASSING | Across all phases (extraction, rules, assessment, admin APIs) |
 | **Database** | ✅ WORKING | PostgreSQL + SQLite support, migrations configured |
 | **FastAPI** | ✅ WORKING | Factory pattern, 12 endpoint groups, CORS configured |
 | **File Dependencies** | ✅ CLEAN | Clear phase-based dependency flow (Phase 1→2→3→3C→3D) |
@@ -89,7 +89,7 @@
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ PHASE 2: Knowledge Extraction (LLM + Human Review)                      │
 ├──────────────────────────────────────────────────────────────────────────┤
-│ Files: phase2/*.py (llm_client, requirement_extractor, validators)      │
+│ Files: extraction/*.py (llm_client, requirement_extractor, validators)      │
 │ Status: ✅ COMPLETE | Output: requirements table (gold datasets verified)│
 └──────────────────────┬───────────────────────────────────────────────────┘
                        │
@@ -97,7 +97,7 @@
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ PHASE 3: Rule Engine (12 Operators, IF/THEN, Dependencies, Versioning) │
 ├──────────────────────────────────────────────────────────────────────────┤
-│ Files: phase3/*.py (rule_engine, operators, expressions)               │
+│ Files: rules/*.py (rule_engine, operators, expressions)               │
 │ Status: ✅ COMPLETE | Output: rules table (activated via admin approval)│
 └──────────────────────┬───────────────────────────────────────────────────┘
                        │
@@ -105,7 +105,7 @@
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ PHASE 3C: Eligibility + Gap Engine (Applicant Model, Assessments)      │
 ├──────────────────────────────────────────────────────────────────────────┤
-│ Files: phase3c/*.py (assessment, gap_engine, applicability)            │
+│ Files: assessment/*.py (assessment, gap_engine, applicability)            │
 │ Status: ✅ COMPLETE | Output: assessment results + gaps + questions   │
 └──────────────────────┬───────────────────────────────────────────────────┘
                        │
@@ -149,7 +149,7 @@
 - `src/extractor_ha_api.py` - Government API fallback for HA data
 - `src/change_detector.py` - Hash-based change detection (NEW/UNCHANGED/CHANGED)
 - `src/hashing.py` - SHA256 for raw bytes + extracted text
-- `src/browser_fetcher.py` - Playwright-based browser escalation (for WAF-blocked sources)
+- `src/browser_fetcher.py` - Patchright-based browser escalation (for WAF-blocked sources)
 
 **Data Model**:
 ```
@@ -175,16 +175,16 @@ government_sources → government_documents → document_versions → document_c
 **Purpose**: Extract requirements from document chunks via LLM + human review
 
 **Key Files**:
-- `src/phase2/llm_client.py` - Mock (test) or real OpenAI/Anthropic/Gemini
-- `src/phase2/requirement_extractor.py` - Orchestrates extraction pipeline
-- `src/phase2/requirement_validator.py` - JSON Schema + business logic validation
-- `src/phase2/evidence_validator.py` - EXACT SUBSTRING verification (anti-hallucination)
-- `src/phase2/requirement_normalizer.py` - Controlled vocabulary (operator/unit/category)
-- `src/phase2/requirement_deduplicator.py` - Semantic dedup (EXACT/COMPLEMENTARY/CONFLICT)
-- `src/phase2/requirement_repository.py` - Persistence + versioning
-- `src/phase2/review.py` - Human approval workflow
-- `src/phase2/category_gold.py` - Gold dataset integrity harness
-- `tests/phase2/test_category_gold_harness.py` - 12 tests validating contamination-free + no-fabrication invariants
+- `src/extraction/llm_client.py` - Mock (test) or real OpenAI/Anthropic/Gemini
+- `src/extraction/requirement_extractor.py` - Orchestrates extraction pipeline
+- `src/extraction/requirement_validator.py` - JSON Schema + business logic validation
+- `src/extraction/evidence_validator.py` - EXACT SUBSTRING verification (anti-hallucination)
+- `src/extraction/requirement_normalizer.py` - Controlled vocabulary (operator/unit/category)
+- `src/extraction/requirement_deduplicator.py` - Semantic dedup (EXACT/COMPLEMENTARY/CONFLICT)
+- `src/extraction/requirement_repository.py` - Persistence + versioning
+- `src/extraction/review.py` - Human approval workflow
+- `src/extraction/category_gold.py` - Gold dataset integrity harness
+- `tests/extraction/test_category_gold_harness.py` - 12 tests validating contamination-free + no-fabrication invariants
 
 **Data Model**:
 ```
@@ -221,15 +221,15 @@ data/gold/
 **Purpose**: Compile requirements into hardcoded, auditable eligibility rules
 
 **Key Files**:
-- `src/phase3/models.py` - Rule, RuleEvaluation, EligibilityResult data classes
-- `src/phase3/operators.py` - 12 operators (EQ, LT, GTE, IN, CONTAINS, EXISTS, etc.)
-- `src/phase3/expressions.py` - 7 expression types (Literal, Field, Binary, Logical, etc.)
-- `src/phase3/rule_engine.py` - Single rule + all-rules evaluation
-- `src/phase3/rule_compiler.py` - Compile requirements→rules
-- `src/phase3/requirement_to_rule.py` - Requirement→Rule bridge (automated)
-- `src/phase3/rule_repository.py` - Persistence + versioning
-- `src/phase3/rule_activation.py` - State machine (DRAFT→VALIDATED→APPROVED→ACTIVE→SUPERSEDED/RETIRED)
-- `src/phase3/explanations.py` - Audit trail + human-readable rule explanations
+- `src/rules/models.py` - Rule, RuleEvaluation, EligibilityResult data classes
+- `src/rules/operators.py` - 12 operators (EQ, LT, GTE, IN, CONTAINS, EXISTS, etc.)
+- `src/rules/expressions.py` - 7 expression types (Literal, Field, Binary, Logical, etc.)
+- `src/rules/rule_engine.py` - Single rule + all-rules evaluation
+- `src/rules/rule_compiler.py` - Compile requirements→rules
+- `src/rules/requirement_to_rule.py` - Requirement→Rule bridge (automated)
+- `src/rules/rule_repository.py` - Persistence + versioning
+- `src/rules/rule_activation.py` - State machine (DRAFT→VALIDATED→APPROVED→ACTIVE→SUPERSEDED/RETIRED)
+- `src/rules/explanations.py` - Audit trail + human-readable rule explanations
 
 **Rule State Machine**:
 ```
@@ -251,7 +251,7 @@ data/gold/
 
 **Status**: ✅ WORKING
 - 23 rules compiled from skilled requirements
-- All operators tested (unit tests in `tests/phase3/`)
+- All operators tested (unit tests in `tests/rules/`)
 - Expression tree evaluation working (IF/THEN, OR, AND, NOT)
 - Version tracking implemented
 - Admin approval flow integrated
@@ -263,11 +263,11 @@ data/gold/
 **Purpose**: Assess applicant eligibility and detect gaps
 
 **Key Files**:
-- `src/phase3c/applicant.py` - Applicant data model (name, education, experience, etc.)
-- `src/phase3c/applicability.py` - Rule applicability check (visa program applicability)
-- `src/phase3c/assessment.py` - Run all rules against applicant, compute overall status
-- `src/phase3c/gap_engine.py` - Detect UNKNOWN fields, generate gap descriptions
-- `src/phase3c/questions.py` - Adaptive question generation based on gaps
+- `src/assessment/applicant.py` - Applicant data model (name, education, experience, etc.)
+- `src/assessment/applicability.py` - Rule applicability check (visa program applicability)
+- `src/assessment/assessment.py` - Run all rules against applicant, compute overall status
+- `src/assessment/gap_engine.py` - Detect UNKNOWN fields, generate gap descriptions
+- `src/assessment/questions.py` - Adaptive question generation based on gaps
 
 **Data Model**:
 ```
@@ -366,7 +366,7 @@ d:\immigration-knowledge\
 │   ├── phase1/                      # (Pipeline orchestration lives in root)
 │   │   └── (All files in root: pipeline.py, fetcher.py, etc.)
 │   │
-│   ├── phase2/                      # Knowledge extraction
+│   ├── extraction/                      # Knowledge extraction
 │   │   ├── llm_client.py            ✅ OpenAI/Anthropic/Mock LLM interface
 │   │   ├── requirement_extractor.py ✅ Main extraction orchestrator
 │   │   ├── requirement_validator.py ✅ JSON Schema + logic validation
@@ -380,7 +380,7 @@ d:\immigration-knowledge\
 │   │   ├── models.py                ✅ Phase 2 dataclasses
 │   │   └── run_extraction.py        ✅ Entry point for extraction pipeline
 │   │
-│   ├── phase3/                      # Rule engine
+│   ├── rules/                      # Rule engine
 │   │   ├── models.py                ✅ Rule, RuleEvaluation, EligibilityResult
 │   │   ├── operators.py             ✅ 12 comparison operators
 │   │   ├── expressions.py           ✅ 7 expression types + evaluation
@@ -391,7 +391,7 @@ d:\immigration-knowledge\
 │   │   ├── rule_activation.py       ✅ State machine (DRAFT→APPROVED→ACTIVE)
 │   │   └── explanations.py          ✅ Audit trail + human-readable explanations
 │   │
-│   ├── phase3c/                     # Eligibility + gap engine
+│   ├── assessment/                     # Eligibility + gap engine
 │   │   ├── applicant.py             ✅ Applicant data model
 │   │   ├── applicability.py         ✅ Rule applicability logic
 │   │   ├── assessment.py            ✅ Full applicant assessment (Phase 3+3C)
@@ -403,7 +403,7 @@ d:\immigration-knowledge\
 │   │
 │   ├── pipeline.py                  ✅ Phase 1 orchestrator (fetch→extract→hash→detect)
 │   ├── fetcher.py                   ✅ HTTP client + classified status codes
-│   ├── browser_fetcher.py           ✅ Playwright browser escalation
+│   ├── browser_fetcher.py           ✅ Patchright browser escalation
 │   ├── extractor_html.py            ✅ HTML→structured text (BeautifulSoup)
 │   ├── extractor_pdf.py             ✅ PDF extraction (pypdf)
 │   ├── extractor_ha_api.py          ✅ Government API fallback
@@ -421,9 +421,9 @@ d:\immigration-knowledge\
 │   ├── run_all_tests.py             ✅ Test runner script
 │   ├── test_*.py                    ✅ 40+ test files
 │   ├── db/                          ✅ Database tests
-│   ├── phase2/                      ✅ Phase 2 tests (LLM, extraction, validation)
-│   ├── phase3/                      ✅ Phase 3 tests (rule engine, expressions)
-│   ├── phase3c/                     ✅ Phase 3C tests (assessment, gap engine)
+│   ├── extraction/                      ✅ Phase 2 tests (LLM, extraction, validation)
+│   ├── rules/                      ✅ Phase 3 tests (rule engine, expressions)
+│   ├── assessment/                     ✅ Phase 3C tests (assessment, gap engine)
 │   └── e2e/                         ✅ End-to-end integration tests
 │
 ├── migrations/                      # Alembic version control
@@ -496,7 +496,7 @@ fetcher.py → (hashing, logging_config)
 extractor_html.py → (logging_config)
 extractor_pdf.py → (logging_config)
 extractor_ha_api.py → (hashing, logging_config)
-browser_fetcher.py → (logging_config, Playwright)
+browser_fetcher.py → (logging_config, Patchright)
 ```
 
 **Level 2 (Phase 1 Orchestration)**:
@@ -510,46 +510,46 @@ seed_registry.py → (db)
 
 **Level 3 (Phase 2)**:
 ```
-phase2/llm_client.py → (OpenAI/Anthropic/logging)
-phase2/requirement_validator.py → (JSON Schema, logging)
-phase2/evidence_validator.py → (logging)
-phase2/requirement_normalizer.py → (logging)
-phase2/requirement_deduplicator.py → (logging)
-phase2/chunk_selector.py → (logging)
-phase2/requirement_extractor.py → (llm_client, validators, normalizer, deduplicator)
-phase2/requirement_repository.py → (db, models)
-phase2/review.py → (db, models)
-phase2/category_gold.py → (logging, fixtures)
+extraction/llm_client.py → (OpenAI/Anthropic/logging)
+extraction/requirement_validator.py → (JSON Schema, logging)
+extraction/evidence_validator.py → (logging)
+extraction/requirement_normalizer.py → (logging)
+extraction/requirement_deduplicator.py → (logging)
+extraction/chunk_selector.py → (logging)
+extraction/requirement_extractor.py → (llm_client, validators, normalizer, deduplicator)
+extraction/requirement_repository.py → (db, models)
+extraction/review.py → (db, models)
+extraction/category_gold.py → (logging, fixtures)
 ```
 
 **Level 4 (Phase 3)**:
 ```
-phase3/operators.py → (logging)
-phase3/expressions.py → (operators, logging)
-phase3/models.py → (dataclasses)
-phase3/rule_engine.py → (models, operators, logging)
-phase3/rule_compiler.py → (phase2 models, phase3 models, db)
-phase3/requirement_to_rule.py → (phase2, phase3 models, db)
-phase3/rule_repository.py → (db, models)
-phase3/rule_activation.py → (models, logging)
-phase3/explanations.py → (models, logging)
+rules/operators.py → (logging)
+rules/expressions.py → (operators, logging)
+rules/models.py → (dataclasses)
+rules/rule_engine.py → (models, operators, logging)
+rules/rule_compiler.py → (extraction models, rules models, db)
+rules/requirement_to_rule.py → (extraction, rules models, db)
+rules/rule_repository.py → (db, models)
+rules/rule_activation.py → (models, logging)
+rules/explanations.py → (models, logging)
 ```
 
 **Level 5 (Phase 3C)**:
 ```
-phase3c/applicant.py → (dataclasses)
-phase3c/applicability.py → (models, logging)
-phase3c/assessment.py → (phase3 models, phase3c models, phase3.rule_engine)
-phase3c/gap_engine.py → (assessment, logging)
-phase3c/questions.py → (assessment, logging)
+assessment/applicant.py → (dataclasses)
+assessment/applicability.py → (models, logging)
+assessment/assessment.py → (rules models, assessment models, rules.rule_engine)
+assessment/gap_engine.py → (assessment, logging)
+assessment/questions.py → (assessment, logging)
 ```
 
 **Level 6 (Services)**:
 ```
 services/auth_service.py → (db, jose, passlib)
-services/applicant_service.py → (db, phase3c models)
-services/assessment_service.py → (db, phase3/rule_engine, phase3c/assessment)
-services/eligibility_service.py → (phase3, phase3c, logging)
+services/applicant_service.py → (db, assessment models)
+services/assessment_service.py → (db, rules/rule_engine, assessment/assessment)
+services/eligibility_service.py → (rules, assessment, logging)
 ```
 
 **Level 7 (FastAPI Routes)**:
@@ -558,7 +558,7 @@ api/routes/health.py → (fastapi)
 api/routes/auth.py → (fastapi, services, db)
 api/routes/applicants.py → (fastapi, services)
 api/routes/assessments.py → (fastapi, services)
-api/routes/admin_*.py → (fastapi, services, db, phase3/rule_repository)
+api/routes/admin_*.py → (fastapi, services, db, rules/rule_repository)
 api/routes/pipeline_runs.py → (fastapi, db)
 api/main.py → (all routes, fastapi, db, scheduler, logging)
 ```
@@ -573,7 +573,7 @@ db/models.py (SQLAlchemy ORM, 45+ tables)
     ↓
 db/repositories.py (CRUD + query helpers)
     ↓
-{services, phase2/*, phase3/*, phase3c/*}
+{services, extraction/*, rules/*, assessment/*}
 ```
 
 ---
@@ -1471,7 +1471,7 @@ SUPERSEDED
 | **Phase 1: Ingestion** | | | | |
 | src/pipeline.py | Orchestrator (fetch→extract→hash→detect) | ✅ | 30+ | None |
 | src/fetcher.py | HTTP client, classified status codes | ✅ | 25+ | None |
-| src/browser_fetcher.py | Playwright browser escalation | ✅ | 15+ | None |
+| src/browser_fetcher.py | Patchright browser escalation | ✅ | 15+ | None |
 | src/extractor_html.py | BeautifulSoup HTML extraction | ✅ | 20+ | None |
 | src/extractor_pdf.py | pypdf PDF extraction | ✅ | 15+ | None |
 | src/extractor_ha_api.py | Government API fallback | ✅ | 5+ | None |
@@ -1481,34 +1481,34 @@ SUPERSEDED
 | src/scheduler.py | APScheduler integration | ✅ | 5+ | None |
 | src/seed_registry.py | Load source registry from JSON | ✅ | 5+ | None |
 | **Phase 2: Extraction** | | | | |
-| src/phase2/llm_client.py | OpenAI/Anthropic/Mock LLM interface | ✅ | 20+ | None |
-| src/phase2/requirement_extractor.py | Main extraction orchestrator | ✅ | 20+ | None |
-| src/phase2/requirement_validator.py | JSON Schema + business logic validation | ✅ | 15+ | None |
-| src/phase2/evidence_validator.py | EXACT SUBSTRING verification | ✅ | 10+ | None |
-| src/phase2/requirement_normalizer.py | Controlled vocabulary normalization | ✅ | 15+ | None |
-| src/phase2/requirement_deduplicator.py | Semantic dedup | ✅ | 10+ | None |
-| src/phase2/requirement_repository.py | Persistence + versioning | ✅ | 15+ | None |
-| src/phase2/review.py | Human approval workflow | ✅ | 10+ | None |
-| src/phase2/category_gold.py | Gold dataset integrity harness | ✅ | 12 | None |
-| src/phase2/chunk_selector.py | Candidate chunk detection | ✅ | 5+ | None |
-| src/phase2/models.py | Phase 2 dataclasses | ✅ | 5+ | None |
-| src/phase2/run_extraction.py | Entry point for extraction | ✅ | 5+ | None |
+| src/extraction/llm_client.py | OpenAI/Anthropic/Mock LLM interface | ✅ | 20+ | None |
+| src/extraction/requirement_extractor.py | Main extraction orchestrator | ✅ | 20+ | None |
+| src/extraction/requirement_validator.py | JSON Schema + business logic validation | ✅ | 15+ | None |
+| src/extraction/evidence_validator.py | EXACT SUBSTRING verification | ✅ | 10+ | None |
+| src/extraction/requirement_normalizer.py | Controlled vocabulary normalization | ✅ | 15+ | None |
+| src/extraction/requirement_deduplicator.py | Semantic dedup | ✅ | 10+ | None |
+| src/extraction/requirement_repository.py | Persistence + versioning | ✅ | 15+ | None |
+| src/extraction/review.py | Human approval workflow | ✅ | 10+ | None |
+| src/extraction/category_gold.py | Gold dataset integrity harness | ✅ | 12 | None |
+| src/extraction/chunk_selector.py | Candidate chunk detection | ✅ | 5+ | None |
+| src/extraction/models.py | Phase 2 dataclasses | ✅ | 5+ | None |
+| src/extraction/run_extraction.py | Entry point for extraction | ✅ | 5+ | None |
 | **Phase 3: Rule Engine** | | | | |
-| src/phase3/models.py | Rule, RuleEvaluation, EligibilityResult | ✅ | 20+ | None |
-| src/phase3/operators.py | 12 comparison operators | ✅ | 30+ | None |
-| src/phase3/expressions.py | 7 expression types + evaluation | ✅ | 25+ | None |
-| src/phase3/rule_engine.py | Single + all-rules evaluation | ✅ | 20+ | None |
-| src/phase3/rule_compiler.py | Requirements→Rules compilation | ✅ | 15+ | None |
-| src/phase3/requirement_to_rule.py | Requirement→Rule bridge | ✅ | 10+ | None |
-| src/phase3/rule_repository.py | Persistence + versioning | ✅ | 15+ | None |
-| src/phase3/rule_activation.py | State machine (DRAFT→APPROVED→ACTIVE) | ✅ | 15+ | None |
-| src/phase3/explanations.py | Audit trail + explanations | ✅ | 5+ | None |
+| src/rules/models.py | Rule, RuleEvaluation, EligibilityResult | ✅ | 20+ | None |
+| src/rules/operators.py | 12 comparison operators | ✅ | 30+ | None |
+| src/rules/expressions.py | 7 expression types + evaluation | ✅ | 25+ | None |
+| src/rules/rule_engine.py | Single + all-rules evaluation | ✅ | 20+ | None |
+| src/rules/rule_compiler.py | Requirements→Rules compilation | ✅ | 15+ | None |
+| src/rules/requirement_to_rule.py | Requirement→Rule bridge | ✅ | 10+ | None |
+| src/rules/rule_repository.py | Persistence + versioning | ✅ | 15+ | None |
+| src/rules/rule_activation.py | State machine (DRAFT→APPROVED→ACTIVE) | ✅ | 15+ | None |
+| src/rules/explanations.py | Audit trail + explanations | ✅ | 5+ | None |
 | **Phase 3C: Assessment** | | | | |
-| src/phase3c/applicant.py | Applicant data model | ✅ | 10+ | None |
-| src/phase3c/applicability.py | Rule applicability logic | ✅ | 10+ | None |
-| src/phase3c/assessment.py | Full applicant assessment | ✅ | 20+ | None |
-| src/phase3c/gap_engine.py | Gap detection + description | ✅ | 15+ | None |
-| src/phase3c/questions.py | Adaptive question generation | ✅ | 10+ | None |
+| src/assessment/applicant.py | Applicant data model | ✅ | 10+ | None |
+| src/assessment/applicability.py | Rule applicability logic | ✅ | 10+ | None |
+| src/assessment/assessment.py | Full applicant assessment | ✅ | 20+ | None |
+| src/assessment/gap_engine.py | Gap detection + description | ✅ | 15+ | None |
+| src/assessment/questions.py | Adaptive question generation | ✅ | 10+ | None |
 | **Services** | | | | |
 | src/services/auth_service.py | JWT, password hashing, auth logic | ✅ | 15+ | None |
 | src/services/applicant_service.py | Applicant CRUD | ✅ | 10+ | None |
@@ -1599,7 +1599,7 @@ SUPERSEDED
                  │
                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 5. PHASE 3C ASSESSMENT (src/phase3c/assessment.py)             │
+│ 5. PHASE 3C ASSESSMENT (src/assessment/assessment.py)             │
 │    Assessment.run(applicant, rules)                            │
 │    ├─ Filter applicable rules (Phase3C Applicability)         │
 │    ├─ Evaluate each rule: Phase3.rule_engine.evaluate_rule() │
@@ -1609,7 +1609,7 @@ SUPERSEDED
                  │
                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 6. PHASE 3 RULE ENGINE (src/phase3/rule_engine.py)            │
+│ 6. PHASE 3 RULE ENGINE (src/rules/rule_engine.py)            │
 │    evaluate_rule(rule, applicant_data) → RuleEvaluation      │
 │    ├─ Extract applicant field value                          │
 │    ├─ Call: Operator.evaluate(actual, expected)             │
@@ -1618,7 +1618,7 @@ SUPERSEDED
                  │
                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 7. PHASE 3 OPERATORS (src/phase3/operators.py)               │
+│ 7. PHASE 3 OPERATORS (src/rules/operators.py)               │
 │    evaluate_operator(op, actual, expected) → (bool, reason)  │
 │    ├─ EQ: actual == expected                                 │
 │    ├─ LT: actual < expected                                  │
@@ -1629,7 +1629,7 @@ SUPERSEDED
                  │
                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 8. GAP ENGINE (src/phase3c/gap_engine.py)                      │
+│ 8. GAP ENGINE (src/assessment/gap_engine.py)                      │
 │    detect_gaps(assessment_result) → list[Gap]                │
 │    ├─ Find UNKNOWN fields → create gap                       │
 │    └─ Generate description based on field + rule context    │
@@ -1639,7 +1639,7 @@ SUPERSEDED
 ┌─────────────────────────────────────────────────────────────────┐
 │ 9. ASSESSMENT SERVICE PERSISTENCE                              │
 │    Save: Assessment + RuleResults + Gaps → DB                │
-│    (phase3c/assessment.py → db/repositories.py)              │
+│    (assessment/assessment.py → db/repositories.py)              │
 └────────────────┬────────────────────────────────────────────────┘
                  │
                  ▼
@@ -1729,7 +1729,7 @@ API Response
 | Component | Status | Limitation |
 |-----------|--------|-----------|
 | Home Affairs API Source | ✅ Registered | ❌ HTTP 403 (auto-blocked for bots) |
-| Browser Escalation | ✅ Implemented | ⚠️ Requires Playwright, local testing only |
+| Browser Escalation | ✅ Implemented | ⚠️ Runs in-container via Patchright + Chromium |
 | Source Auto-Discovery | ✅ Implemented | ⚠️ Candidates need manual admin approval |
 | Student/Work/Visitor Programs | ✅ Schema ready | ⚠️ No real government data (AWAITING_REAL_SOURCE) |
 | Scheduler | ✅ Implemented | ⚠️ Requires ENABLE_SCHEDULER=true + DB |
@@ -1773,7 +1773,7 @@ API Response
 | No Real-Time Updates | ⚠️ Design | scheduler.py | Scheduler runs on ENABLE_SCHEDULER=true (optional) |
 | JWT Expiry 1 Hour | ℹ️ Info | auth_service.py | Tokens expire, refresh needed (not implemented yet) |
 | No Audit Log UI | ⚠️ Future | audit_log table | Table exists, no UI (out of scope) |
-| Browser Automation Limits | ⚠️ Config | browser_fetcher.py | Playwright requires dedicated machine (not serverless-ready) |
+| Browser Automation Limits | ⚠️ Config | browser_fetcher.py | Patchright needs a Chromium binary in the image (not serverless-ready) |
 
 ### Test Gaps
 **Status**: ✅ COMPREHENSIVE
@@ -1841,7 +1841,7 @@ API Response
    - No data export/import tools
 
 10. **Browser Fetcher Limitations** ⚠️
-    - Playwright-based (not serverless-ready)
+    - Patchright-based (not serverless-ready)
     - Requires dedicated machine
     - Not suitable for high-concurrency environments
 

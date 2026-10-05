@@ -18,12 +18,12 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from change_detector import ChangeType, classify_change
+from change_detection.change_detector import ChangeType, classify_change
 from db import ROOT, get_connection, init_schema
-from extractor_html import extract_html
-from extractor_pdf import extract_pdf
-from fetcher import FetchResult, FetchStatus, fetch
-from hashing import sha256_bytes, sha256_text
+from fetch.extractor_html import extract_html
+from fetch.extractor_pdf import extract_pdf
+from fetch.fetcher import FetchResult, FetchStatus, fetch
+from change_detection.hashing import sha256_bytes, sha256_text
 
 # Fetch statuses that may be resolved by escalating to a genuine non-headless
 # browser session via browser_fetcher before demoting to a terminal health flag.
@@ -102,7 +102,7 @@ def process_source(conn, source_row, offline_fixture: Path | None = None) -> dic
         # the source goes to NEEDS_MANUAL_CAPTURE and the scheduler skips it until
         # an admin resolves it (see the manual-capture admin endpoint).
         if fetch_result.status in _BROWSER_ESCALATION_STATUSES:
-            from browser_fetcher import fetch_with_browser
+            from fetch.browser_fetcher import fetch_with_browser
             escalated = fetch_with_browser(url, source_type=source_type)
             if escalated.ok:
                 fetch_result = escalated

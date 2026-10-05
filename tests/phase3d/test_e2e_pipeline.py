@@ -20,11 +20,11 @@ from db.models import (
     Requirement, RequirementEvidence, Rule as RuleORM, RuleVersion,
 )
 from db.connection import get_session_factory
-from phase3.rule_repository import EnhancedRuleRepo, orm_to_dataclass
-from phase3.rule_activation import can_transition
-from phase3.rule_compiler import compile_requirement_to_rule
-from phase3.requirement_to_rule import compile_approved_requirements
-from phase3.models import Rule, RuleStatus, Provenance
+from rules.rule_repository import EnhancedRuleRepo, orm_to_dataclass
+from rules.rule_activation import can_transition
+from rules.rule_compiler import compile_requirement_to_rule
+from rules.requirement_to_rule import compile_approved_requirements
+from rules.models import Rule, RuleStatus, Provenance
 
 
 @pytest.fixture()

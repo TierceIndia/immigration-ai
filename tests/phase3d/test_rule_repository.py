@@ -8,8 +8,8 @@ from sqlalchemy.pool import StaticPool
 
 from db.models import Base, Rule as RuleORM, RuleVersion
 from db.connection import get_session_factory
-from phase3.rule_repository import EnhancedRuleRepo, orm_to_dataclass
-from phase3.models import RuleStatus
+from rules.rule_repository import EnhancedRuleRepo, orm_to_dataclass
+from rules.models import RuleStatus
 
 
 @pytest.fixture()

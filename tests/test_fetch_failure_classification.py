@@ -19,7 +19,7 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src"))
 
-import fetcher
+import fetch.fetcher as fetcher
 from db.models import (
     Base, Country, ImmigrationProgram, GovernmentSource, FetchLog,
 )
@@ -159,7 +159,7 @@ class TestFailureMetadataPersistence:
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
 
         def fetch(url, source_type=None, **kw):
-            from fetcher import _classify_exception
+            from fetch.fetcher import _classify_exception
             exc = _dns_error()
             return fetcher.FetchResult(
                 url=url, status=fetcher.FetchStatus.FETCH_FAILED, http_status=None,

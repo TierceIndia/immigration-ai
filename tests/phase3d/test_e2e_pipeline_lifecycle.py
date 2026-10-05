@@ -24,16 +24,16 @@ from db.models import (
 )
 from db.connection import get_session_factory
 from db.repositories import PipelineRunRepo
-from phase3.rule_repository import EnhancedRuleRepo, orm_to_dataclass
-from phase3.rule_activation import can_transition
-from phase3.rule_compiler import compile_requirement_to_rule
-from phase3.requirement_to_rule import compile_approved_requirements
-from phase3.models import Rule, RuleStatus, Provenance
+from rules.rule_repository import EnhancedRuleRepo, orm_to_dataclass
+from rules.rule_activation import can_transition
+from rules.rule_compiler import compile_requirement_to_rule
+from rules.requirement_to_rule import compile_approved_requirements
+from rules.models import Rule, RuleStatus, Provenance
 from pipeline_run_activation import (
     can_run_transition, validate_run_transition, RunStatus,
 )
-from fetcher import FetchResult, FetchStatus
-from hashing import sha256_bytes
+from fetch.fetcher import FetchResult, FetchStatus
+from change_detection.hashing import sha256_bytes
 
 # Stable HTML + its real sha256 so sync_source's always-fetch path can be
 # mocked hermetically while fetch_document_and_store compares honest hashes.
@@ -66,7 +66,7 @@ def _mock_ok_fetch(monkeypatch):
             duration_ms=5, error=None,
         )
 
-    monkeypatch.setattr("fetcher.fetch", fetch)
+    monkeypatch.setattr("fetch.fetcher.fetch", fetch)
 
 
 @pytest.fixture()

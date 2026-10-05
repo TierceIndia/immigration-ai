@@ -57,8 +57,8 @@ def _patch_llm_client_for_unit_tests(request, monkeypatch):
     if request.node.get_closest_marker("integration"):
         yield
         return
-    from phase2 import llm_client
-    from phase2.llm_client import MockLLMClient
+    from extraction import llm_client
+    from extraction.llm_client import MockLLMClient
 
     monkeypatch.setattr(llm_client, "get_client", MockLLMClient)
     # get_client is imported into these modules at their top level, so each

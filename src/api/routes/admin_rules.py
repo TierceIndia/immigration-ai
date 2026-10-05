@@ -16,8 +16,8 @@ from api.routes.auth import get_current_user
 from db.connection import get_session, get_db_engine
 from db.models import Rule as RuleORM, RuleVersion
 from logging_config import get_logger
-from phase3.rule_repository import EnhancedRuleRepo
-from phase3.rule_activation import can_transition
+from rules.rule_repository import EnhancedRuleRepo
+from rules.rule_activation import can_transition
 
 logger = get_logger(__name__)
 router = APIRouter()
