@@ -2,11 +2,16 @@
 
 End-to-end deterministic immigration eligibility system for Australian skilled migration visas.
 
-**Phases completed**: 1 → 2 → 3 → 3C → 3D → Admin API → Admin Knowledge → DB Readiness + API Surface Hardening → security hardening → browser-fetch escalation → Gemini provider support (all fully tested, **933 passing / 9 skipped** with auth enabled — see the auth-disabled note below for current suite state).
+**Phases completed**: 1 → 2 → 3 → 3C → 3D → Admin API → Admin Knowledge → DB Readiness + API Surface Hardening → security hardening → browser-fetch escalation → Gemini provider support → Patchright migration → requirement_id/rule-uniqueness bug fixes → raw-snapshot persistence → folder rename (`extraction`/`rules`/`assessment`/`fetch`/`change_detection`) → minimal admin frontend (all fully tested, **1042 passing / 13 skipped / 3 pre-existing unrelated failures** — see [Test Suite](#test-suite)).
 
 **Core principle**: Every eligibility decision is deterministic, auditable, and traceable to exact government evidence. No LLM decides eligibility.
 
 **Production status**: NOT PRODUCTION-READY — see [Production Readiness](#production-readiness) for gaps.
+
+**Proven for real, 2026-10-05**: `SKILLED_189` now has 3 real ACTIVE rules compiled from real,
+LLM-extracted requirements with real evidence text, and a real applicant has been assessed against
+them with a real `ruleset_hash`/`rule_version` and correct PASS/UNKNOWN/gap output — not test
+fixtures. See `PLAN.md` §6 for the full Definition-of-Done checklist (5 of 6 boxes now checked).
 
 ## ✅ Authentication is real and enforced (restored 2026-09-22)
 
@@ -16,24 +21,24 @@ validation — there was a temporary bypass for manual testing between 2026-09-2
 admin route enforces 401 (no/invalid token) → 403 (valid token, non-admin role) → 200 (admin) —
 live-verified.
 
-## What works / what doesn't (2026-09-25)
+## What works / what doesn't (2026-10-05)
 
 | Area | Status |
 |------|--------|
-| Deterministic rule engine + eligibility/gap engine | WORKING — never yet exercised with real extracted data (see below) |
+| Deterministic rule engine + eligibility/gap engine | WORKING — **now proven with real (non-fixture) data**: `SKILLED_189`'s 3 real ACTIVE rules correctly assessed a real applicant (see banner above) |
 | Admin API (rules, requirements, documents, sources, runs, knowledge-state, schema) | WORKING, real auth enforced (401/403/200 live-verified) |
+| Minimal admin frontend (`frontend/`) | **NEW 2026-10-05** — plain React + Vite: login, sources dashboard, pipeline runs, "run sync now" button with background-job polling. Read-only, no new backend routes. Not the applicant-facing product UI (still not started — see `PLAN.md` Move 10). |
 | `POST /api/v1/admin/sync` | WORKING — always re-fetches due sources, correctly demotes blocked sources, records real `PipelineRun` audit trail |
-| Source registry | WORKING — 14 sources across SKILLED / WORK / STUDENT / VISITOR |
-| Source fetch → store → version → change-detect → downstream extraction | WORKING end-to-end against the real running stack (verified live, not just offline-tested) |
-| Plain-HTTP fetch of `immi.homeaffairs.gov.au` | NOT WORKING — real HTTP 403 (Akamai/Cloudflare-class WAF). Expected; this is what the browser-escalation path exists for. |
-| Browser-escalation fetch of `immi.homeaffairs.gov.au` | **FIXED 2026-09-25 — now WORKING.** `src/browser_fetcher.py` was launching Chromium with `headless=True`, which the Home Affairs WAF fingerprints and blocks with a real 403 "even via genuine browser session". Switched to `headless=False` under Xvfb (see Dockerfile/`docker-entrypoint.sh`) and **live-verified against two real, previously-blocked URLs** (subclass 189 and 190 pages): both now return real `200 OK` with full page content (1.3–1.5MB, containing real eligibility text), where headless mode got 403 on the same URLs. The 12 sources currently sitting in `NEEDS_MANUAL_CAPTURE` have **not yet been re-synced** to pick this up — that's a follow-up action, not done as part of this fix (see Current Gaps). |
-| `POST /admin/sync` only touching 2 of 14 sources | Still true today (sources demoted to `NEEDS_MANUAL_CAPTURE` are excluded from sync until reset) — but now that headed browser escalation works, re-running `manual-capture` may no longer be necessary for most of them; a plain re-sync attempt might recover them automatically. See [Why does sync only touch 2 of 14 sources?](#why-does-admin-sync-only-touch-2-of-14-sources) below. |
+| Source registry | WORKING — 14 sources across SKILLED / WORK / STUDENT / VISITOR, all `ACTIVE` as of the 2026-10-05 full-registry sync |
+| Source fetch → store → version → change-detect → downstream extraction | WORKING end-to-end against the real running stack, **and raw snapshots are now durably persisted** (see Current Gaps — this was broken until 2026-10-05) |
+| Plain-HTTP fetch of `immi.homeaffairs.gov.au` | NOT WORKING — real HTTP 403 (WAF). Expected; this is what the browser-escalation path exists for. |
+| Browser-escalation fetch of `immi.homeaffairs.gov.au` | **Migrated to Patchright, headless (2026-10-01).** ⚠️ **Not a reliable fix for WAF blocking** — live-verified 2026-10-05 that this WAF blocks *intermittently under per-URL request volume*, independent of headless/headed or Playwright/Patchright: a full 14-source sync got 0/14 failures, but a URL hit repeatedly afterward progressively degraded to a real 403. See Current Gaps. |
 | LLM extraction — **OpenAI** | WORKING when the account has billing credits; fails safely and visibly (`FAILED` run, real error) when it doesn't |
-| LLM extraction — **Gemini** | WORKING — `EXTRACTION_MODEL=gemini-flash-lite-latest` now routes through `GeminiLLMClient`, fully wired to the same governance layer (budget/rate-limit/cache) as OpenAI |
-| Real requirement extraction end-to-end | NOT YET PROVEN WITH REAL CONTENT — the only two sources that reach extraction (`SRC-AU-CRICOS-REGISTER`, `SRC-AU-MIGRATION-REGS-1994`) both return 0 requirements: CRICOS's page appears to be a JS-rendered SPA shell with no static content (0 chunks extracted), and the Migration Regs source URL currently points at a Federal Register *index/citation* page, not the actual regulation text. Both are content/source-URL problems, not pipeline bugs — the pipeline honestly extracted nothing rather than fabricating anything. |
-| Rule compilation → review → activation → assessment | UNTESTED WITH REAL DATA — zero requirements exist in any program yet (a direct consequence of the above), so nothing has ever reached `DRAFT`/`VALIDATED`/`APPROVED`/`ACTIVE`, and no assessment has ever run against real ACTIVE rules |
-| Applicant CRUD | WORKING — a field-dropping bug in `POST /applicants` (create) was found and fixed today: `first_name`/`last_name`/`created_at` were silently returned as `null` even though correctly persisted (services/applicant_service.py `create()` built its own incomplete response dict instead of reusing `get()`) |
-| Docker deployment — LLM extraction | WAS COMPLETELY BROKEN, now fixed: `docker-compose.yml` never forwarded `OPENAI_API_KEY`/`GEMINI_API_KEY`/`EXTRACTION_MODEL` into the `api` container, and `Dockerfile` never copied `prompts/` into the image at all. Both fixed today; verified live. |
+| LLM extraction — **Gemini** | WORKING for most content — `EXTRACTION_MODEL=gemini-flash-lite-latest`, fully wired to the same governance layer as OpenAI. **New gap found 2026-10-05**: on `SRC-AU-600-MAIN`'s real content, all 16 candidate chunks came back with schema-violating JSON (wrong keys, invalid enums) — 0/16 succeeded, vs. 13/13 and 2/2 on other real sources. Not yet investigated. |
+| Real requirement extraction end-to-end | **PROVEN WITH REAL CONTENT 2026-10-05** — `SRC-AU-MIGRATION-REGS-1994` (13 real requirements) and `SKILLED_189`'s other sources (2 real requirements) both extracted real, evidence-backed requirements via a real sync. `SRC-AU-CRICOS-REGISTER` still returns 0 (genuine JS-only SPA, confirmed unrecoverable via render-wait). `SRC-AU-600-MAIN`'s 0-chunk bug is fixed (see Current Gaps) but hit the new Gemini schema gap above instead. |
+| Rule compilation → review → activation → assessment | **PROVEN WITH REAL DATA 2026-10-05** — `SKILLED_189`'s 2 real requirements reviewed, approved, compiled into 3 real rules, validated/approved/activated, and correctly assessed against a real applicant (real `ruleset_hash`/`rule_version`, correct PASS/UNKNOWN/gaps) |
+| Applicant CRUD | WORKING |
+| Docker deployment | WORKING — LLM key forwarding, `prompts/` copying, the psycopg v2/v3 dialect drift, and the Patchright/Xvfb migration are all fixed; raw snapshots now persist across container recreation (volume added 2026-10-05) |
 | WORK / STUDENT / VISITOR **live LLM extraction + gold data** | NOT WORKING YET — sources registered, but real evidence capture still pending (`AWAITING_REAL_SOURCE`); no fabricated evidence |
 | Multi-country (NZ/CA/UK) | NOT STARTED |
 
@@ -41,7 +46,7 @@ live-verified.
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests/ -q    # 956 passed / 11 skipped / 0 failed
+python -m pytest tests/ -q    # 1042 passed / 13 skipped / 3 failed (pre-existing, environment-only — see Test Suite)
 ```
 
 ```bash
@@ -77,7 +82,7 @@ uvicorn.
 The Dockerfile builds the Python 3.12-slim base plus **Patchright's** Chromium via
 `patchright install --with-deps chromium`. The browser is **headless**, so nothing needs an X server:
 no `DISPLAY`, no Xvfb, no `xauth`, and no Xvfb entrypoint. The stock `playwright` package is
-deliberately not installed (see `src/browser_fetcher.py` for the rationale).
+deliberately not installed (see `src/fetch/browser_fetcher.py` for the rationale).
 
 Diagnostics: `GET /health` is a pure liveness probe (always 200). `GET /ready` reports
 DB connectivity — 200 when connected, else 503 with safe, credential-scrubbed context
@@ -321,8 +326,7 @@ All applicant endpoints require JWT authentication.
 | `GET` | `/` | List all government sources (admin only) |
 | `POST` | `/` | Create a source (admin only) |
 | `GET` | `/{source_id}` | Get a single source (admin only) |
-| `PATCH` | `/{source_id}` | Update source (status, priority, crawl_frequency, url) (admin only) |
-| `POST` | `/{source_id}/manual-capture` | Record a manually captured document for a blocked source |
+| `PATCH` | `/{source_id}` | Update source — `status` limited to `ACTIVE`/`DISABLED`/`NEEDS_MANUAL_CAPTURE`, 422 otherwise (admin only) |
 | `POST` | `/discover` | Run source discovery (admin only) |
 | `GET` | `/discovered` | List discovered source candidates (admin only) |
 | `POST` | `/discovered/{id}/approve` | Approve a candidate into a real source (admin only) |
@@ -340,7 +344,7 @@ All applicant endpoints require JWT authentication.
 |--------|------|-------------|
 | `POST` | `/` | Manually trigger government source sync — **admin only** (401 without token, 403 for non-admins) |
 
-#### Why does `/admin/sync` only touch 2 of 14 sources?
+#### Does `/admin/sync` touch all 14 sources? (updated 2026-10-05)
 
 `sync_all_sources()` in `src/orchestration/government_sync.py` only ever queries sources
 where `status == "ACTIVE"`:
@@ -349,29 +353,28 @@ where `status == "ACTIVE"`:
 sources = session.query(GovernmentSource).filter(GovernmentSource.status == "ACTIVE").all()
 ```
 
-Right now **12 of the 14 seeded sources are `NEEDS_MANUAL_CAPTURE`**, not `ACTIVE` — every
-`immi.homeaffairs.gov.au` page in the registry. They got demoted because the real
-`immi.homeaffairs.gov.au` WAF returns `HTTP 403` even after the fetcher escalates to a genuine,
-non-headless Chromium session (`src/browser_fetcher.py`). `_record_fetch_failure()` in
-`src/utils/fetch_document.py` sets `source.status = "NEEDS_MANUAL_CAPTURE"` whenever a block
-survives browser escalation — this is deliberate, not a bug: the project's design explicitly
-forbids trying harder to get past a real block (no stealth plugins, no fingerprint evasion, no
-CAPTCHA solving). Once demoted, a source is excluded from **every** future sync — scheduled or
-manual — until an admin resets it.
+As of 2026-10-05, **all 14 seeded sources are `ACTIVE`** — a full-registry sync that day got
+0/14 fetch failures. This is a change from earlier operation, where most
+`immi.homeaffairs.gov.au` sources sat demoted in `NEEDS_MANUAL_CAPTURE` after `HTTP 403` even
+through browser escalation. `_record_fetch_failure()` in `src/utils/fetch_document.py` still sets
+`source.status = "NEEDS_MANUAL_CAPTURE"` whenever a block survives browser escalation — that logic
+is unchanged and still deliberate (the project's design explicitly forbids trying harder to get
+past a real block: no stealth plugins, no fingerprint evasion, no CAPTCHA solving) — it just isn't
+firing right now because the WAF isn't categorically blocking these sources anymore.
 
-Only `SRC-AU-CRICOS-REGISTER` and `SRC-AU-MIGRATION-REGS-1994` are currently `ACTIVE`
-(different domains, not blocked), so those are the only two `POST /admin/sync` ever reaches.
+**What's actually going on with the WAF now (important nuance)**: it blocks **intermittently,
+apparently under per-URL request volume**, not categorically by domain or by headless/headed
+browser signature. Live-verified 2026-10-05: hitting the same `SRC-AU-600-MAIN` URL repeatedly
+during debugging made it progressively degrade (200 OK → 0 chunks → outright 403), while every
+other URL touched only once in the same session stayed healthy. So a source going to
+`NEEDS_MANUAL_CAPTURE` today is more likely a transient, request-volume-sensitive block than a
+permanent one — a plain re-sync after a cooldown is the right first response, not manual capture.
 
-**To recover a `NEEDS_MANUAL_CAPTURE` source**: an admin opens the URL in a real browser by
-hand, saves the rendered HTML, and calls:
-
-```
-POST /api/v1/admin/sources/{source_id}/manual-capture
-{ "raw_html": "<the captured HTML>" }
-```
-
-This resets the source to `ACTIVE`, runs the captured content through the same
-store → extract pipeline as an automated fetch, and the source rejoins future syncs.
+**Note**: the `POST /admin/sources/{source_id}/manual-capture` endpoint described in earlier
+versions of this doc has since been **removed** from the API (2026-10-01) along with its
+`ManualCaptureRequest` model. If a source is demoted today, the recovery path is: wait for the WAF
+to cool down, then re-trigger `POST /admin/sync` (or `PATCH` the source's `status` back to
+`ACTIVE` directly if you're confident the block has lifted).
 
 ## Database
 
@@ -413,41 +416,43 @@ from db.repositories import (
 
 ## Test Suite
 
-> **956 passed / 11 skipped / 0 failed** (2026-09-25), with real auth enforced throughout.
+> **1042 passed / 13 skipped / 3 failed** (2026-10-05), real auth enforced throughout. The 3
+> failures are pre-existing and environment-only, not caused by any work in this round: 2 are a
+> **host-venv-only** `psycopg` v3 issue (importable but its native `pq` wrapper isn't — Docker is
+> unaffected, see Current Gaps), 1 is `test_patchright_missing_returns_launch_failure` hitting a
+> different failure path locally because Patchright's Chromium binary isn't downloaded on this host.
 
 ```bash
 python -m pytest tests/ -q              # Full suite (counts above)
-python -m pytest tests/rules -q        # Phase 3 core: 192 tests
-python -m pytest tests/assessment -q       # Phase 3C eligibility: 97 tests
-python -m pytest tests/phase3d -q       # Phase 3D activation: 120 tests
+python -m pytest tests/rules -q         # Rule engine core: 208 tests
+python -m pytest tests/assessment -q    # Eligibility + gap engine: 97 tests
+python -m pytest tests/phase3d -q       # Rule activation/lifecycle: 121 tests
 python -m pytest tests/db -q            # Database models/repos: 22 tests
-python -m pytest tests/extraction/test_category_prompts.py -q  # Category→prompt wiring: 10 tests
-python -m pytest tests/test_api.py -q   # API routes: 38 tests
+python -m pytest tests/extraction -q    # Extraction (schema, evidence, dedup, gold, category prompts): 77 tests
+python -m pytest tests/test_api.py -q   # API routes: 41 tests
 python -m pytest tests/test_auth.py -q  # Authentication: 13 tests
 python -m pytest tests/test_security.py -q  # Security: 44 tests
-python -m pytest tests/test_llm_governance.py -q  # LLM governance: 30 tests
-python -m pytest tests/test_scheduler.py -q  # Scheduler: 28 tests
-python -m pytest tests/test_pipeline_runs.py -q  # PipelineRun tracking: 42 tests
+python -m pytest tests/test_llm_governance.py -q  # LLM governance: 32 tests
+python -m pytest tests/test_scheduler.py -q  # Scheduler + background sync jobs: 38 tests
 python -m pytest tests/test_e2e_scenarios.py -q  # End-to-end scenarios: 14 tests
 ```
 
 | Layer | Tests | What it proves |
 |-------|-------|----------------|
-| Phase 2 | 70 (+10 prompt wiring, +12 gold harness) | Schema validation, evidence checking, normalization, dedup, extraction, category→prompt wiring, category-aware gold harness |
-| Phase 3 | 192 | Operators, expression tree, IF/THEN, exceptions, dependencies, versioning |
-| Phase 3C | 97 | Applicant model, applicability, assessment, gap engine, questions |
-| Phase 3D | 120 | Rule persistence, status machine, requirement→rule bridge, admin API, e2e, hardening |
+| Rule engine (`tests/rules/`) | 208 | Operators, expression tree, IF/THEN, exceptions, dependencies, versioning |
+| Assessment/gap engine (`tests/assessment/`) | 97 | Applicant model, applicability, assessment, gap engine, questions |
+| Rule activation/lifecycle (`tests/phase3d/`) | 121 | Rule persistence, status machine, requirement→rule bridge (incl. the category-uniqueness fix), admin API, e2e, hardening |
+| Extraction (`tests/extraction/`) | 77 | Schema validation, evidence checking, normalization, dedup, extraction, category→prompt wiring, gold harness, requirement_id length guard |
 | Database | 22 | ORM models, repositories, CRUD, in-memory SQLite |
 | Logging | 17 | Structured logging, PII redaction, request context |
-| API Routes | 38 | Request/response contracts, error handling, real assessment, G9 regression, admin-sync auth (401/403/200) |
+| API Routes | 41 | Request/response contracts, error handling, real assessment, admin-sync 202/409 background-job pattern, source PATCH validation |
 | Auth | 13 | JWT tokens, register/login, password hashing, duplicate email, role in token |
-| LLM Governance | 30 | Rate limiting, caching, budget tracking, retry policy |
+| LLM Governance | 32 | Rate limiting, caching, budget tracking, retry policy |
 | Security | 44 | JWT secrets, PII redaction, CORS, authorization, password security |
-| Scheduler | 28 | APScheduler start/stop, manual sync trigger, concurrent-sync lock |
-| PipelineRun | 42 | Sync audit trail, repo CRUD, API endpoints, computed counters, orchestrator integration |
+| Scheduler | 38 | APScheduler start/stop, manual sync trigger, concurrent-sync lock, background sync job + lock-release ordering |
 | E2E Scenarios | 14 | Multi-program, multi-version, gap engine, evaluation, orchestration |
-| Fetch / Sync lifecycle | 23 | fetch→store→version, change detection, refetch lifecycle, crawl-frequency gating, browser escalation |
-| **Total** | **956** | **956 passed / 11 skipped, 0 failures (2026-09-25), real auth enforced throughout.** |
+| Fetch / sync / admin / integration (everything else) | ~334 | fetch→store→version, change detection, raw-snapshot persistence + durability, refetch lifecycle, crawl-frequency gating, Patchright browser escalation, source PATCH/no-manual-capture, driver pinning, form-wrapped-content extraction, lineage integrity |
+| **Total** | **1058 collected** | **1042 passed / 13 skipped / 3 failed (2026-10-05), real auth enforced throughout.** |
 
 ## Expression Types
 
@@ -489,7 +494,7 @@ immigration-knowledge/
 │   │   │   ├── assessments.py      # Assessment create/list/get/evaluate (JWT + ownership)
 │   │   │   ├── admin_rules.py      # Admin review/approve/activate
 │   │   │   ├── admin_requirements.py # Admin requirement review
-│   │   │   ├── admin_sources.py    # Source admin API + discovery + manual capture
+│   │   │   ├── admin_sources.py    # Source admin API + discovery
 │   │   │   ├── admin_documents.py  # Document admin API (G14)
 │   │   │   ├── admin_knowledge.py  # Knowledge-state endpoint (G15)
 │   │   │   ├── admin_schema.py     # Schema-report endpoint (read-only DB structure)
@@ -556,6 +561,12 @@ immigration-knowledge/
 ├── sources/
 │   └── source_registry.seed.json   # 14 verified government sources (SKILLED / WORK / STUDENT / VISITOR)
 ├── migrations/                     # Alembic migrations
+├── frontend/                        # Minimal read-only admin console (plain React + Vite)
+│   ├── src/
+│   │   ├── pages/                  # LoginPage, SourcesDashboard, PipelineRunsPage
+│   │   ├── components/             # StatusBadge, SyncButton (202 + poll pattern)
+│   │   └── api.js                  # fetch wrapper + JWT storage, no new backend routes
+│   └── README.md                   # `npm install && npm run dev`, talks to :8000 by default
 ├── .env.example                    # CORS_ORIGINS, JWT_SECRET_KEY, all config
 ├── .gitignore
 ├── Dockerfile                      # Python 3.12-slim
@@ -628,15 +639,21 @@ immigration-knowledge/
 | ~~Gemini provider support~~ | P2 | DONE (2026-09-21: `GeminiLLMClient` wired through the same governance layer as OpenAI; factory routes by model name) |
 | ~~`POST /applicants` silently dropped `first_name`/`last_name`/`created_at` in its response~~ | P2 | DONE (2026-09-21: `ApplicantService.create()`/`list_for_user()` built incomplete response dicts; data was persisted correctly but the API lied about it) |
 | ~~Authentication was temporarily disabled~~ | P0 | DONE — real JWT auth was restored 2026-09-22 (`src/api/routes/auth.py`'s bypass was deleted, not just re-enabled behind a flag — there is no bypass code left in this file at all) |
-| ~~Browser escalation blocked with HTTP 403 even via genuine browser session~~ | P0 | DONE (2026-09-25): `src/browser_fetcher.py` was launching Chromium `headless=True`, fingerprinted and blocked by the Home Affairs WAF. Switched to `headless=False` under Xvfb (`Dockerfile` + `docker-entrypoint.sh`). Live-verified against 2 previously-blocked URLs: both now return real 200 OK with full content, where headless got 403 on the same URLs. The 12 `NEEDS_MANUAL_CAPTURE` sources have not yet been re-synced to pick this up — see below. |
-| Re-sync the 12 `NEEDS_MANUAL_CAPTURE` Home Affairs sources now that headed browser escalation works | P1 | OPEN — the fix above was verified via direct fetch calls on 2 sample URLs, not a full `POST /admin/sync` run; the sources' DB status is still `NEEDS_MANUAL_CAPTURE` until an actual sync (or `manual-capture`, which also resets status) runs against them |
-| ~~`SRC-AU-MIGRATION-REGS-1994` URL resolves to an index/citation page, not the regulation text~~ | P2 | DONE (2026-09-25): the `/latest/text` URL is an interactive expand-tree UI with no static text at any wait setting (tried `networkidle`, still 0 chunks). Found and verified the real PDF deep-link (`/F1996B03551/{date}/{date}/text/original/pdf/2` — Volume 2 of 4), confirmed to contain genuine Subclass 189 "189.2—Primary criteria" text (452 chunks). **Caveat**: this URL embeds the compilation date and has no stable dateless permalink — it will need re-deriving (via `/latest/downloads` with a real browser, since the download links are JS-rendered) whenever the regulation is next re-compiled. |
-| `SRC-AU-CRICOS-REGISTER` yields 0 document chunks every fetch | P2 | OPEN, re-investigated 2026-09-25 — confirmed a genuine search-interface SPA: even headed browser + `networkidle` wait produces 0 chunks (title "Course Search", no default listable content, likely requires simulating a search-form submission to see any data). Not evadable/render-wait-fixable; needs re-sourcing (e.g. a CRICOS bulk-data export/API, if one exists) or a materially different, larger fetch strategy — out of scope for a straightforward fix. Marked as needing re-sourcing; no content fabricated. |
-| SQLAlchemy/alembic can't connect to PostgreSQL in a fresh Docker build (`ModuleNotFoundError: No module named 'psycopg'`) | P0 | **NEW, found 2026-09-25** — unrelated to the fixes above, discovered while verifying them. A fresh `docker compose up -d --build` fails at `alembic upgrade head` because SQLAlchemy resolves the `psycopg` (v3) dialect for the plain `postgresql://` URL, but only `psycopg2-binary` is in `requirements.txt`. Worked around during verification by calling fetch/extract functions directly (bypassing the ORM/alembic chain); not fixed as part of this pass — likely needs either pinning `sqlalchemy` to the version last known to default to psycopg2, or adding `psycopg[binary]` to `requirements.txt` and deciding which driver is canonical. |
-| Real rule lifecycle (DRAFT→VALIDATED→APPROVED→ACTIVE) never exercised with real extracted data | P1 | OPEN — now unblocked in principle (both content-source problems above are resolved or clearly triaged), but the psycopg issue above needs fixing first to actually run a fresh sync through the full ORM pipeline |
+| ~~Browser escalation blocked with HTTP 403 even via genuine browser session~~ | P0 | **Superseded understanding (2026-10-05)** — the 2026-09-25 "headed=fix" claim did not hold up (`DESIGN.md` §16 correction, 2026-10-01). Current finding: the WAF blocks intermittently under per-URL request volume, independent of headless/headed or Playwright/Patchright. See the dedicated section below and `PLAN.md` Known Blocker #7. |
+| ~~`SRC-AU-MIGRATION-REGS-1994` URL resolves to an index/citation page~~ | P2 | DONE (2026-09-25), **re-confirmed live 2026-10-05**: real sync extracted 13 real requirements from the fixed PDF deep-link, with intact (non-truncated) IDs. Caveat unchanged — URL has no stable dateless permalink. |
+| `SRC-AU-CRICOS-REGISTER` yields 0 document chunks every fetch | P2 | OPEN — confirmed a genuine search-interface SPA, not render-wait-fixable; needs re-sourcing (e.g. a CRICOS bulk-data export/API) or a materially different fetch strategy. |
+| ~~SQLAlchemy/alembic can't connect to PostgreSQL in a fresh Docker build~~ | P0 | DONE (2026-10-01): `DATABASE_URL` now names `postgresql+psycopg2://` explicitly. ⚠️ Residual: 2 tests fail in the **host venv only** (`psycopg` v3 importable, native `pq` wrapper isn't) — Docker is unaffected, not yet cleaned up. |
+| ~~Real rule lifecycle never exercised with real extracted data~~ | P0 | **DONE 2026-10-05** — `SKILLED_189` has 3 real ACTIVE rules from real extracted requirements, correctly assessed against a real applicant. See the banner at the top of this file and `PLAN.md` §6. |
+| ~~Raw immutable snapshots not persisted in the production path~~ | P1 | **DONE 2026-10-05** — `docker-compose.yml` had no volume for `/app/raw`; every container recreation silently lost previously-fetched files. Added a `raw_snapshots` named volume; verified a fetch's file survives a recreate with its hash matching the DB. |
+| ~~`uq_rules_active_per_field` only covers (program_id, field)~~ | P1 | **DONE 2026-10-05** — narrower than `activate_rule`'s own `(program_id, category, field)` logical key; a legitimate same-field-different-category ACTIVE rule was incorrectly rejected. Widened via migration `7c9e2a4f1b6d`, regression test added. |
+| ~~`requirement_id`/`rule_id` truncation on PostgreSQL~~ | P0 | **DONE 2026-10-05** — `String(48)` silently dropped rows for long `program_id`s on Postgres (SQLite never caught it). Widened to `String(96)`, added a fail-fast length guard, migration `a3c5e7f9b1d3`. |
+| `SRC-AU-600-MAIN` (and 6 other `immi.homeaffairs.gov.au` pages) yield 0 chunks | P1 | **Two separate bugs, not one.** (1) DONE 2026-10-05: the page's content sits inside a legacy ASP.NET `<form>` wrapper that `extractor_html.py` was deleting wholesale as noise — fixed by unwrapping, not decomposing, `<form>` tags. (2) **Bigger, found the same day**: that fix alone wasn't enough — a full-registry sync afterward still showed 7/14 sources at 0 chunks on a genuinely successful fetch. Root cause: these Angular pages serve real content as an escaped JSON blob in a hidden `<input>`, rendered into real DOM only *after* `domcontentloaded` — `browser_fetcher.py` was capturing too early. Fixed by waiting for a real structural selector before capturing (bounded 8s, falls through honestly for genuinely contentless pages). Unit-tested against the real captured shape; **live reconfirmation blocked right now** by the same WAF volume-sensitivity described below. |
+| **NEW (2026-10-05)**: Gemini returns schema-violating JSON for `SRC-AU-600-MAIN`'s real content | P2 | OPEN — found only because the 0-chunk bug above is fixed; all 16 of this page's candidate chunks fail schema validation (wrong keys, invalid enums), vs. 13/13 and 2/2 success on other real sources. Not yet investigated. |
+| **NEW (2026-10-05)**: `test_patchright_missing_returns_launch_failure` fails locally | P3 | OPEN — test/environment mismatch: Patchright is installed on this host but its Chromium binary isn't downloaded, so the test hits a different failure path than the one it asserts. |
 | WORK/STUDENT/VISITOR **real gold + live extraction** | P3 | OPEN (sources registered; real evidence capture still pending, no fabricated evidence) |
 | Multi-country | P3 | OPEN |
 | 491 real-world coverage | P3 | OPEN |
+| Applicant-facing frontend | P2 | OPEN — a separate **minimal admin frontend** now exists (`frontend/`, 2026-10-05: login, sources, pipeline runs), but the applicant-facing product UI is still not started |
 
 ### Next Milestones
 
@@ -667,7 +684,7 @@ under `environment:`).
 Each visa category owns its gold dataset under `data/gold/<category>/` and is validated against **its own** prompt contract (`prompts/<category>/requirement_extraction_v2.md`). The harness `src/extraction/category_gold.py` enforces **zero cross-category contamination**: a Student source can never be scored against the Skilled contract.
 
 - **skilled/** — populated with real, verbatim gold: `skilled_189_real.json` (23 items) + `skilled_190_real.json` (6 items).
-- **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items**. The project's anti-hallucination rule forbids fabricating `evidence_text`; plain-HTTP fetches of live Home Affairs are HTTP 403-blocked (`SOURCE_REGISTRY_REPORT.md`). The browser path (`src/browser_fetcher.py`, headless=False) has been shown to receive HTTP 200 on real Home Affairs pages, so real evidence capture for these categories is feasible but not yet executed/in-sandbox. They become fillable once real content is captured.
+- **work/student/visitor/** — placeholders marked `AWAITING_REAL_SOURCE` with **zero items**. The project's anti-hallucination rule forbids fabricating `evidence_text`; plain-HTTP fetches of live Home Affairs are HTTP 403-blocked (`SOURCE_REGISTRY_REPORT.md`). The browser path (`src/fetch/browser_fetcher.py`, Patchright headless) does reach real Home Affairs pages some of the time (see [Real network fetch — current behavior](#real-network-fetch--current-behavior-updated-2026-10-05) — it's intermittent, not guaranteed), so real evidence capture for these categories is feasible but not yet executed. They become fillable once real content is captured.
 
 Run the integrity check:
 
@@ -684,7 +701,7 @@ python -m pytest tests/extraction/test_category_gold_harness.py -q   # 12 guard 
 
 ### Database-agnostic core (runs on SQLite for tests, PostgreSQL for prod)
 
-The ORM rule lifecycle and Phase 3D pipeline are fully database-agnostic — they run identically against in-memory SQLite (897 passed / 2 skipped) and real PostgreSQL.
+The ORM rule lifecycle and rule-activation pipeline are fully database-agnostic — they run identically against in-memory SQLite (1042 passed / 13 skipped, see [Test Suite](#test-suite)) and real PostgreSQL (re-verified live 2026-10-05, including the two new migrations for the requirement_id/rule_id widening and the ACTIVE-rule category fix).
 
 ### Real PostgreSQL verification (performed 2026-08-27)
 
@@ -710,33 +727,37 @@ python src/extraction/run_extraction.py --document-id DOC-AU-189-MAIN --model gp
 
 Verified: fetch → store → hash → change detect → extract, and Phase 2 requirement extraction with category-aware prompt selection (6 requirements extracted from DOC-AU-189-MAIN).
 
-### Real network fetch — current behavior (updated 2026-09-25)
+### Real network fetch — current behavior (updated 2026-10-05)
 
-**2026-09-21 finding (now superseded)**: 12 of 14 sources — every `immi.homeaffairs.gov.au`
-page in the registry — returned HTTP 403 even after browser escalation, and were demoted to
-`NEEDS_MANUAL_CAPTURE`. At the time, `src/browser_fetcher.py` launched Chromium with
-`headless=True`.
+**2026-09-21 finding**: 12 of 14 sources — every `immi.homeaffairs.gov.au` page in the registry —
+returned HTTP 403 even after browser escalation, and were demoted to `NEEDS_MANUAL_CAPTURE`. At
+the time, `src/browser_fetcher.py` launched Chromium (Playwright) with `headless=True`.
 
-**2026-09-25 finding**: that browser escalation was being blocked by *headless-mode
-fingerprinting*, not an unconditional block on automated browsers. Switching
-`src/browser_fetcher.py` to `headless=False` (running under Xvfb — see Dockerfile /
-`docker-entrypoint.sh`) was live-tested directly against two of the twelve previously-blocked
-URLs (subclass 189 and 190 pages) and **both returned real `HTTP 200` with full, real page
-content** (1.3–1.5MB each, containing real eligibility text) — the exact same URLs that got 403
-under headless=True days earlier. No evasion technique was added; this is a real, visible
-browser session, just rendered instead of running invisibly.
+**2026-09-25 finding (since corrected — see below)**: switching to `headless=False` under Xvfb
+appeared to fix it in a 2-URL direct test. **This did not hold up.** `DESIGN.md` §16 already
+carries a 2026-10-01 correction: a genuine headless Patchright session was re-tested live against
+the same URLs and still got 403 — headed mode never reliably defeated the WAF.
 
-This was a direct diagnostic test (`fetcher.fetch` + `browser_fetcher.fetch_with_browser`
-called directly), **not a full `POST /admin/sync` run** — the 12 sources' `government_sources.status`
-in the database is still `NEEDS_MANUAL_CAPTURE` as of this writing, since that status only
-updates on an actual sync attempt. Re-running sync against them (after resetting their status,
-or via `manual-capture` which also resets status to `ACTIVE`) is the natural next step to
-confirm this holds across all 12 and to get them flowing through extraction again — not done as
-part of this fix; see Current Gaps.
+**2026-10-01**: the fetch layer was migrated off Playwright entirely onto **Patchright, running
+headless** (no more Xvfb/`docker-entrypoint.sh` — see `Dockerfile`/`docker-compose.yml`). This was
+a maintainability and correctness move (drops a redundant X-server dependency the headed-mode
+theory never actually needed), not a WAF fix.
 
-The 2 non-Home-Affairs sources (`SRC-AU-CRICOS-REGISTER`, `SRC-AU-MIGRATION-REGS-1994`) are
-unaffected by this finding (different domains, were never blocked) — see the "What works / what
-doesn't" table above for their separate, still-open content issues.
+**2026-10-05 finding (current understanding)**: the WAF blocks **intermittently, correlated with
+per-URL request volume**, independent of headless/headed or Playwright/Patchright. Evidence:
+a full 14-source sync that day got **0/14 fetch failures** — every source, including every
+`immi.homeaffairs.gov.au` page, came back `ACTIVE`/`OK`. Minutes later, directly re-hitting one of
+those same URLs (`SRC-AU-600-MAIN`) repeatedly for debugging made it progressively degrade: a
+normal 200, then a 200 with corrupted/empty content, then an outright 403 "even via a genuine
+browser session" — while every other URL in the registry, touched only once that session, stayed
+healthy. This points at a per-URL rate limit rather than a categorical IP or fingerprint block.
+**No evasion technique has been or will be added in response** — the correct move is understanding
+the real trigger (see the IP-vs-fingerprint diagnostic task in `PLAN.md` Known Blocker #7), not
+adding retries or stealth.
+
+The 2 non-Home-Affairs sources (`SRC-AU-CRICOS-REGISTER`, `SRC-AU-MIGRATION-REGS-1994`) are on
+different domains and have never been subject to this WAF at all — see the "What works / what
+doesn't" table above for their separate, content-level issues.
 
 ## License
 

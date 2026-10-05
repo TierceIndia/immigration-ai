@@ -28,6 +28,25 @@
 > **New, unfixed gap found**: a fresh `docker compose up -d --build` can't connect to PostgreSQL
 > (`ModuleNotFoundError: No module named 'psycopg'`). Current, authoritative status: `README.md` →
 > "What works / what doesn't", and `PLAN.md` for the strategic view.
+>
+> **STATUS UPDATE — 2026-10-05** (the biggest round since this report was written): the
+> `headless=False` claim above **did not hold up** — a later live re-test with genuine headless
+> Patchright still got 403 on the same URLs (headed mode never actually defeated the WAF). The
+> fetch layer has since migrated entirely off Playwright onto **Patchright, headless** (no more
+> Xvfb), and the real, current understanding is that the WAF blocks **intermittently under
+> per-URL request volume**, not categorically. The psycopg gap above is **fixed** (`DATABASE_URL`
+> now names the driver explicitly). Two more real bugs were found and fixed this round:
+> `requirement_id`/`rule_id` silently truncated on PostgreSQL (`VARCHAR(48)` too narrow for long
+> `program_id`s — widened to 96 with a fail-fast guard), and `uq_rules_active_per_field` narrower
+> than its own enforcing code's logical key (missing `category` — widened to match). Raw snapshot
+> persistence — a gap this report did not even know to flag — was also found and fixed (no volume
+> for `/app/raw`, every container recreation silently lost fetched files). **Most significantly**:
+> the full pipeline has now been run for real, not just via test fixtures — `SKILLED_189` has 3
+> real ACTIVE rules from real extracted requirements, correctly assessed against a real applicant
+> with a real `ruleset_hash`. The `phase2`/`phase3`/`phase3c` folders were renamed to
+> `extraction`/`rules`/`assessment`, and a minimal read-only admin frontend (`frontend/`) now
+> exists. Suite: **1042 passed / 13 skipped / 3 pre-existing, environment-only failures**. Current,
+> authoritative status: `PLAN.md`.
 
 ---
 

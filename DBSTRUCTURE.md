@@ -1,10 +1,11 @@
 # Database Structure Report
 
-**Regenerated**: 2026-09-25, directly from `db.schema_info.tables_snapshot()` — the same
-function `GET /api/v1/admin/schema` calls — not hand-maintained. Row counts reflect a freshly
-recreated local Postgres container at generation time (most operational tables show 0 rows);
-re-run against your own environment for current counts. See `README.md` for narrative docs and
-`PLAN.md` for current project status.
+**Regenerated**: 2026-10-05, directly from `db.schema_info.tables_snapshot()` — the same
+function `GET /api/v1/admin/schema` calls — not hand-maintained. Row counts reflect the live
+local Postgres container at generation time, which carries real data from this session's
+verification work (not a freshly recreated/empty container) — re-run against your own
+environment for current counts. See `README.md` for narrative docs and `PLAN.md` for current
+project status.
 
 Backend: live PostgreSQL (exact counts via `SELECT COUNT(*)`).
 
@@ -17,8 +18,15 @@ Backend: live PostgreSQL (exact counts via `SELECT COUNT(*)`).
 
 ## Migration status
 
-- Current alembic revision applied to DB: `e4f6a1b2c3d4` (head)
-- Migration files (8 present): 0ceaaa268719_schema_verification.py, 49b9088f3a03_initial_schema_from_models.py, a1b2c3d4e5f6_add_last_successful_fetch_at.py, c7d8e9f0a1b2_add_discovered_sources.py, d1f2e3a4b5c6_add_fallback_fields_to_government_sources.py, e4f6a1b2c3d4_add_fetch_error_type.py, f7a6d5c4b3a2_lineage_and_immutability.py, f8a9b0c1d2e3_audit_hardening.py
+- Current alembic revision applied to DB: `7c9e2a4f1b6d` (head)
+- Migration files (10 present): 0ceaaa268719_schema_verification.py, 49b9088f3a03_initial_schema_from_models.py, a1b2c3d4e5f6_add_last_successful_fetch_at.py, a3c5e7f9b1d3_widen_requirement_id_columns.py, c7d8e9f0a1b2_add_discovered_sources.py, d1f2e3a4b5c6_add_fallback_fields_to_government_sources.py, e4f6a1b2c3d4_add_fetch_error_type.py, f7a6d5c4b3a2_lineage_and_immutability.py, f8a9b0c1d2e3_audit_hardening.py, 7c9e2a4f1b6d_widen_active_rule_uniqueness_to_include_category.py
+  - `a3c5e7f9b1d3` (2026-10-05): widened `requirement_id`/`rule_id` and every column that stores
+    or FK-references them from `VARCHAR(48)` to `VARCHAR(96)` — the old width silently truncated
+    (PostgreSQL `StringDataRightTruncation`) for long `program_id`s; SQLite never caught it.
+  - `7c9e2a4f1b6d` (2026-10-05): widened `uq_rules_active_per_field` from `(program_id, field)`
+    to `(program_id, category, field)`, matching `EnhancedRuleRepo.activate_rule's` own logical
+    key — the narrower version incorrectly rejected a legitimate same-field-different-category
+    ACTIVE rule as a duplicate.
 
 ## Tables (30) — columns / current row counts
 
@@ -26,32 +34,32 @@ Backend: live PostgreSQL (exact counts via `SELECT COUNT(*)`).
 |---|---|---|
 | alembic_version | 1 | 0 |
 | api_users | 9 | 1 |
-| applicant_profiles | 19 | 0 |
-| assessment_rule_results | 14 | 0 |
-| assessments | 17 | 0 |
+| applicant_profiles | 19 | 1 |
+| assessment_rule_results | 14 | 3 |
+| assessments | 17 | 1 |
 | audit_log | 10 | 0 |
 | countries | 3 | 1 |
 | discovered_sources | 16 | 0 |
-| document_chunks | 10 | 0 |
-| document_versions | 11 | 0 |
-| extraction_runs | 21 | 0 |
-| fetch_log | 10 | 0 |
-| gaps | 11 | 0 |
-| government_documents | 19 | 0 |
+| document_chunks | 10 | 696 |
+| document_versions | 11 | 55 |
+| extraction_runs | 21 | 33 |
+| fetch_log | 10 | 143 |
+| gaps | 11 | 2 |
+| government_documents | 19 | 14 |
 | government_sources | 24 | 14 |
 | immigration_programs | 6 | 7 |
 | llm_budget_log | 9 | 0 |
 | llm_usage | 13 | 0 |
-| pipeline_runs | 19 | 0 |
-| requirement_evidence | 14 | 0 |
+| pipeline_runs | 19 | 144 |
+| requirement_evidence | 14 | 10 |
 | requirement_references | 8 | 0 |
-| requirement_review | 9 | 0 |
-| requirement_versions | 10 | 0 |
-| requirements | 24 | 0 |
-| rule_versions | 9 | 0 |
-| rules | 24 | 0 |
-| ruleset_rules | 3 | 0 |
-| rulesets | 9 | 0 |
+| requirement_review | 9 | 3 |
+| requirement_versions | 10 | 7 |
+| requirements | 24 | 7 |
+| rule_versions | 9 | 33 |
+| rules | 24 | 3 |
+| ruleset_rules | 3 | 3 |
+| rulesets | 9 | 1 |
 | user_sessions | 7 | 0 |
 | visa_selections | 6 | 0 |
 
@@ -101,16 +109,13 @@ Backend: live PostgreSQL (exact counts via `SELECT COUNT(*)`).
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
 
-Foreign keys:
-- `applicant_profiles.user_id -> api_users.user_id`
-
 ### assessment_rule_results
 
 | column | type | nullable | PK |
 |---|---|---|---|
 | result_id | uuid |  | PK |
 | assessment_id | uuid |  |  |
-| rule_id | character varying(48) |  |  |
+| rule_id | character varying(96) |  |  |
 | rule_version | integer |  |  |
 | status | character varying(16) |  |  |
 | field | character varying(128) | yes |  |
@@ -122,11 +127,6 @@ Foreign keys:
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
 | rule_version_id | integer | yes |  |
-
-Foreign keys:
-- `assessment_rule_results.assessment_id -> assessments.assessment_id`
-- `assessment_rule_results.rule_id -> rules.rule_id`
-- `assessment_rule_results.rule_version_id -> rule_versions.version_id`
 
 ### assessments
 
@@ -150,11 +150,6 @@ Foreign keys:
 | ruleset_hash | character varying(64) | yes |  |
 | ruleset_id | character varying(36) | yes |  |
 
-Foreign keys:
-- `assessments.applicant_id -> applicant_profiles.applicant_id`
-- `assessments.program_id -> immigration_programs.program_id`
-- `assessments.ruleset_id -> rulesets.ruleset_id`
-
 ### audit_log
 
 | column | type | nullable | PK |
@@ -169,9 +164,6 @@ Foreign keys:
 | request_id | character varying(36) | yes |  |
 | ip_address | character varying(64) | yes |  |
 | created_at | timestamp with time zone |  |  |
-
-Foreign keys:
-- `audit_log.user_id -> api_users.user_id`
 
 ### countries
 
@@ -202,9 +194,6 @@ Foreign keys:
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
 
-Foreign keys:
-- `discovered_sources.suggested_country_id -> countries.country_id`
-
 ### document_chunks
 
 | column | type | nullable | PK |
@@ -219,14 +208,6 @@ Foreign keys:
 | page_number | integer | yes |  |
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
-
-Foreign keys:
-- `document_chunks.document_id -> document_versions.document_id`
-- `document_chunks.document_id -> document_versions.version_id`
-- `document_chunks.document_id -> government_documents.document_id`
-- `document_chunks.version_id -> document_versions.document_id`
-- `document_chunks.version_id -> document_versions.version_id`
-- `document_chunks.version_id -> document_versions.version_id`
 
 ### document_versions
 
@@ -243,9 +224,6 @@ Foreign keys:
 | diff_summary | text | yes |  |
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
-
-Foreign keys:
-- `document_versions.document_id -> government_documents.document_id`
 
 ### extraction_runs
 
@@ -273,14 +251,6 @@ Foreign keys:
 | updated_at | timestamp with time zone |  |  |
 | document_version_id | integer | yes |  |
 
-Foreign keys:
-- `extraction_runs.document_id -> document_versions.document_id`
-- `extraction_runs.document_id -> document_versions.version_number`
-- `extraction_runs.document_id -> government_documents.document_id`
-- `extraction_runs.document_version -> document_versions.document_id`
-- `extraction_runs.document_version -> document_versions.version_number`
-- `extraction_runs.document_version_id -> document_versions.version_id`
-
 ### fetch_log
 
 | column | type | nullable | PK |
@@ -296,9 +266,6 @@ Foreign keys:
 | error | text | yes |  |
 | error_type | character varying(64) | yes |  |
 
-Foreign keys:
-- `fetch_log.source_id -> government_sources.source_id`
-
 ### gaps
 
 | column | type | nullable | PK |
@@ -308,15 +275,12 @@ Foreign keys:
 | field | character varying(128) |  |  |
 | priority | character varying(16) |  |  |
 | message | text |  |  |
-| rule_id | character varying(48) | yes |  |
+| rule_id | character varying(96) | yes |  |
 | evidence_text | text | yes |  |
 | answer | text | yes |  |
 | source_chunk_ids | json | yes |  |
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
-
-Foreign keys:
-- `gaps.assessment_id -> assessments.assessment_id`
 
 ### government_documents
 
@@ -341,15 +305,6 @@ Foreign keys:
 | status | character varying(32) |  |  |
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
-
-Foreign keys:
-- `government_documents.country_id -> countries.country_id`
-- `government_documents.country_id -> immigration_programs.country_id`
-- `government_documents.country_id -> immigration_programs.program_id`
-- `government_documents.program_id -> immigration_programs.country_id`
-- `government_documents.program_id -> immigration_programs.program_id`
-- `government_documents.program_id -> immigration_programs.program_id`
-- `government_documents.source_id -> government_sources.source_id`
 
 ### government_sources
 
@@ -380,15 +335,6 @@ Foreign keys:
 | consecutive_failures | integer |  |  |
 | last_error_type | character varying(64) | yes |  |
 
-Foreign keys:
-- `government_sources.country_id -> countries.country_id`
-- `government_sources.country_id -> immigration_programs.country_id`
-- `government_sources.country_id -> immigration_programs.program_id`
-- `government_sources.fallback_source_id -> government_sources.source_id`
-- `government_sources.program_id -> immigration_programs.country_id`
-- `government_sources.program_id -> immigration_programs.program_id`
-- `government_sources.program_id -> immigration_programs.program_id`
-
 ### immigration_programs
 
 | column | type | nullable | PK |
@@ -399,9 +345,6 @@ Foreign keys:
 | subclass_code | character varying(8) | yes |  |
 | name | character varying(256) |  |  |
 | status | character varying(16) |  |  |
-
-Foreign keys:
-- `immigration_programs.country_id -> countries.country_id`
 
 ### llm_budget_log
 
@@ -435,9 +378,6 @@ Foreign keys:
 | error_message | text | yes |  |
 | created_at | timestamp with time zone |  |  |
 
-Foreign keys:
-- `llm_usage.user_id -> api_users.user_id`
-
 ### pipeline_runs
 
 | column | type | nullable | PK |
@@ -462,15 +402,12 @@ Foreign keys:
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
 
-Foreign keys:
-- `pipeline_runs.source_id -> government_sources.source_id`
-
 ### requirement_evidence
 
 | column | type | nullable | PK |
 |---|---|---|---|
 | evidence_id | integer |  | PK |
-| requirement_id | character varying(48) |  |  |
+| requirement_id | character varying(96) |  |  |
 | document_id | character varying(32) |  |  |
 | document_version | integer |  |  |
 | chunk_id | integer |  |  |
@@ -484,31 +421,12 @@ Foreign keys:
 | updated_at | timestamp with time zone |  |  |
 | document_version_id | integer | yes |  |
 
-Foreign keys:
-- `requirement_evidence.chunk_id -> document_chunks.chunk_id`
-- `requirement_evidence.chunk_id -> document_chunks.chunk_id`
-- `requirement_evidence.chunk_id -> document_chunks.document_id`
-- `requirement_evidence.chunk_id -> document_chunks.version_id`
-- `requirement_evidence.document_id -> document_chunks.chunk_id`
-- `requirement_evidence.document_id -> document_chunks.document_id`
-- `requirement_evidence.document_id -> document_chunks.version_id`
-- `requirement_evidence.document_id -> document_versions.document_id`
-- `requirement_evidence.document_id -> document_versions.version_number`
-- `requirement_evidence.document_id -> government_documents.document_id`
-- `requirement_evidence.document_version -> document_versions.document_id`
-- `requirement_evidence.document_version -> document_versions.version_number`
-- `requirement_evidence.document_version_id -> document_chunks.chunk_id`
-- `requirement_evidence.document_version_id -> document_chunks.document_id`
-- `requirement_evidence.document_version_id -> document_chunks.version_id`
-- `requirement_evidence.document_version_id -> document_versions.version_id`
-- `requirement_evidence.requirement_id -> requirements.requirement_id`
-
 ### requirement_references
 
 | column | type | nullable | PK |
 |---|---|---|---|
 | reference_id | integer |  | PK |
-| requirement_id | character varying(48) |  |  |
+| requirement_id | character varying(96) |  |  |
 | reference_type | character varying(32) |  |  |
 | target_text | text |  |  |
 | resolved_chunk_id | integer | yes |  |
@@ -516,16 +434,12 @@ Foreign keys:
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
 
-Foreign keys:
-- `requirement_references.requirement_id -> requirements.requirement_id`
-- `requirement_references.resolved_chunk_id -> document_chunks.chunk_id`
-
 ### requirement_review
 
 | column | type | nullable | PK |
 |---|---|---|---|
 | review_id | integer |  | PK |
-| requirement_id | character varying(48) |  |  |
+| requirement_id | character varying(96) |  |  |
 | reviewer | character varying(64) |  |  |
 | action | character varying(32) |  |  |
 | old_state_json | text | yes |  |
@@ -534,15 +448,12 @@ Foreign keys:
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
 
-Foreign keys:
-- `requirement_review.requirement_id -> requirements.requirement_id`
-
 ### requirement_versions
 
 | column | type | nullable | PK |
 |---|---|---|---|
 | version_id | integer |  | PK |
-| requirement_id | character varying(48) |  |  |
+| requirement_id | character varying(96) |  |  |
 | version_number | integer |  |  |
 | snapshot_json | text |  |  |
 | document_version | integer |  |  |
@@ -552,15 +463,11 @@ Foreign keys:
 | updated_at | timestamp with time zone |  |  |
 | document_version_id | integer | yes |  |
 
-Foreign keys:
-- `requirement_versions.document_version_id -> document_versions.version_id`
-- `requirement_versions.requirement_id -> requirements.requirement_id`
-
 ### requirements
 
 | column | type | nullable | PK |
 |---|---|---|---|
-| requirement_id | character varying(48) |  | PK |
+| requirement_id | character varying(96) |  | PK |
 | semantic_key | character varying(256) |  |  |
 | program_id | character varying(32) |  |  |
 | country_id | character varying(8) |  |  |
@@ -585,22 +492,12 @@ Foreign keys:
 | updated_at | timestamp with time zone |  |  |
 | document_version_id | integer | yes |  |
 
-Foreign keys:
-- `requirements.country_id -> countries.country_id`
-- `requirements.country_id -> immigration_programs.country_id`
-- `requirements.country_id -> immigration_programs.program_id`
-- `requirements.document_version_id -> document_versions.version_id`
-- `requirements.extraction_run_id -> extraction_runs.run_id`
-- `requirements.program_id -> immigration_programs.country_id`
-- `requirements.program_id -> immigration_programs.program_id`
-- `requirements.program_id -> immigration_programs.program_id`
-
 ### rule_versions
 
 | column | type | nullable | PK |
 |---|---|---|---|
 | version_id | integer |  | PK |
-| rule_id | character varying(48) |  |  |
+| rule_id | character varying(96) |  |  |
 | version_number | integer |  |  |
 | snapshot_json | json |  |  |
 | change_type | character varying(16) |  |  |
@@ -609,16 +506,12 @@ Foreign keys:
 | updated_at | timestamp with time zone |  |  |
 | requirement_version_id | integer | yes |  |
 
-Foreign keys:
-- `rule_versions.requirement_version_id -> requirement_versions.version_id`
-- `rule_versions.rule_id -> rules.rule_id`
-
 ### rules
 
 | column | type | nullable | PK |
 |---|---|---|---|
-| rule_id | character varying(48) |  | PK |
-| requirement_id | character varying(48) |  |  |
+| rule_id | character varying(96) |  | PK |
+| requirement_id | character varying(96) |  |  |
 | program_id | character varying(32) |  |  |
 | category | character varying(64) |  |  |
 | field | character varying(128) |  |  |
@@ -642,15 +535,6 @@ Foreign keys:
 | updated_at | timestamp with time zone |  |  |
 | requirement_version_id | integer | yes |  |
 
-Foreign keys:
-- `rules.program_id -> immigration_programs.program_id`
-- `rules.program_id -> requirements.program_id`
-- `rules.program_id -> requirements.requirement_id`
-- `rules.requirement_id -> requirements.program_id`
-- `rules.requirement_id -> requirements.requirement_id`
-- `rules.requirement_id -> requirements.requirement_id`
-- `rules.requirement_version_id -> requirement_versions.version_id`
-
 ### ruleset_rules
 
 | column | type | nullable | PK |
@@ -658,10 +542,6 @@ Foreign keys:
 | ruleset_id | character varying(36) |  | PK |
 | rule_version_id | integer |  | PK |
 | position | integer |  |  |
-
-Foreign keys:
-- `ruleset_rules.rule_version_id -> rule_versions.version_id`
-- `ruleset_rules.ruleset_id -> rulesets.ruleset_id`
 
 ### rulesets
 
@@ -677,9 +557,6 @@ Foreign keys:
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
 
-Foreign keys:
-- `rulesets.program_id -> immigration_programs.program_id`
-
 ### user_sessions
 
 | column | type | nullable | PK |
@@ -692,9 +569,6 @@ Foreign keys:
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
 
-Foreign keys:
-- `user_sessions.user_id -> api_users.user_id`
-
 ### visa_selections
 
 | column | type | nullable | PK |
@@ -705,97 +579,3 @@ Foreign keys:
 | selected_at | timestamp with time zone |  |  |
 | created_at | timestamp with time zone |  |  |
 | updated_at | timestamp with time zone |  |  |
-
-Foreign keys:
-- `visa_selections.applicant_id -> applicant_profiles.applicant_id`
-- `visa_selections.program_id -> immigration_programs.program_id`
-
-## Foreign keys — full list
-
-- `applicant_profiles.user_id -> api_users.user_id`
-- `assessment_rule_results.assessment_id -> assessments.assessment_id`
-- `assessment_rule_results.rule_id -> rules.rule_id`
-- `assessment_rule_results.rule_version_id -> rule_versions.version_id`
-- `assessments.applicant_id -> applicant_profiles.applicant_id`
-- `assessments.program_id -> immigration_programs.program_id`
-- `assessments.ruleset_id -> rulesets.ruleset_id`
-- `audit_log.user_id -> api_users.user_id`
-- `discovered_sources.suggested_country_id -> countries.country_id`
-- `document_chunks.document_id -> document_versions.document_id`
-- `document_chunks.document_id -> document_versions.version_id`
-- `document_chunks.document_id -> government_documents.document_id`
-- `document_chunks.version_id -> document_versions.document_id`
-- `document_chunks.version_id -> document_versions.version_id`
-- `document_chunks.version_id -> document_versions.version_id`
-- `document_versions.document_id -> government_documents.document_id`
-- `extraction_runs.document_id -> document_versions.document_id`
-- `extraction_runs.document_id -> document_versions.version_number`
-- `extraction_runs.document_id -> government_documents.document_id`
-- `extraction_runs.document_version -> document_versions.document_id`
-- `extraction_runs.document_version -> document_versions.version_number`
-- `extraction_runs.document_version_id -> document_versions.version_id`
-- `fetch_log.source_id -> government_sources.source_id`
-- `gaps.assessment_id -> assessments.assessment_id`
-- `government_documents.country_id -> countries.country_id`
-- `government_documents.country_id -> immigration_programs.country_id`
-- `government_documents.country_id -> immigration_programs.program_id`
-- `government_documents.program_id -> immigration_programs.country_id`
-- `government_documents.program_id -> immigration_programs.program_id`
-- `government_documents.program_id -> immigration_programs.program_id`
-- `government_documents.source_id -> government_sources.source_id`
-- `government_sources.country_id -> countries.country_id`
-- `government_sources.country_id -> immigration_programs.country_id`
-- `government_sources.country_id -> immigration_programs.program_id`
-- `government_sources.fallback_source_id -> government_sources.source_id`
-- `government_sources.program_id -> immigration_programs.country_id`
-- `government_sources.program_id -> immigration_programs.program_id`
-- `government_sources.program_id -> immigration_programs.program_id`
-- `immigration_programs.country_id -> countries.country_id`
-- `llm_usage.user_id -> api_users.user_id`
-- `pipeline_runs.source_id -> government_sources.source_id`
-- `requirement_evidence.chunk_id -> document_chunks.chunk_id`
-- `requirement_evidence.chunk_id -> document_chunks.chunk_id`
-- `requirement_evidence.chunk_id -> document_chunks.document_id`
-- `requirement_evidence.chunk_id -> document_chunks.version_id`
-- `requirement_evidence.document_id -> document_chunks.chunk_id`
-- `requirement_evidence.document_id -> document_chunks.document_id`
-- `requirement_evidence.document_id -> document_chunks.version_id`
-- `requirement_evidence.document_id -> document_versions.document_id`
-- `requirement_evidence.document_id -> document_versions.version_number`
-- `requirement_evidence.document_id -> government_documents.document_id`
-- `requirement_evidence.document_version -> document_versions.document_id`
-- `requirement_evidence.document_version -> document_versions.version_number`
-- `requirement_evidence.document_version_id -> document_chunks.chunk_id`
-- `requirement_evidence.document_version_id -> document_chunks.document_id`
-- `requirement_evidence.document_version_id -> document_chunks.version_id`
-- `requirement_evidence.document_version_id -> document_versions.version_id`
-- `requirement_evidence.requirement_id -> requirements.requirement_id`
-- `requirement_references.requirement_id -> requirements.requirement_id`
-- `requirement_references.resolved_chunk_id -> document_chunks.chunk_id`
-- `requirement_review.requirement_id -> requirements.requirement_id`
-- `requirement_versions.document_version_id -> document_versions.version_id`
-- `requirement_versions.requirement_id -> requirements.requirement_id`
-- `requirements.country_id -> countries.country_id`
-- `requirements.country_id -> immigration_programs.country_id`
-- `requirements.country_id -> immigration_programs.program_id`
-- `requirements.document_version_id -> document_versions.version_id`
-- `requirements.extraction_run_id -> extraction_runs.run_id`
-- `requirements.program_id -> immigration_programs.country_id`
-- `requirements.program_id -> immigration_programs.program_id`
-- `requirements.program_id -> immigration_programs.program_id`
-- `rule_versions.requirement_version_id -> requirement_versions.version_id`
-- `rule_versions.rule_id -> rules.rule_id`
-- `rules.program_id -> immigration_programs.program_id`
-- `rules.program_id -> requirements.program_id`
-- `rules.program_id -> requirements.requirement_id`
-- `rules.requirement_id -> requirements.program_id`
-- `rules.requirement_id -> requirements.requirement_id`
-- `rules.requirement_id -> requirements.requirement_id`
-- `rules.requirement_version_id -> requirement_versions.version_id`
-- `ruleset_rules.rule_version_id -> rule_versions.version_id`
-- `ruleset_rules.ruleset_id -> rulesets.ruleset_id`
-- `rulesets.program_id -> immigration_programs.program_id`
-- `user_sessions.user_id -> api_users.user_id`
-- `visa_selections.applicant_id -> applicant_profiles.applicant_id`
-- `visa_selections.program_id -> immigration_programs.program_id`
-

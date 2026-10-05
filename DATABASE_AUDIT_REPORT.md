@@ -24,6 +24,20 @@ audit was originally written against.
 > index) were spot-checked live and confirmed still present and enforced, but this file's detailed
 > claims below were not re-verified line-by-line this round. Suite: **956 passed / 11 skipped /
 > 0 failed**. See `README.md` → "What works / what doesn't" for the authoritative status.
+>
+> **STATUS UPDATE — 2026-10-05**: two more migrations have landed: `a3c5e7f9b1d3` (widens
+> `requirement_id`/`rule_id` and every column that stores or FK-references them from
+> `VARCHAR(48)` to `VARCHAR(96)` — the old width silently truncated rows on PostgreSQL for long
+> `program_id`s, a real production bug found via `StringDataRightTruncation`) and `7c9e2a4f1b6d`
+> (widens `uq_rules_active_per_field` from `(program_id, field)` to
+> `(program_id, category, field)` — the old index was narrower than its own enforcing code's
+> logical key and incorrectly rejected a legitimate same-field-different-category ACTIVE rule).
+> Current alembic head: `7c9e2a4f1b6d`. `DBSTRUCTURE.md` has been regenerated live from this
+> revision, including real row counts from this session's verification work (not an empty
+> container). Also: `phase2`/`phase3`/`phase3c` folders were renamed to
+> `extraction`/`rules`/`assessment` (table/column names are unaffected — this was a Python
+> import-path change only). Suite: **1042 passed / 13 skipped / 3 pre-existing, environment-only
+> failures**. See `PLAN.md` for the current authoritative project status.
 
 Coverage:
 - 873-pass local suite before audit-hardening, **883 passed / 21 warnings** after adding 10

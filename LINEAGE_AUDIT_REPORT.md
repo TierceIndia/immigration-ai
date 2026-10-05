@@ -18,7 +18,20 @@
 > alias) for full traceability. Getting there also surfaced and fixed a severe, previously-latent
 > bug where the *evaluation* layer (not lineage/provenance itself) would have silently returned
 > UNKNOWN for every real rule regardless of applicant data — see `PLAN.md` Section 2 for detail.
-> Current, authoritative status: `README.md` → "What works / what doesn't".
+>
+> **STATUS UPDATE — 2026-10-05**: the lineage chain this report hardened was exercised again,
+> this time with **organically real, non-fixture content** for the first time — `SKILLED_189`'s
+> real extracted requirements compiled into 3 real ACTIVE rules, and a real applicant's assessment
+> against them produced a real, queryable provenance chain end-to-end (Assessment → Rule →
+> Requirement → Evidence → Chunk → Document Version → Document → Source → Government URL). Two
+> real bugs that could have corrupted or silently dropped lineage data were also found and fixed
+> this round: (1) raw snapshot files were not durably persisted — `government_documents.raw_path`
+> could point at a file that no longer existed on disk after any container recreation, breaking
+> the "trace back to the literal original document" guarantee this report cares about most; fixed
+> via a `raw_snapshots` Docker volume. (2) `requirement_id`/`rule_id` (the primary keys this whole
+> lineage chain hangs off) were silently truncated on PostgreSQL for long `program_id`s
+> (`VARCHAR(48)` too narrow) — fixed by widening to `VARCHAR(96)` with a fail-fast length guard
+> (migration `a3c5e7f9b1d3`). Current, authoritative status: `PLAN.md`.
 
 ---
 

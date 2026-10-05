@@ -747,11 +747,18 @@ created_at       → datetime
 
 ## 11. Docker Deployment
 
+**Updated 2026-10-05**: migrated off Playwright/Xvfb onto Patchright/headless (2026-10-01), and
+added a durable volume for raw snapshots (2026-10-05, closing a real evidence-traceability gap —
+see §16).
+
 ### Dockerfile
 
 ```dockerfile
 FROM python:3.12-slim
-# Installs requirements, copies src/, runs uvicorn
+# Installs requirements, copies src/, runs uvicorn.
+# Installs Patchright's own Chromium: `patchright install --with-deps chromium`.
+# The stock `playwright` package is deliberately not installed.
+# No Xvfb/xauth/DISPLAY — the browser runs headless, no X server needed.
 # CMD: uvicorn src.api.main:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
@@ -759,23 +766,32 @@ FROM python:3.12-slim
 
 ```yaml
 services:
-  db:
+  postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: immigration
       POSTGRES_USER: immigration
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_PASSWORD: immigration_dev
     volumes:
       - pgdata:/var/lib/postgresql/data
   api:
     build: .
-    depends_on: [db]
+    depends_on: [postgres]
+    volumes:
+      - raw_snapshots:/app/raw   # added 2026-10-05 — without this, every container
+                                 # recreation silently lost previously-fetched raw files
     environment:
-      DATABASE_URL: postgresql://immigration:${DB_PASSWORD}@db:5432/immigration
+      # Driver named explicitly (postgresql+psycopg2://) so the resolved driver doesn't
+      # depend on the installed SQLAlchemy version's default dialect (fixed 2026-10-01).
+      DATABASE_URL: postgresql+psycopg2://immigration:immigration_dev@postgres:5432/immigration
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS}
     command: >
-      sh -c "alembic upgrade head && uvicorn src.api.main:create_app --factory"
+      sh -c "alembic upgrade head && python src/seed_registry.py &&
+      uvicorn src.api.main:create_app --factory --host 0.0.0.0 --port 8000"
+volumes:
+  pgdata:
+  raw_snapshots:
 ```
 
 ---
@@ -883,9 +899,11 @@ Government Source
 | test_pipeline_runs.py | 42 | PipelineRun model, repo CRUD, API endpoints, computed counters, orchestrator integration |
 | test_e2e_scenarios.py | 14 | Multi-program, multi-version, gap engine, evaluation, orchestration |
 
-### Total: 899 collected — 897 passed / 2 skipped / 30 warnings, 0 failures (2026-09-15)
+### Total: 1058 collected — 1042 passed / 13 skipped, 3 pre-existing environment-only failures (2026-10-05)
 
-(The table above is a representative subset; the complete per-file inventory lives in the README test suite summary.)
+(The table above is a representative subset, and its per-file counts are from the 2026-09-15
+checkpoint — several of these files have grown since; the complete, current per-file inventory
+lives in the README test suite summary.)
 
 ---
 
@@ -978,7 +996,7 @@ Government Source
 
 ### Strengths
 
-- 899 collected / 897 passing (2 skipped) with comprehensive coverage
+- 1058 collected / 1042 passing (13 skipped, 3 pre-existing environment-only failures) with comprehensive coverage
 - Strong domain separation (LLM extraction vs deterministic rules)
 - Complete provenance chain from rule to government URL
 - Structured logging with PII redaction
@@ -1016,35 +1034,47 @@ Government Source
 | ~~Admin-only enforcement on every admin endpoint~~ | P1 | DONE | 2026-09-15: `POST /api/v1/admin/sync` was unauthenticated — now gated via shared `require_admin`; all admin routes audited |
 | ~~Playwright collection crash~~ | P1 | DONE | 2026-09-15: browser script moved out of `tests/` into `scripts/` — pytest no longer launches a browser at collection (driver is now Patchright) |
 | WORK/STUDENT/VISITOR sources | P3 | DONE | 2026-09-15: registry extended to 14 sources across all four categories (482/500/600 mains + occupation list + CRICOS) |
-| ~~Live Home Affairs fetch~~ | P3 | DONE (was PARTIAL) | 2026-09-25: `browser_fetcher.py` was launching Chromium `headless=True`, fingerprinted and blocked by the WAF — fixed to `headless=False` under Xvfb, **live-verified** real HTTP 200 with full content on 2 previously-blocked URLs. Not yet confirmed via a full sync across all affected sources. |
+| Live Home Affairs fetch | P1 | **PARTIAL, nuanced** | See the "Verification performed" correction below: the WAF blocks **intermittently under per-URL request volume**, independent of headless/headed or Playwright/Patchright. A full 14-source sync (2026-10-05) got 0/14 failures, but repeated direct hits to one URL afterward progressively degraded to a real 403. Not a categorical block, not evadable, not yet root-caused (needs the IP-vs-fingerprint diagnostic in `PLAN.md` Known Blocker #7). |
 | ~~Auth temporarily bypassed for manual testing~~ | P0 | DONE | Restored 2026-09-22; bypass fully deleted, not just toggled off |
 | ~~Phase2→Phase3C field-naming mismatch~~ | **P0** | DONE | 2026-09-25: found via the first real E2E run on Postgres — every real extracted rule would have evaluated UNKNOWN forever regardless of applicant data (dotted extraction-contract field names vs. `ApplicantProfile.to_rule_data()`'s flat names, exact-match dict lookup with zero normalization). Fixed in `rule_engine.py`. |
 | ~~Compiler rejects REQUIRED/NOT_REQUIRED operators~~ | P1 | DONE | 2026-09-25: `compile_requirement_to_rule` raised on any requirement using REQUIRED (health/character/skills-assessment/values-statement criteria — common in real government text). Now translated to EQ/True or EQ/False at compile time. |
 | ~~Ordinal string comparison is lexicographic~~ | P2 | DONE | 2026-09-25: `"vocational" >= "competent"` wrongly evaluated `True` (raw Python string comparison). Fixed with an explicit ordinal-scale lookup in `operators.py`. |
 | ~~Zero-chunk extraction silently reports COMPLETED~~ | P2 | DONE | 2026-09-25: a CHANGED/INITIAL fetch yielding 0 chunks now records a visible `PARTIAL` PipelineRun warning instead of an indistinguishable-from-success `COMPLETED`. |
-| `SRC-AU-MIGRATION-REGS-1994` wrong URL | P2 | DONE | 2026-09-25: fixed to a verified-real PDF deep-link (see `SOURCE_REGISTRY_REPORT.md` §2.4) |
+| `SRC-AU-MIGRATION-REGS-1994` wrong URL | P2 | DONE | 2026-09-25: fixed to a verified-real PDF deep-link (see `SOURCE_REGISTRY_REPORT.md` §2.4); **re-confirmed live 2026-10-05** — real sync extracted 13 real requirements |
 | `SRC-AU-CRICOS-REGISTER` yields 0 chunks | P2 | OPEN | Confirmed (2026-09-25) a genuine search-interface SPA, not fixable via render-wait; needs re-sourcing |
-| Raw immutable snapshot persistence | P1 | OPEN | Production fetch path still discards raw bytes after chunking; not addressed yet |
-| Fresh Docker build can't reach PostgreSQL | **P0, new** | OPEN | 2026-09-25: `ModuleNotFoundError: No module named 'psycopg'` at `alembic upgrade head` — SQLAlchemy resolving the psycopg v3 dialect but only psycopg2-binary installed |
+| ~~Raw immutable snapshot persistence~~ | P1 | **DONE (2026-10-05)** | `docker-compose.yml` had no volume for `/app/raw` — every container recreation silently lost previously-fetched raw files while `government_documents.raw_path` kept pointing at now-missing paths. Added a `raw_snapshots` named volume; verified a fetch's file survives a recreate with its hash matching the DB. |
+| ~~Fresh Docker build can't reach PostgreSQL~~ | P0 | **DONE (2026-10-01)** | `DATABASE_URL` now names `postgresql+psycopg2://` explicitly instead of a bare `postgresql://`. Residual: 2 tests fail in the host venv only (psycopg v3 importable, native `pq` wrapper isn't) — Docker itself is unaffected. |
+| ~~`requirement_id`/`rule_id` truncation on PostgreSQL~~ | **P0, new** | **DONE (2026-10-05)** | `String(48)` silently dropped rows for long `program_id`s on Postgres (`StringDataRightTruncation`) — SQLite never caught it since it doesn't enforce VARCHAR length. Widened to `String(96)` with a fail-fast length guard (migration `a3c5e7f9b1d3`). |
+| `SRC-AU-600-MAIN` (and 6 other `immi.homeaffairs.gov.au` pages) yield 0 chunks | **P1** | **Partially done — two bugs, not one** | (1) DONE: content sat inside a legacy ASP.NET `<form>` that `extractor_html.py` deleted wholesale as noise — fixed by unwrapping, not decomposing, `<form>` tags. (2) Found the same day, bigger: a full-registry sync still showed 7/14 sources at 0 chunks on a genuinely successful fetch — these Angular pages render real content from a hidden-input JSON blob client-side, *after* `domcontentloaded`, and `browser_fetcher.py` was capturing too early. Fixed with a bounded wait for a real structural selector; unit-tested against the real captured shape; **live reconfirmation blocked** by the WAF (see row above) as of this writing. |
+| ~~`uq_rules_active_per_field` narrower than its own invariant~~ | **P1, new** | **DONE (2026-10-05)** | Covered only `(program_id, field)`; `activate_rule`'s own logical key is `(program_id, category, field)`. A legitimate same-field-different-category ACTIVE rule was incorrectly rejected. Widened via migration `7c9e2a4f1b6d`. |
+| **NEW**: Gemini schema-adherence gap on `SRC-AU-600-MAIN` content | P2 | OPEN | Found 2026-10-05 only because the 0-chunk bug above is fixed: all 16 candidate chunks from this page return schema-violating JSON (wrong keys, invalid enums) — 0 requirements persisted, vs. 13/13 and 2/2 success on other real sources with the same model. Not investigated further. |
 | Real WORK/STUDENT/VISITOR gold data | P3 | OPEN | Gold dirs scaffolded with zero-item AWAITING_REAL_SOURCE placeholders (no fabricated evidence); skilled/ populated with real verbatim gold |
 | Multi-country deferred | P3 | OPEN | Australia only, NZ/Canada/etc. later |
 | 491 real-world coverage | P3 | OPEN | Partial real scenario validation |
+| Applicant-facing frontend | P2 | OPEN | A separate **minimal admin console** now exists (`frontend/`, 2026-10-05 — login, sources, pipeline runs); the applicant-facing product UI is unstarted |
 
-### Verification performed (2026-08-27; re-verified 2026-09-15; re-verified 2026-09-25)
+### Verification performed (2026-08-27; re-verified 2026-09-15, 2026-09-25, 2026-10-05)
 
-1. **956 passed / 11 skipped / 0 failed** (2026-09-25), up from 899 collected / 897 passed / 2
-   skipped at the 2026-09-15 checkpoint — the growth is real new regression coverage for every bug
-   found and fixed since (auth restoration, API audit, field-mapping fix, operator translation,
-   ordinal comparison, zero-chunk PARTIAL, headless assertion, source-registry content).
-2. **Real PostgreSQL**: `docker compose up -d postgres` + `alembic upgrade head`, then full ORM pipeline Country → Program → Source → Document → Version → Chunk → Requirement → Rule (DRAFT → VALIDATED → APPROVED → ACTIVE). FK constraints and NOT NULL enforced correctly. **2026-09-25: the full knowledge-to-assessment E2E test now also passes against real PostgreSQL** — sync → extract → approve → compile → validate → approve → activate → PASS/FAIL/UNKNOWN → gaps, with correct provenance (it failed on first run, surfacing the field-mapping and operator bugs above).
-3. **Live fetch**: Home Affairs returns 403 ACCESS_BLOCKED to the plain-HTTP fetcher — correctly classified, recorded, and source demoted (failure-safe by design). **Correction (2026-10-01): the earlier claim that a headed Playwright browser returned HTTP 200 with full content on these pages is false.** A genuine headless Patchright Chromium was run live against the same Home Affairs URLs and still received 403 — headed mode never defeated the WAF, and the browser tier does not raise source coverage. The browser tier remains a generic escalation path for JS-rendered or bot-protected sources, not a Home Affairs workaround.
+1. **1042 passed / 13 skipped / 3 failed** (2026-10-05), up from 956 passed / 11 skipped / 0 failed
+   at the 2026-09-25 checkpoint — the growth is real new regression coverage for every bug found
+   and fixed since: requirement_id/rule_id truncation, the ACTIVE-rule category-uniqueness gap, the
+   `<form>`-unwrapping extraction fix, the background-sync lock-ordering race, raw-snapshot
+   durability, and the Playwright→Patchright migration. The 3 failures are pre-existing and
+   environment-only (host-venv psycopg v3, local Patchright-binary-path test), not caused by any
+   of this work — see §16 Gaps.
+2. **Real PostgreSQL**: `docker compose up -d postgres` + `alembic upgrade head`, then full ORM pipeline Country → Program → Source → Document → Version → Chunk → Requirement → Rule (DRAFT → VALIDATED → APPROVED → ACTIVE). FK constraints and NOT NULL enforced correctly. **2026-10-05: the full chain was run for real, not just the E2E test fixture** — `SKILLED_189` has 3 real ACTIVE rules from real extracted requirements, and a real applicant's assessment against them produced a real `ruleset_hash`/`rule_version` with correct PASS/UNKNOWN/gap output.
+3. **Live fetch**: Home Affairs returns 403 ACCESS_BLOCKED to the plain-HTTP fetcher — correctly classified, recorded, and source demoted (failure-safe by design). **Correction (2026-10-01)**: the earlier claim that a headed Playwright browser reliably returned HTTP 200 on these pages is false — a genuine headless Patchright Chromium still received 403 on the same URLs; headed mode never defeated the WAF. **Further data (2026-10-05)**: the real pattern is a WAF that blocks **intermittently under per-URL request volume** — a full 14-source sync got 0/14 failures the same day a repeatedly-hit single URL degraded to a 403. The browser tier remains a generic, honest escalation path, not a guaranteed Home Affairs workaround, and is not being made more aggressive in response (no evasion).
 4. **CLI Phase 1/2**: offline pipeline + extraction run_extraction against DOC-AU-189-MAIN extract 6 validated requirements with category-aware prompt wiring.
 5. **Category-aware gold harness**: per-category dirs created; skilled gold (189 + 190, 29 items) migrated; work/student/visitor zero-item placeholders; integrity report clean (no contract violations, no cross-category leak).
+6. **Folder structure** (2026-10-05): `phase2`/`phase3`/`phase3c` renamed to `extraction`/`rules`/`assessment`; fetch-related modules grouped under `src/fetch/`; `change_detector.py`/`hashing.py` grouped under `src/change_detection/`. One rename at a time, full suite re-run after each, same pass/fail/skip baseline held throughout.
+7. **Minimal admin frontend** (2026-10-05): `frontend/` (plain React + Vite) — login, sources dashboard, pipeline runs, a sync-now button with background-job polling — verified against a real running backend (real login, real data, real sync trigger) via a real headless browser, not just "it compiles."
 
 ### Next Milestones
 
-1. **Fill real gold datasets** for WORK/STUDENT/VISITOR categories (sources now registered; dirs scaffolded: `data/gold/{skilled,work,student,visitor}/`)
-2. **Operationalize live capture** of Home Affairs / CRICOS content via the browser path or official API
-3. **Multi-country support** (NZ, Canada, UK)
-4. **491 real-world scenario coverage**
+1. **Root-cause the intermittent Home Affairs WAF blocking** (§16 Gaps) — an IP/network-vs-fingerprint diagnostic, not a retry/evasion response
+2. **Investigate the Gemini schema-adherence gap** on `SRC-AU-600-MAIN`-style content (§16 Gaps)
+3. **Prove rule supersession on real data** — the one remaining box in `PLAN.md` §6's Definition of Done
+4. **Fill real gold datasets** for WORK/STUDENT/VISITOR categories (sources now registered; dirs scaffolded: `data/gold/{skilled,work,student,visitor}/`)
+5. **Multi-country support** (NZ, Canada, UK)
+6. **491 real-world scenario coverage**
 5. **RAG & Recommendations** — LLM explains rules, suggests pathways

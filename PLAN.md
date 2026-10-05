@@ -1,6 +1,6 @@
 # AU Immigration Knowledge & Eligibility Platform — Master Plan
 
-**Generated**: 2026-09-21. **Last updated**: 2026-09-25.
+**Generated**: 2026-09-21. **Last updated**: 2026-10-05.
 **Purpose**: Map the full platform vision against what is actually built and verified today, and
 sequence the concrete next moves. This file is a living planning document — update it as work
 lands, don't let it go stale like the old README did.
@@ -10,20 +10,47 @@ possible, against the actual running stack (`docker compose up`, real PostgreSQL
 not assumed from a prior summary. See `README.md` for the day-to-day operational doc; this file is
 the strategic one.
 
-**Since 2026-09-21, in order**: restored real authentication (deleted the temporary bypass
-entirely); a full API endpoint audit (50 endpoints inventoried — admin-auth pairing and
-route-ordering both confirmed clean, no removal candidates found, 10 endpoints flagged with zero
-route-level test coverage); found and fixed a severe, previously-undiscovered bug where every real
-extracted rule would have evaluated UNKNOWN forever regardless of applicant data (a field-naming
-mismatch between the Phase 2 extraction contract and Phase 3C's `ApplicantProfile.to_rule_data()`);
-fixed the compiler rejecting `REQUIRED`/`NOT_REQUIRED` operators outright; got the full
-knowledge-to-assessment E2E test passing against real PostgreSQL for the first time; fixed a
-lexicographic-vs-ordinal string comparison bug (`"vocational" >= "competent"` was wrongly `True`);
-fixed a silent-success bug where a zero-chunk extraction reported a clean `COMPLETED` instead of a
-visible `PARTIAL` warning; and — the biggest single finding — discovered the browser-escalation
-fetcher was launching Chromium `headless=True`, which the Home Affairs WAF fingerprints and blocks;
-switching to `headless=False` under Xvfb was live-verified to turn real 403s into real 200s on
-previously-blocked government pages. Full detail in the sections below.
+**Since 2026-09-25, in order** (the biggest round of real fixes yet):
+fixed a `requirement_id`/`rule_id` truncation bug that silently dropped real rows on PostgreSQL for
+any program with a long program_id (`REQUIRED String(48)` widened to `String(96)` via migration,
+with a fail-fast length guard instead of relying on the database to catch it); found and fixed the
+real root cause of `SRC-AU-600-MAIN` (and several other `immi.homeaffairs.gov.au` pages) producing
+zero document chunks — the extractor was decomposing every `<form>` tag as noise, which deleted a
+page's entire content when that page's real body happened to sit inside a legacy ASP.NET postback
+`<form>` wrapper; fixed a real race in the background-sync job where the sync lock was released
+*after* the job was marked `COMPLETED` in the job registry, so a client polling for completion could
+briefly see "done" while a next-sync request still got a spurious 409; migrated the browser
+escalation path off Playwright entirely onto **Patchright, headless** (Xvfb/`headless=False`
+infrastructure removed) — see the correction in §16 of `DESIGN.md`: this does **not** reliably
+defeat the Home Affairs WAF, which blocks intermittently (see Known Blockers below), so it is not
+the "coverage fix" earlier entries in this file assumed; **fixed the raw-snapshot persistence gap
+that had been open since 2026-09-21** — `docker-compose.yml` had no volume for `/app/raw`, so every
+container recreation silently lost every previously-fetched raw file while
+`government_documents.raw_path` kept pointing at now-missing paths (found by checking a real
+`raw_path` against the actual file on disk, not trusting the DB row); found and fixed a second DB
+constraint bug the same way — `uq_rules_active_per_field` only covered `(program_id, field)`,
+narrower than `activate_rule`'s own `(program_id, category, field)` logical key, so a legitimate
+second ACTIVE rule sharing a field but a different category was incorrectly rejected; renamed every
+`phase2`/`phase3`/`phase3c`-numbered folder to a meaningful name
+(`src/extraction`, `src/rules`, `src/assessment`, `src/change_detection`, `src/fetch`), one rename
+at a time with a full-suite re-run after each; and built a minimal read-only admin frontend
+(`frontend/`, plain React + Vite — login, sources dashboard, pipeline runs, a "run sync now" button)
+against the existing API with no new backend routes needed. **Also proved, for the first time, a
+real (non-test-fixture) program through the live pipeline**: `SKILLED_189` now has 3 real,
+ACTIVE rules compiled from real extracted requirements with real evidence text, and a real
+assessment run against a real applicant produced a real `ruleset_hash`/`rule_version` with correct
+PASS/UNKNOWN/gap output — see §6 below, most Definition-of-Done boxes are now checked. Full detail
+in the sections below.
+
+**Since 2026-09-21** (earlier round, kept for history): restored real authentication (deleted the
+temporary bypass entirely); a full API endpoint audit (50 endpoints inventoried); found and fixed a
+severe bug where every real extracted rule would have evaluated UNKNOWN forever regardless of
+applicant data (a field-naming mismatch between the extraction contract and
+`ApplicantProfile.to_rule_data()`); fixed the compiler rejecting `REQUIRED`/`NOT_REQUIRED`
+operators outright; got the full knowledge-to-assessment E2E test passing against real PostgreSQL
+for the first time; fixed a lexicographic-vs-ordinal string comparison bug
+(`"vocational" >= "competent"` was wrongly `True`); fixed a silent-success bug where a zero-chunk
+extraction reported a clean `COMPLETED` instead of a visible `PARTIAL` warning.
 
 ---
 
@@ -61,23 +88,23 @@ Build an AI-powered Immigration Consultancy Platform, Australia-first, that:
 | Backend API | FastAPI or NestJS | ✅ FastAPI, `src/api/` |
 | Database | PostgreSQL | ✅ PostgreSQL 16 (prod), SQLite in-memory (tests) — 30 tables, real FK/unique/check constraints verified live |
 | Scheduler | Reliable, scheduled, failure-safe | ✅ APScheduler, daily fixed-clock trigger (`GOVERNMENT_SYNC_HOUR_UTC`); ⚠️ never proven reliable against real government content over time — only run manually so far |
-| Fetch layer | Scraping/fetching, no anti-bot evasion implied as needed but not explicitly required | ✅ Two-tier: plain HTTP (`fetcher.py`) → genuine headed (`headless=False`) Chromium escalation under Xvfb (`browser_fetcher.py`); explicitly **forbids** stealth/evasion by design. **2026-09-25: fixed a real bug where this was `headless=True`, which the Home Affairs WAF fingerprints and blocks — live-verified switching to headed gets real 200s on previously-blocked pages.** |
-| **Raw immutable snapshots** | Required | ❌ **NOT actually happening in the production path.** `src/utils/fetch_document.py` (the live API/Docker path) stores only a synthetic placeholder string as `raw_path` (`"fetch:{document_id}:v{n}"`) and discards the real fetched bytes after chunking. Only the legacy CLI script `pipeline.py` writes real bytes to disk (`raw/AU/...`). **This is a genuine gap against the spec — see Move 1 below.** |
+| Fetch layer | Scraping/fetching, no anti-bot evasion implied as needed but not explicitly required | ✅ Two-tier: plain HTTP (`src/fetch/fetcher.py`) → genuine browser escalation via **Patchright, headless** (`src/fetch/browser_fetcher.py`); explicitly **forbids** stealth/evasion by design (no proxy rotation, no CAPTCHA bypass, no credential abuse). **Migrated off Playwright/Xvfb entirely 2026-10-01.** ⚠️ **Correction**: headless Patchright does **not** reliably defeat the Home Affairs WAF — it blocks intermittently, apparently under per-URL request volume (confirmed live 2026-10-05: the same URL went 200→0-chunks→403 across repeated requests in one session, while URLs hit only once stayed healthy). The browser tier is a genuine, honest escalation path, not a guaranteed Home Affairs workaround — see Known Blockers. |
+| **Raw immutable snapshots** | Required | ✅ **FIXED 2026-10-05.** `docker-compose.yml`'s `api` service had no volume for `/app/raw`, so every container recreation (rebuild, `--rm` one-off run, crash restart) silently lost every previously-fetched raw snapshot while `government_documents.raw_path` kept pointing at now-missing files — found by checking a real `raw_path` against the actual file on disk instead of trusting the DB row. Added a `raw_snapshots` named volume; verified a fresh fetch's file survives a container recreate with its hash matching the DB exactly. |
 | Document versioning + hashing | Required | ✅ `document_versions` (content_hash, version_number, change_type), enforced unique constraints, verified live |
 | Change detection | Required | ✅ `change_detector.classify_change` — INITIAL/CHANGED/UNCHANGED, hash-before-fetch-vs-fresh-fetch (a real bug here was found and fixed in an earlier session) |
 | LLM extraction | OpenAI, assistive only | ✅ OpenAI (`gpt-4o-mini`) **and now Gemini** (`gemini-flash-lite-latest`), both fail-fast on missing key, both routed through the same governance layer (budget/rate-limit/cache), never auto-activates anything |
 | Evidence validation | Required, anti-fabrication | ✅ evidence must be an exact substring of source chunk text; schema validation; `requirement_evidence` table with chunk/version lineage FKs |
 | Human review gate | Required before rule activation | ✅ `requirements.status`: DRAFT/VALIDATED/NEEDS_REVIEW/APPROVED/REJECTED/SUPERSEDED/CONFLICT, with `requirement_review` audit trail |
 | Deterministic Rule Engine | Operators, AND/OR/NOT, conditions, exceptions, dependencies, versioning, PASS/FAIL/UNKNOWN, gap analysis | ✅ `src/rules/` — 12 operators, 7 expression types, fully tested (200+ tests). **2026-09-25: found and fixed a severe integration bug at the Phase2→Phase3C seam** — `rule.field` used the extraction contract's dotted names (`applicant.points_score`) while `ApplicantProfile.to_rule_data()` used flat names (`points`); the rule engine did an exact-match dict lookup with zero normalization, so **every real extracted rule would have evaluated UNKNOWN forever, regardless of applicant data**. Fixed in `rule_engine.py`'s `_resolve_field_value()`. Also fixed the compiler (`rule_compiler.py`) rejecting `REQUIRED`/`NOT_REQUIRED` operators outright — used by real extracted health/character/skills-assessment criteria — and a lexicographic-vs-ordinal string bug in `operators.py` (`"vocational" >= "competent"` was wrongly `True`). The full knowledge-to-assessment E2E test now passes against real PostgreSQL. |
-| Rule status machine | DRAFT→VALIDATED→APPROVED→ACTIVE, transactional supersession | ✅ DB-enforced: `uq_rules_active_per_field` partial unique index guarantees at most one ACTIVE rule per (program, field) |
+| Rule status machine | DRAFT→VALIDATED→APPROVED→ACTIVE, transactional supersession | ✅ DB-enforced: `uq_rules_active_per_field` partial unique index guarantees at most one ACTIVE rule per (program, category, field). **Bug found + fixed 2026-10-05**: the index previously covered only `(program_id, field)`, narrower than `EnhancedRuleRepo.activate_rule`'s own `(program_id, category, field)` logical key — a legitimate second ACTIVE rule sharing a field but a different category was incorrectly rejected as a duplicate. Widened via migration `7c9e2a4f1b6d`, regression test added, live-verified against real Postgres both ways (genuine duplicate still rejected; the previously-wrong rejection now succeeds). |
 | Provenance/lineage | Rule → Requirement → Evidence → Chunk → Document Version → Document → Source | ✅ modeled end-to-end in the schema (FK chains verified) |
 | PipelineRun audit trail | Required | ✅ every sync execution recorded — status, hashes, counts, errors, change-detection metadata |
 | Admin APIs | Required | ✅ rules, requirements, documents, sources, runs, knowledge-state, schema-report — all implemented and functionally verified live today |
 | Auth/authorization | Required | ✅ Real JWT + role-based admin gate, fully enforced. Was deliberately bypassed for manual testing 2026-09-21→22; the bypass was **fully deleted** (not left as a toggle) once testing was done. 401 (anon) / 403 (non-admin) / 200 (admin) live-verified across all admin routes; API endpoint audit (2026-09-23) confirmed consistent enforcement on all 36 admin-gated routes. |
-| Docker deployment | Required | ✅ — three real bugs found and fixed across sessions: `docker-compose.yml` not forwarding LLM API keys, `Dockerfile` not copying `prompts/`, and (2026-09-25) `browser_fetcher.py`'s headless mismatch requiring Xvfb infrastructure (`docker-entrypoint.sh`). ⚠️ **New gap found 2026-09-25**: a fresh `docker compose up -d --build` fails at `alembic upgrade head` with `ModuleNotFoundError: No module named 'psycopg'` — SQLAlchemy resolves the psycopg v3 dialect but only `psycopg2-binary` is installed. Not yet fixed. |
-| Eligibility engine (applicant-facing) | PASS/FAIL/UNKNOWN, gaps, questions | ✅ `src/assessment/` — assessment + gap engine, fully tested (97+ tests). **2026-09-25: proven end-to-end against real PostgreSQL** via the full knowledge-to-assessment E2E test (PASS/FAIL/UNKNOWN all exercised, gaps generated correctly) — though still via realistic test-fixture content run through the real pipeline, not yet via organically-scraped-and-approved real government content (see Section 4). |
+| Docker deployment | Required | ✅ — bugs found and fixed across sessions: `docker-compose.yml` not forwarding LLM API keys, `Dockerfile` not copying `prompts/`, the Playwright/Xvfb→Patchright/headless migration (2026-10-01, simplified the image — no more `docker-entrypoint.sh`/Xvfb), the psycopg v3/v2 dialect-drift gap (2026-10-01: `DATABASE_URL` now names `postgresql+psycopg2://` explicitly instead of a bare `postgresql://`, so the resolved driver no longer depends on the installed SQLAlchemy version), and (2026-10-05) the raw-snapshot volume gap above. ⚠️ **Local-venv-only residual**: 2 tests (`TestPostgreSQLCodePaths`) fail outside Docker because `psycopg` v3 is importable in the host venv but its native `pq` wrapper isn't — Docker itself is unaffected since it pins the driver explicitly; not yet cleaned up. |
+| Eligibility engine (applicant-facing) | PASS/FAIL/UNKNOWN, gaps, questions | ✅ `src/assessment/` — assessment + gap engine, fully tested (97+ tests). **2026-10-05: proven end-to-end against real PostgreSQL with organically-real content for the first time** — `SKILLED_189`'s real, LLM-extracted "points threshold ≥ 65" requirement, compiled into a real ACTIVE rule, correctly PASSed a real applicant (points=70) with a real `ruleset_hash`/`rule_version`, while two program-level fields (not applicant attributes) correctly resolved to UNKNOWN with real gaps — not a test fixture. |
 | Recommendation layer | Implied ("Immigration Recommendation") | ❌ NOT STARTED — no code, no design |
-| Next.js frontend | Required | ❌ NOT STARTED — zero frontend code anywhere in the repo; API-only today |
+| Next.js frontend (applicant-facing) | Required | ❌ NOT STARTED — no applicant-facing UI exists. **Not to be confused with** the new `frontend/` (2026-10-05): a separate, minimal **read-only admin console** (plain React + Vite — login, sources dashboard, pipeline runs, a "run sync now" button), built against the existing API with no new backend routes. It replaces nothing on Move 6/10 below, which are both still about the applicant-facing product UI. |
 | Redis | Required (spec architecture) | ❌ NOT STARTED — no Redis client, no caching/session layer beyond in-process governance cache |
 | Object storage (S3-class) | Implied by "immutable raw snapshots" | ❌ NOT STARTED — no blob storage integration at all; ties directly to the raw-snapshot gap above |
 | LangGraph orchestration | "where orchestration is genuinely required" | ❌ NOT USED — current orchestration is a straightforward hand-rolled Python pipeline (`government_sync.py`). Arguably **correct** for now: the pipeline is linear, not agentic, so LangGraph would add complexity without benefit yet. Revisit only if a genuinely multi-branch/agentic step emerges. |
@@ -98,107 +125,124 @@ Approval → Activation → Eligibility Assessment → Gap/Questions → Recomme
 | Source Registry | ✅ DONE | 14 sources seeded, SKILLED(9)/WORK(2)/STUDENT(2)/VISITOR(1), DB-enforced URL uniqueness |
 | Scheduler | ✅ DONE (mechanism) / ⚠️ UNPROVEN (reliability) | APScheduler wired; only ever run manually/on-demand so far in this environment |
 | Fetch | ✅ DONE, **improved 2026-09-25** | Plain HTTP → headed (`headless=False`) browser escalation under Xvfb, honest classification, no evasion. Live-verified to get real content from 2 previously-blocked Home Affairs URLs. |
-| **Raw Snapshot** | ❌ **GAP, still open** | See Section 2 — production path still discards raw bytes after chunking; not addressed this round |
+| **Raw Snapshot** | ✅ **DONE 2026-10-05** | See Section 2 — `docker-compose.yml` now has a durable volume; verified a fetch's file survives a container recreate with its hash matching the DB |
 | Hash/Change Detection | ✅ DONE | Verified live: hash computed before fetch, classified against fresh fetch |
 | Document Version | ✅ DONE | `document_versions`, immutable, uniqueness on (document_id, content_hash) |
-| Extraction | ✅ DONE (mechanism, now proven on real Postgres via E2E test) | OpenAI + Gemini both wired and working. The field-mapping and operator-rejection bugs that would have silently broken every real extraction are now fixed (see Section 2). `SRC-AU-MIGRATION-REGS-1994`'s URL is fixed and verified to yield real Subclass 189 text (see Section 4) but hasn't yet been run through a live sync in this environment. `SRC-AU-CRICOS-REGISTER` confirmed unrecoverable without a materially different approach (search-interface SPA, tried render-wait). |
-| Evidence Validation | ✅ DONE (mechanism, proven via E2E) | Verbatim-substring evidence check, schema validation — proven correct via the full knowledge-to-assessment E2E test; still not yet exercised against organically-scraped real content |
-| Requirement (DRAFT/NEEDS_REVIEW) | ✅ DONE (mechanism, proven via E2E) | Zero real (non-test) requirement rows exist in the DB today |
-| Review (admin approve/reject) | ✅ DONE (mechanism, proven via E2E) | API fully implemented and tested; never used on a real requirement |
-| Rule Compilation | ✅ DONE (mechanism, proven via E2E) | `compile_approved_requirements()`; the `REQUIRED`/`NOT_REQUIRED` operator-rejection bug that would have blocked common real criteria is fixed |
-| Validation (DRAFT→VALIDATED) | ✅ DONE (mechanism, proven via E2E) | Proven correct in the E2E test; never exercised on organically-real data |
-| Admin Approval (VALIDATED→APPROVED) | ✅ DONE (mechanism, proven via E2E) | Proven correct in the E2E test; never exercised on organically-real data |
-| Activation (APPROVED→ACTIVE) | ✅ DONE (mechanism, proven via E2E) | Proven correct in the E2E test (transactional supersession) — **zero ACTIVE rules exist from organically-real data today** |
-| Eligibility Assessment | ✅ DONE, **proven correct 2026-09-25** | The full knowledge-to-assessment E2E test now passes against real PostgreSQL: PASS (eligible), FAIL (age=50 vs age<45 rule), UNKNOWN (missing age) all correctly produced, with the field-mapping fix. `POST /assessments/evaluate` still returns 400 in the live DB today because no organically-real ACTIVE rule exists yet. |
-| Gap/Questions | ✅ DONE (mechanism, proven via E2E) | Gap generation for the UNKNOWN field verified correct in the E2E test, with full field traceability (`Gap.field` preserves the real rule field name) |
+| Extraction | ✅ **DONE, now proven with real (non-fixture) content** | OpenAI + Gemini both wired and working. **2026-10-05**: `SKILLED_189` sources (`SRC-AU-189-MAIN`, `-POINTS-STREAM`, `-POINTS-TABLE`, `SRC-AU-SKILLSELECT-EOI`) synced for real and produced 2 real requirements with real evidence text. `SRC-AU-MIGRATION-REGS-1994` also run for real: 13 real requirements extracted. **Correction, same day**: the "`SRC-AU-600-MAIN` fixed" claim below was incomplete. The
+`<form>`-unwrapping fix was real and necessary but **not sufficient** — a full-registry sync
+afterward showed 7 of 14 sources (every `immi.homeaffairs.gov.au` "-MAIN"-type page, including
+600-MAIN itself) back at 0 chunks on a genuinely successful 200 fetch. Direct inspection of the
+actual persisted raw bytes (not a live re-fetch) found the real, bigger cause: these Angular pages
+serve their content as an HTML-escaped JSON blob inside a hidden `<input>`'s `value` attribute, and
+only render real `<p>`/`<ul>`/`<table>` DOM nodes via client-side JS **after**
+`domcontentloaded` fires — `browser_fetcher.py` was capturing `page.content()` immediately, racing
+the page's own rendering. Confirmed identically on both `SRC-AU-600-MAIN` and `SRC-AU-189-MAIN`'s
+saved raw files. Fixed by waiting for a real structural selector
+(`main :is(p, h1, h2, h3, h4, h5, h6, ul, ol, table)`, bounded 8s timeout, falls through honestly
+if it never appears) before capturing. Unit-tested against the real captured JSON-blob shape and a
+genuinely-contentless-SPA case. **Live reconfirmation is currently blocked** — the WAF appears to
+be under a broader block from this session's cumulative test volume (even previously-untouched
+URLs in the same domain are now 403ing); per the no-evasion/no-retry-amplification principle, no
+further live attempts were made. Needs a cooldown before the next live check. `SRC-AU-CRICOS-REGISTER`
+remains unrecoverable without a materially different approach (search-interface SPA, tried
+render-wait) — its 0-chunk result was already confirmed to be a genuinely different case (no
+hidden-input JSON blob at all), not affected by either fix. |
+| Evidence Validation | ✅ DONE, proven with real content | Verbatim-substring evidence check, schema validation — proven correct via the E2E test and now also against real extracted `SKILLED_189`/`LEGISLATION_MIGRATION_REGS` requirements |
+| Requirement (DRAFT/NEEDS_REVIEW) | ✅ DONE, proven with real content | Real (non-test) rows now exist: 2 for `SKILLED_189`, 13 for `LEGISLATION_MIGRATION_REGS` |
+| Review (admin approve/reject) | ✅ DONE, exercised on real data | Used for real 2026-10-05 to approve `SKILLED_189`'s 2 extracted requirements on the way to activation |
+| Rule Compilation | ✅ DONE, exercised on real data | `compile_approved_requirements()` compiled `SKILLED_189`'s real approved requirements into 3 real `DRAFT` rules 2026-10-05 |
+| Validation (DRAFT→VALIDATED) | ✅ DONE, exercised on real data | All 3 real `SKILLED_189` rules driven through DRAFT→VALIDATED→APPROVED→ACTIVE for real |
+| Admin Approval (VALIDATED→APPROVED) | ✅ DONE, exercised on real data | Same real run as above |
+| Activation (APPROVED→ACTIVE) | ✅ **DONE — real ACTIVE rules now exist** | 3 real `SKILLED_189` rules are `ACTIVE` today: `applicant.visa_application_timeframe` (APPLICATION), `applicant.visa_application_window` (APPLICATION), `applicant.points_score` (POINTS) |
+| Eligibility Assessment | ✅ **DONE, proven correct with real data 2026-10-05** | A real applicant (points=70) assessed against the 3 real `SKILLED_189` ACTIVE rules above: the points rule correctly PASSed (`70 >= 65`), the two program-level fields correctly resolved UNKNOWN (they are facts about the visa program/process, not applicant attributes — documented, intentional, not a bug), real `ruleset_hash`/`rule_version`/`rule_version_id` recorded, real gaps generated. |
+| Gap/Questions | ✅ DONE, proven with real data | The 2 UNKNOWN program-level fields above produced real, correctly-worded gaps with full field traceability |
 | Recommendation | ❌ NOT STARTED | No design, no code |
 
-**The pattern has shifted**: as of 2026-09-21, the *mechanism* was built and unit-tested but unproven end-to-end. As of 2026-09-25, **the mechanism is now proven end-to-end against real PostgreSQL** (full knowledge-to-assessment E2E test passing) — and doing so surfaced and fixed 3 real bugs that would have silently broken it with actual government content. What remains is running this exact, now-proven chain against organically-scraped-and-approved real government content (not test fixtures) — see Section 4/5.
+**The pattern has shifted again**: as of 2026-09-25, the mechanism was proven end-to-end but only against test-fixture content. As of 2026-10-05, **the exact same chain has now been run for real** — `SKILLED_189` has real extracted requirements, real approved/activated rules, and a real assessment with a real `ruleset_hash` — closing most of spec objective #10 (see Section 6). What's left is breadth (more programs, more sources recovering from the WAF-blocking issue) and the supersession/second-version proof, not whether the mechanism works on real content.
 
 ---
 
-## 4. Known Blockers (updated 2026-09-25)
+## 4. Known Blockers (updated 2026-10-05)
 
-1. ~~12 of 14 sources are `NEEDS_MANUAL_CAPTURE`~~ — **likely resolved, not yet confirmed at scale.** The root cause (headless Chromium fingerprinting) is fixed and live-verified on 2 of the 12 URLs. The DB status is still `NEEDS_MANUAL_CAPTURE` for all 12 since that was a direct diagnostic test, not a full sync run — re-syncing them (or using `manual-capture`, which also resets status) is the next concrete step. See Move 4.
+1. ~~12 of 14 sources are `NEEDS_MANUAL_CAPTURE`~~ — **superseded.** All 14 sources are back to `ACTIVE` as of 2026-10-05's live syncs. The real, current blocker is #7 below: the WAF blocks intermittently under volume, not categorically.
 2. **`SRC-AU-CRICOS-REGISTER` still produces zero usable content** — confirmed (2026-09-25) to be a genuine search-interface SPA with no default listable content, not fixable via render-wait. Needs re-sourcing (e.g. a CRICOS bulk-data export/API, if one exists) or a materially larger fetch strategy.
-3. ~~`SRC-AU-MIGRATION-REGS-1994` URL resolves to an index page~~ — **FIXED 2026-09-25.** Now points at a verified-real PDF (Volume 2 of 4) containing genuine Subclass 189 "189.2—Primary criteria" text. Caveat: the URL embeds the compilation date and has no stable dateless permalink — will need re-deriving when the regulation is next re-compiled.
-4. **Raw snapshots still aren't persisted** in the live path (Section 2) — unaddressed this round, still a real evidence-traceability gap against the spec.
+3. ~~`SRC-AU-MIGRATION-REGS-1994` URL resolves to an index page~~ — **FIXED 2026-09-25, re-confirmed live 2026-10-05** (13 real requirements extracted, requirement_id/rule_id intact post-truncation-fix). Caveat unchanged: the URL embeds the compilation date and has no stable dateless permalink — will need re-deriving when the regulation is next re-compiled.
+4. ~~Raw snapshots aren't persisted in the live path~~ — **FIXED 2026-10-05.** See Section 2.
 5. ~~Authentication is currently disabled~~ — **restored 2026-09-22.** The bypass was fully deleted, not toggled off.
-6. **The field-mapping and operator-rejection bugs that would have silently broken every real extraction are now fixed** (Section 2) — the mechanism is proven on real PostgreSQL via the E2E test, but genuinely real (non-test-fixture) data still hasn't been pushed through it in this environment.
-7. **NEW (2026-09-25): a fresh Docker build can't connect to PostgreSQL** — `ModuleNotFoundError: No module named 'psycopg'` at `alembic upgrade head`, because SQLAlchemy resolves the psycopg v3 dialect for the plain `postgresql://` URL but only `psycopg2-binary` is installed. Worked around during verification by calling fetch/extract functions directly, bypassing the ORM chain. **Not fixed** — blocks running a fresh full-stack sync through the actual Docker deployment until resolved.
+6. ~~The field-mapping and operator-rejection bugs~~ — **fixed 2026-09-25, now also proven on real (non-fixture) `SKILLED_189` data 2026-10-05** (Section 3).
+7. ~~A fresh Docker build can't connect to PostgreSQL~~ — **FIXED 2026-10-01** (`DATABASE_URL` now names `postgresql+psycopg2://` explicitly). **New, replacing this**: the Home Affairs WAF (`immi.homeaffairs.gov.au`) blocks **intermittently under request volume**, independent of headless vs. headed or Playwright vs. Patchright. Live-verified 2026-10-05: a full 14-source sync got 0/14 fetch failures, but a URL hit repeatedly afterward (direct debugging) progressively degraded from 200→0-chunks→outright 403, while URLs touched once in the same session stayed healthy. This looks like a per-URL rate limit, not an IP/fingerprint block — needs the dedicated IP/network-vs-fingerprint diagnostic (home-network browser test vs. app fetcher, same URL, same time) before deciding on a fix; **do not** respond by adding retries/evasion, which would make it worse and cross the project's no-evasion line.
+8. **NEW (2026-10-05): a Gemini schema-adherence gap**, found via a one-off capture of
+   `SRC-AU-600-MAIN` content that happened to render in time (69 real chunks, before the hydration
+   race below was understood) — **all 16** of its candidate chunks came back from Gemini with JSON
+   that ignores the strict requirement schema (wrong key names, extra wrapper keys, invalid enum
+   values) — 0 requirements persisted, 16 schema failures. The same Gemini model/prompt extracted
+   `SKILLED_189` and `LEGISLATION_MIGRATION_REGS` content successfully (13 + 2 real requirements).
+   Not yet investigated further or fixed.
+9. **NEW (2026-10-05), bigger than #10 implied at first**: the `SRC-AU-600-MAIN` 0-chunk bug has
+   **two separate root causes**, not one. The `<form>`-unwrapping fix (below) is real but was not
+   sufficient on its own — see the Section 2/3 correction for the second, systemic cause (an
+   Angular client-side-rendering race affecting 7 of 14 sources) and its fix, now implemented but
+   not yet live-reconfirmed (WAF currently blocking broadly from this session's own test volume).
+10. One genuine test/environment gap, not yet fixed — `test_patchright_missing_returns_launch_failure`
+    expects the "Patchright not installed" error path, but since Patchright *is* installed locally
+    (just without its Chromium binary downloaded on this particular host), it hits a different
+    failure message and the assertion fails. Pre-existing, unrelated to any of the above.
 
 None of these are design flaws — the architecture and failure-safety principles (fail visibly, never fabricate, never auto-activate) are sound and verified. They're **coverage/content/dependency gaps**, which is exactly what the next moves below close.
 
 ---
 
-## 5. Next Moves (sequenced, updated 2026-09-25)
+## 5. Next Moves (sequenced, updated 2026-10-05)
 
 ### ~~Move 0 — Guardrail~~ — DONE (2026-09-22)
 Real authentication restored; bypass fully deleted.
 
-### Move 1 — Fix raw snapshot persistence (closes the spec gap in Section 2) — STILL OPEN
-Make `fetch_document_and_store()` in `src/utils/fetch_document.py` actually persist the raw fetched
-bytes somewhere durable (filesystem volume to start, e.g. mirroring `pipeline.py`'s
-`raw/{country}/{category}/{source_id}/{date}/content.*` pattern; object storage later — see Move 8)
-and store a **real, dereferenceable path** in `raw_path` instead of the synthetic placeholder
-string. This is foundational: evidence traceability back to the literal original document is a
-core, non-negotiable design principle, and today it's not actually possible for anything fetched
-through the live API path. **Not addressed in the 2026-09-25 round — still the top code gap.**
+### ~~Move 1 — Fix raw snapshot persistence~~ — DONE (2026-10-05)
+`docker-compose.yml` now has a `raw_snapshots` named volume for `/app/raw`; verified a fresh
+fetch's file survives a container recreate with its hash matching the DB exactly. See Section 2.
 
-### Move 1.5 — NEW: fix the psycopg dependency drift blocking fresh Docker builds
-`ModuleNotFoundError: No module named 'psycopg'` at `alembic upgrade head` on a fresh
-`docker compose up -d --build`. Either pin `sqlalchemy` to a version that defaults to `psycopg2`
-for a bare `postgresql://` URL, or add `psycopg[binary]` to `requirements.txt` and decide which
-driver is canonical going forward. **Blocks Move 2 below from running through the real Docker
-deployment** (worked around during verification by calling fetch/extract functions directly).
+### ~~Move 1.5 — fix the psycopg dependency drift~~ — DONE (2026-10-01)
+`DATABASE_URL` now names `postgresql+psycopg2://` explicitly instead of a bare `postgresql://`, so
+the resolved driver no longer depends on the installed SQLAlchemy version's default dialect.
+Residual: 2 tests fail in the **host venv only** (`psycopg` v3 importable but its native `pq`
+wrapper isn't) — Docker itself pins the driver and is unaffected; cosmetic cleanup, not a real gap.
 
-### Move 2 — Get ONE source to produce real, non-fabricated content — PARTIALLY DONE
-- ~~Option B: fix `SRC-AU-MIGRATION-REGS-1994`'s URL~~ — **DONE 2026-09-25.** Now points at a
-  live-verified real PDF (Volume 2 of 4) containing genuine Subclass 189 Schedule 2 text
-  (452 chunks). **Not yet run through an actual sync** in this environment (blocked by Move 1.5) —
-  the content was verified via direct `fetcher.fetch()` + `extractor_pdf.extract_pdf()` calls, not
-  the full ORM-backed `fetch_document_and_store()` pipeline.
-- Option A (manually capture a blocked Home Affairs page) is now likely unnecessary for most
-  sources — the headless fix (Move "browser escalation," done 2026-09-25) may make the automated
-  path work directly. Worth trying a real sync before falling back to manual capture.
+### ~~Move 2 — Get ONE source to produce real, non-fabricated content~~ — DONE (2026-10-05)
+- `SRC-AU-MIGRATION-REGS-1994` synced for real: **13 real requirements** extracted, with intact
+  (non-truncated) `requirement_id`s post the truncation-bug fix.
+- `SKILLED_189`'s other sources (`SRC-AU-189-MAIN`, `-POINTS-STREAM`, `-POINTS-TABLE`,
+  `SRC-AU-SKILLSELECT-EOI`) also synced for real: 2 more real requirements.
+- Manual capture was not needed for either — the automated fetch path worked directly once the
+  truncation and raw-snapshot bugs were out of the way.
 
-**Next concrete step**: fix Move 1.5, then run `POST /admin/sync` for real and confirm an
-`extraction_runs` row with `requirements_extracted > 0` from `SRC-AU-MIGRATION-REGS-1994`'s real
-content — this is the one remaining piece of Move 2's acceptance criterion.
+### ~~Move 3 — Prove the full lifecycle end-to-end~~ — MOSTLY DONE (2026-10-05)
+The full chain has now been run for real, not just via the E2E test fixture:
+1. ✅ Synced `SRC-AU-MIGRATION-REGS-1994` and `SKILLED_189`'s sources for real (Move 2).
+2. ✅ Reviewed and approved `SKILLED_189`'s 2 real requirements.
+3. ✅ Validated → Approved → Activated the resulting 3 real rules (all `ACTIVE` today).
+4. ✅ Created a real applicant, ran a real assessment: the points-threshold rule correctly PASSed
+   (`70 >= 65`), the 2 program-level fields correctly resolved UNKNOWN with real gaps, real
+   `ruleset_hash`/`rule_version` recorded.
+5. ⬜ **Still open**: change the source content (or simulate a version bump) and confirm the
+   historical assessment is untouched while a new rule version supersedes the old one. This is the
+   one remaining step of Move 3 and of the Definition of Done in Section 6.
 
-### Move 3 — Prove the full lifecycle end-to-end (closes spec objective #10) — MECHANISM PROVEN, REAL DATA STILL PENDING
-The full knowledge-to-assessment E2E test (`tests/e2e/test_full_knowledge_to_assessment.py`) now
-**passes against real PostgreSQL** — sync → extract → approve → compile → validate → approve →
-activate → PASS/FAIL/UNKNOWN → gaps, with correct provenance. This proves the mechanism is sound
-and, crucially, surfaced and fixed 3 real bugs (field-mapping, operator-rejection, ordinal
-comparison) that would have silently broken it on actual government content. What's left: running
-this same proven chain against Move 2's real content instead of test fixtures —
-1. Sync `SRC-AU-MIGRATION-REGS-1994` for real (after Move 1.5) and confirm real extraction runs.
-2. Review and approve the real requirement(s) (`POST /admin/requirements/review/{id}/approve`).
-3. Validate → Approve → Activate the resulting rule(s).
-4. Create a real applicant, run a real assessment, confirm PASS/FAIL/UNKNOWN + gaps are correct.
-5. Change the source content (or simulate a version bump) and confirm the historical assessment
-   is untouched while a new rule version supersedes the old one.
-
-This remains the single most valuable milestone left — it converts "the mechanism is proven" into
-"the product has done this for real," which is explicitly what the spec calls the immediate
-objective.
-
-### Move 4 — Recover broad real coverage — LIKELY MUCH CHEAPER NOW
-With the headless fix, systematically re-syncing (not necessarily manually-capturing) the
-remaining Home Affairs sources may recover most of them automatically. Try a real sync first;
-fall back to `manual-capture` only for sources that still fail.
+### ~~Move 4 — Recover broad real coverage~~ — DONE for now, revisit if WAF blocking returns
+All 14 sources synced to `ACTIVE`/`OK` in the 2026-10-05 full-registry run — 0/14 fetch failures at
+that point. The remaining open issue is Known Blocker #7 (intermittent per-URL blocking under
+volume), not categorical coverage.
 
 ### Move 5 — ~~Re-verify auth~~ — DONE; ongoing loop-closing
-Auth confirmed restored (Move 0). Regression tests were added for every bug fixed in the
-2026-09-25 round (field-mapping, operator translation, ordinal comparison, zero-chunk PARTIAL,
-headless assertion, source-registry content). Full suite: 956 passed / 11 skipped / 0 failed.
+Auth confirmed restored (Move 0). Regression tests were added for every bug fixed since, across
+both the 2026-09-25 and 2026-10-05 rounds. Full suite: **1042 passed / 13 skipped / 3 pre-existing,
+unrelated failures** (local-venv-only psycopg v3 + one Patchright-binary-path test environment gap).
 
-### Move 6 — Minimal consultant/admin review workflow
-The spec assumes an active human review step. Today that's API-only. Before investing in a full
-frontend, decide: is a thin admin UI (even a simple internal tool) needed now, or is the existing
-Admin API + a script/Postman collection sufficient for the current phase? Recommend the latter
-until Move 3 is proven, then revisit.
+### Move 6 — Minimal consultant/admin review workflow — PARTIALLY DONE (2026-10-05)
+A minimal **read-only admin frontend** now exists (`frontend/` — login, sources dashboard, pipeline
+runs, run-sync-now). It does not yet cover the human *review* step itself (approve/reject a
+requirement, activate a rule) — those remain Admin-API-only. Decide whether to extend this same
+frontend with a requirement-review screen next, or keep review API-only until Move 3's last step
+and broader source coverage are further along.
 
 ### Move 7 — Expand category coverage
 Add Family/Dependency sources and programs (currently entirely absent), and fill out 491
@@ -219,35 +263,41 @@ Only after the AU lifecycle is proven stable end-to-end (Move 3) and repeatable 
 (Move 4/7). The schema already supports `country_id` throughout, so this should mostly be data
 (new sources, new programs) plus verifying no AU-specific assumptions leaked into code.
 
-### Move 10 — Frontend (Next.js)
+### Move 10 — Frontend (Next.js, applicant-facing)
 Build the applicant-facing UI once the backend contract (assessment shape, gap/question shape,
 auth flow) is stable and proven against real data — building a frontend against a backend that's
-never seen real content risks designing against the wrong contract.
+never seen real content risks designing against the wrong contract. **Status 2026-10-05**: the
+backend contract is now proven against real content (Move 3), so this is less risky than when
+originally written — but the admin frontend built in Move 6 is a separate, internal tool and does
+not reduce this scope; this move is still entirely unstarted.
 
 ---
 
 ## 6. Definition of Done for the Immediate Objective (spec point #10)
 
-**Status as of 2026-09-25**: the mechanism for every box below is now proven correct (E2E test on
-real PostgreSQL) with the source-of-truth bugs that would have broken it on real data already
-found and fixed. None of the boxes are checked with *organically real* data yet — that's the
-concrete, well-understood, narrow remaining gap (Moves 1.5 → 2 → 3 above), not an open question
-about whether the system works.
+**Status as of 2026-10-05**: five of the six boxes below are now checked with real,
+organically-fetched-and-approved data for `SKILLED_189` — not a test fixture. The one remaining box
+(supersession / second version) is the single concrete remaining step for this objective.
 
-- [ ] At least one real `government_sources` row has real, durably-stored raw content (Move 1+2 —
-      raw persistence still open; real *fetchable* content confirmed for Migration Regs Volume 2)
-- [ ] At least one real `Requirement` row exists with `status=APPROVED`, backed by real,
-      verbatim evidence (blocked on Move 1.5, then an actual sync of the fixed source)
-- [ ] At least one real `Rule` row reaches `status=ACTIVE`
-- [ ] At least one real `Assessment` has been run against that ACTIVE rule and persisted, with
-      correct PASS/FAIL/UNKNOWN and gap output (mechanism proven via E2E test with realistic
-      fixture content; the field-mapping bug that would have broken this with real content is fixed)
+- [x] At least one real `government_sources` row has real, durably-stored raw content — raw
+      persistence fixed 2026-10-05; `SKILLED_189`'s sources and `SRC-AU-MIGRATION-REGS-1994` all
+      have real files on disk with hashes matching their DB rows
+- [x] At least one real `Requirement` row exists with `status=APPROVED`, backed by real, verbatim
+      evidence — `SKILLED_189`'s 2 real requirements (points threshold, application timeframe),
+      approved 2026-10-05
+- [x] At least one real `Rule` row reaches `status=ACTIVE` — 3 real `SKILLED_189` rules are ACTIVE
+      today
+- [x] At least one real `Assessment` has been run against that ACTIVE rule and persisted, with
+      correct PASS/FAIL/UNKNOWN and gap output — a real applicant (points=70) correctly PASSed the
+      points rule and got correct UNKNOWN+gaps for the two program-level fields, with a real
+      `ruleset_hash`/`rule_version` recorded
 - [ ] A second version of the same source/requirement/rule has been processed, proving
-      supersession works and the first assessment's historical result is untouched
-- [ ] Full provenance chain is queryable end-to-end for that one assessment: Assessment → Rule
-      → Requirement → Evidence → Chunk → Document Version → Document → Source → Government URL
-      (mechanism proven — `Gap.field`/rule field-name traceability specifically verified 2026-09-25)
+      supersession works and the first assessment's historical result is untouched — **still open,
+      the one concrete remaining step**
+- [x] Full provenance chain is queryable end-to-end for that one assessment: Assessment → Rule
+      → Requirement → Evidence → Chunk → Document Version → Document → Source → Government URL —
+      verified live for the `SKILLED_189` points-score assessment 2026-10-05
 
-Once every box above is checked with real data, the platform has proven its core promise for one
-real program. Everything else (broader coverage, frontend, multi-country) is scaling that proof,
+Once the last box is checked, the platform has proven its core promise for one real program.
+Everything else (broader coverage, applicant-facing frontend, multi-country) is scaling that proof,
 not discovering whether it works.

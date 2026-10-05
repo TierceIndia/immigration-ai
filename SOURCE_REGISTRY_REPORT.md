@@ -1,8 +1,9 @@
 # Source Registry Report (G16)
 
-Generated: **2026-09-15** · Original edition: 2026-08-27 · **Updated 2026-09-25** (see notes
-inline — the biggest change: the browser-escalation path's headless/headed fetching bug is now
-fixed, which materially changes the fetch-viability picture below).
+Generated: **2026-09-15** · Original edition: 2026-08-27 · Updated 2026-09-25 · **Updated again
+2026-10-05** — see Section 8 for the current, corrected picture: the 2026-09-25 "headless fix"
+claim below did not hold up, but real extraction has since been proven end-to-end with real
+content for 2 programs (not just a 2-URL fetch test).
 
 ## Executive Summary
 
@@ -266,17 +267,26 @@ or `GET /api/v1/admin/runs/source/{source_id}` (per-source history), or query
 `extraction_runs`/`pipeline_runs` directly.
 
 **What's durably true regardless of environment resets** (mechanism-level facts, verified
-2026-09-25):
-- Real extraction against real content has been proven to work end-to-end on real PostgreSQL —
-  see `tests/e2e/test_full_knowledge_to_assessment.py` and `PLAN.md` Section 3.
-- `SRC-AU-MIGRATION-REGS-1994` now points at content confirmed (via direct fetch+parse, not yet a
-  full sync) to yield 452 real chunks including genuine Subclass 189 criteria text.
+2026-10-05):
+- Real extraction against real content has been proven to work end-to-end on real PostgreSQL via
+  an actual sync, not just the E2E test fixture — see `PLAN.md` Section 3/6.
+- `SRC-AU-MIGRATION-REGS-1994` synced for real: **13 real requirements** extracted, with intact
+  (non-truncated) `requirement_id`s after the `String(48)→String(96)` fix.
+- `SKILLED_189`'s other sources (`SRC-AU-189-MAIN`, `-POINTS-STREAM`, `-POINTS-TABLE`,
+  `SRC-AU-SKILLSELECT-EOI`) also synced for real: 2 more real requirements, now compiled into 3
+  real ACTIVE rules and correctly assessed against a real applicant.
 - `SRC-AU-CRICOS-REGISTER` is confirmed to yield 0 chunks regardless of fetch strategy tried so
   far (plain HTTP, headed browser, headed browser + render-wait) — a real search-interface SPA,
   not a transient/environment issue.
-- The 12 `immi.homeaffairs.gov.au` sources' automated-fetch viability improved materially with the
-  2026-09-25 headless fix (see Section 6/Executive Summary) but that has not yet been confirmed via
-  an actual `POST /admin/sync` run across all of them in this environment.
+- `SRC-AU-600-MAIN`'s 0-chunk bug is **fixed** (a `<form>`-unwrapping extraction bug, different root
+  cause from CRICOS) — but its real content then hit a **new, separate** issue: the configured
+  Gemini model returns schema-violating JSON for all 16 of its candidate chunks. Not yet fixed.
+- **Correction to the 2026-09-25 headless finding**: switching to `headless=False` did not durably
+  fix anything — a later live re-test (2026-10-01, Patchright headless) still got 403 on the same
+  URLs. The real, current understanding (2026-10-05): the WAF blocks **intermittently under
+  per-URL request volume**. A full 14-source sync got 0/14 failures the same day a URL hit
+  repeatedly for debugging progressively degraded to a 403. All 14 sources are `ACTIVE` as of that
+  sync. See `README.md`'s "Real network fetch — current behavior" for the full detail.
 
 ---
 
