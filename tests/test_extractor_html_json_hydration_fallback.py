@@ -103,6 +103,46 @@ class TestJsonHydrationFallbackDoesNotInterfereWithRealDom:
         assert "Should never appear either" not in " ".join(texts)
 
 
+class TestJsonHydrationFallbackIsScopedToMainContent:
+    """The fallback must only read hidden-input JSON from within the same
+    main-content container the real DOM walk trusts, not the whole page.
+
+    Real-world motivation: on the actual SRC-AU-189-MAIN capture this fallback
+    was built from, the content widget (<ha-streams-root>) and its hydration
+    data (a hidden input named PageSchemaHiddenField) are not siblings - they
+    share a common ancestor only two levels up, inside <main> - and 30 of the
+    page's 31 hidden inputs are unrelated ASP.NET/SharePoint state with no
+    bearing on page content. A page-wide scan has no principled way to tell
+    "this page's real content" apart from some unrelated widget's own JSON
+    that happens to also contain an HTML-looking string (e.g. a cookie-banner
+    or site-search widget living in the header/footer, outside <main>).
+    """
+
+    def test_hidden_json_outside_main_is_not_pulled_in(self):
+        # <aside>/<div> are not in NOISE_TAGS/NOISE_SELECTORS, so they survive
+        # _clean_soup untouched - unlike <header>/<footer>, which are removed
+        # regardless of this fallback's own scoping and so would pass this
+        # test even without the fix. This is the real, meaningful boundary.
+        html = b"""
+        <html><body>
+            <aside id="related-widget">
+                <input type="hidden" value='{"title": "Related content", "body": "<p>Irrelevant sidebar widget content</p>"}'>
+            </aside>
+            <main>
+                <input type="hidden" value='{"title": "Real Page", "description": "<p>The real eligibility text.</p>"}'>
+            </main>
+            <div id="page-footer-links">
+                <input type="hidden" value='{"title": "Footer links", "body": "<p>Irrelevant footer widget content</p>"}'>
+            </div>
+        </body></html>
+        """
+        result = extract_html(html, "https://example.invalid/test")
+        texts = " ".join(c.raw_text for c in result.chunks)
+        assert "The real eligibility text." in texts
+        assert "Irrelevant sidebar widget content" not in texts
+        assert "Irrelevant footer widget content" not in texts
+
+
 class TestJsonHydrationFallbackIsSchemaAgnostic:
     """Confirmed two different JSON shapes across page templates in this
     investigation. The fallback must handle both without hardcoding either

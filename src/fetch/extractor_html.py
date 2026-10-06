@@ -223,13 +223,24 @@ def _walk_json_for_html(value, label_hint: str | None = None) -> list[tuple[str,
     return results
 
 
-def _find_json_hydration_fragments(soup: BeautifulSoup) -> list[tuple[str, str]]:
+def _find_json_hydration_fragments(container) -> list[tuple[str, str]]:
     """Find hidden <input> elements whose value is JSON, and pull out any real
     HTML-fragment string values from inside. See the module docstring for why
     this exists: some pages only ever materialise this content into visible
-    DOM via client-side JS that doesn't run in our fetch session."""
+    DOM via client-side JS that doesn't run in our fetch session.
+
+    `container` must be the same main-content element the real DOM walk uses
+    (not the whole document): the content widget's hydration data lives in
+    the same region as the widget itself (confirmed on the real capture this
+    fallback was built from - the widget root and its data's common ancestor
+    is 2 levels up, inside <main>), and site-wide chrome outside that region
+    (header/footer/nav widgets: cookie banners, search, language pickers) can
+    carry their own unrelated JSON with incidental HTML-looking strings that
+    have nothing to do with this page's actual content. Scoping to the same
+    container the real walk already trusts avoids pulling those in.
+    """
     fragments: list[tuple[str, str]] = []
-    for inp in soup.find_all("input", attrs={"type": "hidden"}):
+    for inp in container.find_all("input", attrs={"type": "hidden"}):
         raw_value = inp.get("value")
         if not raw_value or "{" not in raw_value:
             continue
@@ -259,7 +270,7 @@ def extract_html(raw_bytes: bytes, source_url: str) -> ExtractionResult:
         # The normal DOM walk found nothing real - before concluding this page
         # is genuinely contentless, check whether the real content is sitting
         # inert in a JSON hydration blob (see module docstring).
-        for label, fragment_html in _find_json_hydration_fragments(soup):
+        for label, fragment_html in _find_json_hydration_fragments(main):
             fragment_soup = BeautifulSoup(fragment_html, "html.parser")
             frag_chunks, frag_text, order_index = _walk_blocks(
                 fragment_soup, [label], order_index
