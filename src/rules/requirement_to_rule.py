@@ -149,19 +149,30 @@ def compile_approved_requirements(
             })
             continue
 
+        changed = True
         if not dry_run:
-            rule_repo.upsert_from_compiled(rule_id, compiled, req_orm.requirement_id)
-            rule_repo.save_version_snapshot(rule_id, "CREATED", "requirement_bridge")
+            _, changed = rule_repo.upsert_from_compiled(rule_id, compiled, req_orm.requirement_id)
+            # Only record a version snapshot (and report "created" below) when
+            # something actually changed - recompiling a requirement into a
+            # byte-for-byte identical, already-existing rule is a real no-op,
+            # not a new CREATED event. Found live: resyncing a source whose
+            # program already had approved requirements was spamming a fresh
+            # "CREATED" rule_versions row every sync even though the rule was
+            # untouched (25 version rows for 3 rules that had genuinely
+            # changed only twice each).
+            if changed:
+                rule_repo.save_version_snapshot(rule_id, "CREATED", "requirement_bridge")
 
         results.append({
             "requirement_id": req_orm.requirement_id,
             "rule_id": rule_id,
-            "status": "created",
+            "status": "created" if changed else "unchanged",
             "error": None,
         })
-        logger.info("Requirement compiled to DRAFT rule",
-                     extra={"requirement_id": req_orm.requirement_id,
-                            "rule_id": rule_id,
-                            "program_id": req_orm.program_id})
+        if changed:
+            logger.info("Requirement compiled to DRAFT rule",
+                         extra={"requirement_id": req_orm.requirement_id,
+                                "rule_id": rule_id,
+                                "program_id": req_orm.program_id})
 
     return results

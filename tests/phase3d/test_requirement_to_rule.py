@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from db.models import (
     Base, Requirement, RequirementEvidence,
-    Rule as RuleORM,
+    Rule as RuleORM, RuleVersion,
 )
 from db.connection import get_session_factory
 from rules.requirement_to_rule import compile_approved_requirements, _load_requirement_dict
@@ -178,3 +178,95 @@ class TestCompileApprovedRequirements:
         _create_approved_requirement(session)
         compile_approved_requirements(session, dry_run=True)
         assert session.query(RuleORM).count() == 0
+
+    def test_recompiling_an_unchanged_rule_reports_unchanged_not_created(self, session):
+        """Real bug found live: resyncing a source whose program already had
+        approved requirements re-ran compile_approved_requirements() for the
+        whole program every time (government_sync.py's _finalize_change does
+        this unconditionally whenever approved_count > 0), and the result
+        always said "created" even when upsert_from_compiled() made no real
+        change to an already-ACTIVE rule - confirmed via 3 real rules whose
+        created_at/updated_at were frozen from a previous day, yet a sync
+        that touched none of them still reported rules_created=3.
+
+        government_sync.py computes rules_created as
+        sum(1 for r in results if r["status"] == "created") - this test
+        exercises that exact computation directly.
+        """
+        _create_approved_requirement(session)
+        session.commit()
+
+        first = compile_approved_requirements(session, dry_run=False)
+        session.commit()
+        assert len(first) == 1
+        assert first[0]["status"] == "created"
+        first_rules_created = sum(1 for r in first if r["status"] == "created")
+        assert first_rules_created == 1
+
+        # Recompile the exact same, still-APPROVED requirement again - nothing
+        # about it has changed, so nothing about the resulting rule should
+        # either.
+        second = compile_approved_requirements(session, dry_run=False)
+        assert len(second) == 1
+        assert second[0]["status"] == "unchanged"
+        second_rules_created = sum(1 for r in second if r["status"] == "created")
+        assert second_rules_created == 0
+
+        # Only one rule_versions row should exist - the real CREATED one from
+        # the first compile, not a second spurious entry from the no-op.
+        versions = (
+            session.query(RuleVersion)
+            .filter(RuleVersion.rule_id == "RULE-REQ-AGE-001")
+            .all()
+        )
+        assert len(versions) == 1
+        assert versions[0].change_type == "CREATED"
+
+    def test_recompiling_after_a_real_field_change_reports_created(self, session):
+        """A genuine change to the approved requirement (e.g. a re-extraction
+        with a different value) must still be reported as a real change, not
+        swallowed by the no-op guard."""
+        _create_approved_requirement(session, value=25)
+        session.commit()
+        compile_approved_requirements(session, dry_run=False)
+        session.commit()
+
+        req = session.query(Requirement).filter_by(requirement_id="REQ-AGE-001").first()
+        req.value_json = json.dumps(30)
+        session.commit()
+
+        second = compile_approved_requirements(session, dry_run=False)
+        assert second[0]["status"] == "created"
+        rule = session.query(RuleORM).filter_by(rule_id="RULE-REQ-AGE-001").first()
+        assert json.loads(rule.value_json) == 30
+
+    def test_recompiling_an_already_active_rule_reports_unchanged(self, session):
+        """The exact production scenario: a rule that has already been
+        activated (not just DRAFT) gets recompiled on a later, unrelated
+        sync of the same program. Must report unchanged and must not touch
+        updated_at - activate_rule's ACTIVE-protection path in
+        upsert_from_compiled is a different code branch from the plain-DRAFT
+        case above and needs its own coverage."""
+        _create_approved_requirement(session)
+        session.commit()
+        compile_approved_requirements(session, dry_run=False)
+        session.commit()
+
+        rule_repo = EnhancedRuleRepo(session)
+        rule_repo.validate_rule("RULE-REQ-AGE-001", actor="test")
+        rule_repo.approve_rule("RULE-REQ-AGE-001", actor="test")
+        rule_repo.activate_rule("RULE-REQ-AGE-001", actor="test")
+        session.commit()
+
+        rule_before = session.query(RuleORM).filter_by(rule_id="RULE-REQ-AGE-001").first()
+        assert rule_before.status == "ACTIVE"
+        updated_at_before = rule_before.updated_at
+
+        results = compile_approved_requirements(session, dry_run=False)
+        assert results[0]["status"] == "unchanged"
+        rules_created = sum(1 for r in results if r["status"] == "created")
+        assert rules_created == 0
+
+        rule_after = session.query(RuleORM).filter_by(rule_id="RULE-REQ-AGE-001").first()
+        assert rule_after.status == "ACTIVE"
+        assert rule_after.updated_at == updated_at_before

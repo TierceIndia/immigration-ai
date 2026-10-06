@@ -249,11 +249,23 @@ class EnhancedRuleRepo:
     # Bulk operations for the orchestrator
     # ------------------------------------------------------------------
     def upsert_from_compiled(self, rule_id: str, compiled_rule: Rule,
-                             requirement_id: str) -> RuleORM:
+                             requirement_id: str) -> tuple[RuleORM, bool]:
         """Create or update a rule from a compiled Phase 3 Rule dataclass.
         If the rule already exists, update its fields.
         Rules in ACTIVE/SUPERSEDED/RETIRED status are NEVER downgraded to DRAFT.
-        This is the failure-safe invariant: recompilation never destroys active rules."""
+        This is the failure-safe invariant: recompilation never destroys active rules.
+
+        Returns (rule, changed) - `changed` is True only when a new row was
+        inserted or an existing row's fields actually differ from what's being
+        set; False for a genuine no-op (recompiling a requirement that
+        produces byte-for-byte the same rule as what's already stored).
+        Callers (compile_approved_requirements -> government_sync's
+        rules_created metric, and the version-snapshot audit trail) both rely
+        on this to avoid reporting/recording "created" for a sync that
+        touched nothing - a real bug found live: 3 rules with created_at from
+        a previous day were counted as freshly "created" in a run that
+        re-processed the same already-ACTIVE, unchanged rules.
+        """
         existing = self.get(rule_id)
         prov = compiled_rule.provenance
         data = dict(
@@ -281,14 +293,15 @@ class EnhancedRuleRepo:
         if existing:
             protected_statuses = {"ACTIVE", "SUPERSEDED", "RETIRED"}
             if existing.status in protected_statuses:
-                for k, v in data.items():
-                    if k == "status":
-                        continue
+                fields = {k: v for k, v in data.items() if k != "status"}
+                changed = any(getattr(existing, k) != v for k, v in fields.items())
+                for k, v in fields.items():
                     setattr(existing, k, v)
                 self._s.flush()
-                return existing
+                return existing, changed
+            changed = any(getattr(existing, k) != v for k, v in data.items())
             for k, v in data.items():
                 setattr(existing, k, v)
             self._s.flush()
-            return existing
-        return self.create(rule_id=rule_id, **data)
+            return existing, changed
+        return self.create(rule_id=rule_id, **data), True
