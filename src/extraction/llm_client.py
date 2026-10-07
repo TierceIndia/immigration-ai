@@ -63,6 +63,20 @@ GEMINI_PROVIDER = "gemini"
 # Namespacing version for the requirement output contract (schema/requirements.schema.json).
 SCHEMA_VERSION = "requirements.schema.json@v1"
 
+# Gemini retry ceiling per GEMINI_TIER (see llm_governance.get_gemini_tier).
+# Free tier keeps the original conservative ceiling: a 429 on a tight free
+# quota is likely a real exhaustion, so burning more than 3 retries with a
+# growing backoff just delays the inevitable QuotaExhaustedError. Paid tier's
+# much higher RPM makes an isolated 429 more likely to be a brief transient
+# blip than true exhaustion, so it gets more retries with a shorter initial
+# backoff (retrying quickly is cheap when the real ceiling is generous).
+def _gemini_retry_config() -> dict:
+    from llm_governance import get_gemini_tier, GEMINI_TIER_FREE, GEMINI_TIER_PAID
+    return {
+        GEMINI_TIER_FREE: {"max_retries": 3, "backoff_seconds": [5, 15, 45]},
+        GEMINI_TIER_PAID: {"max_retries": 5, "backoff_seconds": [2, 5, 10, 20, 40]},
+    }[get_gemini_tier()]
+
 
 class QuotaExhaustedError(RuntimeError):
     """Raised when a provider's rate limit/quota 429 persists through every retry.
@@ -697,8 +711,9 @@ class GeminiLLMClient(LLMClient):
             },
         }
 
-        max_retries = 3
-        backoff_seconds = [5, 15, 45]
+        retry_cfg = _gemini_retry_config()
+        max_retries = retry_cfg["max_retries"]
+        backoff_seconds = retry_cfg["backoff_seconds"]
         resp = None
         retries = 0
         for attempt in range(max_retries + 1):

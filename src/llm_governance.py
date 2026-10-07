@@ -299,6 +299,38 @@ DEFAULT_PRICES = {
 # that aborts a chunk's extraction is not. Override via GEMINI_FREE_TIER_RPM
 # if your project's actual dashboard number differs.
 DEFAULT_GEMINI_FREE_TIER_RPM = 15
+# Paid tier 1 is reported far higher (low thousands of RPM) and is not the
+# limiting factor in practice - this default just needs to be well above
+# anything this pipeline could realistically generate. Override via
+# GEMINI_PAID_TIER_RPM to match your project's actual paid-tier dashboard number.
+DEFAULT_GEMINI_PAID_TIER_RPM = 1000
+
+GEMINI_TIER_FREE = "free"
+GEMINI_TIER_PAID = "paid"
+_VALID_GEMINI_TIERS = (GEMINI_TIER_FREE, GEMINI_TIER_PAID)
+
+
+def get_gemini_tier() -> str:
+    """Which Gemini quota tier this environment is on.
+
+    Controlled by GEMINI_TIER=free|paid, defaulting to the conservative
+    free-tier assumption - a deployment must opt into "paid" explicitly, it
+    is never inferred. Drives both get_shared_governance()'s RateLimiter
+    (via get_gemini_rpm) and GeminiLLMClient's retry ceiling (llm_client.py).
+    """
+    tier = os.getenv("GEMINI_TIER", GEMINI_TIER_FREE).strip().lower()
+    if tier not in _VALID_GEMINI_TIERS:
+        raise ValueError(
+            f"Unsupported GEMINI_TIER={tier!r}; expected one of {_VALID_GEMINI_TIERS}."
+        )
+    return tier
+
+
+def get_gemini_rpm() -> int:
+    """The RPM to proactively throttle Gemini calls to, for the active tier."""
+    if get_gemini_tier() == GEMINI_TIER_PAID:
+        return int(os.getenv("GEMINI_PAID_TIER_RPM", str(DEFAULT_GEMINI_PAID_TIER_RPM)))
+    return int(os.getenv("GEMINI_FREE_TIER_RPM", str(DEFAULT_GEMINI_FREE_TIER_RPM)))
 
 
 def estimate_cost(model: str, tokens_in: int, tokens_out: int,
@@ -332,16 +364,16 @@ def get_shared_governance() -> "LLMGovernance":
     day, not an hour) since a resync of the same unchanged content can
     legitimately happen the next day, not just within the same hour.
 
-    The rate limiter defaults to Gemini's conservative free-tier RPM
-    (DEFAULT_GEMINI_FREE_TIER_RPM) since requirement extraction is this
-    governance instance's one real use, and Gemini's free tier is the
-    tightest cap among the supported providers. GeminiLLMClient calls
-    pre_request(..., wait=True) so this throttles proactively instead of
-    reacting to 429s; OpenAILLMClient keeps the reactive default (wait=False),
-    so this same conservative number only ever makes OpenAI calls wait if a
-    deployment somehow mixes both providers' traffic through one process -
-    the common case is one EXTRACTION_MODEL (and therefore one provider) per
-    deployment. Override via GEMINI_FREE_TIER_RPM.
+    The rate limiter defaults to get_gemini_rpm() - the active GEMINI_TIER's
+    RPM (free by default, conservative; paid is opt-in via GEMINI_TIER=paid)
+    - since requirement extraction is this governance instance's one real
+    use, and Gemini's free tier is the tightest cap among the supported
+    providers. GeminiLLMClient calls pre_request(..., wait=True) so this
+    throttles proactively instead of reacting to 429s; OpenAILLMClient keeps
+    the reactive default (wait=False), so this same number only ever makes
+    OpenAI calls wait if a deployment somehow mixes both providers' traffic
+    through one process - the common case is one EXTRACTION_MODEL (and
+    therefore one provider) per deployment.
     """
     global _shared_governance
     if _shared_governance is None:
@@ -351,7 +383,7 @@ def get_shared_governance() -> "LLMGovernance":
                 max_age_seconds=int(os.getenv("LLM_CACHE_MAX_AGE_SECONDS", str(24 * 3600))),
             ),
             rate_limiter=RateLimiter(
-                max_requests=int(os.getenv("GEMINI_FREE_TIER_RPM", str(DEFAULT_GEMINI_FREE_TIER_RPM))),
+                max_requests=get_gemini_rpm(),
                 window_seconds=60,
             ),
         )
