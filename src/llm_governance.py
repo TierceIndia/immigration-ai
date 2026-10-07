@@ -20,27 +20,57 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 @dataclass
 class RateLimiter:
-    """Token-bucket rate limiter per key (user_id or API key)."""
+    """Token-bucket rate limiter per key (user_id or API key).
+
+    `time_fn`/`sleep_fn` are injectable seams (default to the real clock) so
+    tests can drive `wait_and_allow` with a fake clock instead of a real sleep.
+    """
     max_requests: int = 60
     window_seconds: int = 60
+    time_fn: Any = time.monotonic
+    sleep_fn: Any = time.sleep
 
     def __post_init__(self):
         self._requests: dict[str, list[float]] = defaultdict(list)
 
-    def is_allowed(self, key: str) -> bool:
-        now = time.monotonic()
+    def _prune(self, key: str) -> float:
+        now = self.time_fn()
         cutoff = now - self.window_seconds
         self._requests[key] = [t for t in self._requests[key] if t > cutoff]
+        return now
+
+    def is_allowed(self, key: str) -> bool:
+        now = self._prune(key)
         if len(self._requests[key]) >= self.max_requests:
             return False
         self._requests[key].append(now)
         return True
 
     def remaining(self, key: str) -> int:
-        now = time.monotonic()
-        cutoff = now - self.window_seconds
-        recent = [t for t in self._requests[key] if t > cutoff]
-        return max(0, self.max_requests - len(recent))
+        self._prune(key)
+        return max(0, self.max_requests - len(self._requests[key]))
+
+    def wait_time(self, key: str) -> float:
+        """Seconds until the next call would be allowed (0 if allowed now)."""
+        self._prune(key)
+        if len(self._requests[key]) < self.max_requests:
+            return 0.0
+        oldest = min(self._requests[key])
+        return max(0.0, (oldest + self.window_seconds) - self.time_fn())
+
+    def wait_and_allow(self, key: str) -> float:
+        """Block (via sleep_fn) until a slot is free, then record the call.
+
+        Proactive counterpart to is_allowed(): instead of rejecting a call
+        that would exceed the limit, it waits exactly long enough not to.
+        Returns the number of seconds waited (0 if none were needed).
+        """
+        waited = self.wait_time(key)
+        if waited > 0:
+            self.sleep_fn(waited)
+        now = self._prune(key)
+        self._requests[key].append(now)
+        return waited
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +288,18 @@ DEFAULT_PRICES = {
     "gemini-flash-lite-latest": {"input": 0.0001, "output": 0.0004},
 }
 
+# Google no longer publishes a stable per-tier RPM number for
+# gemini-flash-lite-latest in its own docs - ai.google.dev/gemini-api/docs/rate-limits
+# and /pricing both redirect to a live, per-project dashboard at
+# aistudio.google.com/rate-limit that requires the caller's own login to view.
+# Third-party trackers in 2026 report this model's free tier anywhere from 15
+# to 30 RPM, and the limit itself has already been cut at least once (a
+# published change effective ~April 2026). 15 is the conservative end of that
+# range: waiting a little when it wasn't strictly necessary is cheap; a 429
+# that aborts a chunk's extraction is not. Override via GEMINI_FREE_TIER_RPM
+# if your project's actual dashboard number differs.
+DEFAULT_GEMINI_FREE_TIER_RPM = 15
+
 
 def estimate_cost(model: str, tokens_in: int, tokens_out: int,
                   prices: dict | None = None) -> float:
@@ -289,6 +331,17 @@ def get_shared_governance() -> "LLMGovernance":
     The cache's max_age is set much longer than the per-call default (a full
     day, not an hour) since a resync of the same unchanged content can
     legitimately happen the next day, not just within the same hour.
+
+    The rate limiter defaults to Gemini's conservative free-tier RPM
+    (DEFAULT_GEMINI_FREE_TIER_RPM) since requirement extraction is this
+    governance instance's one real use, and Gemini's free tier is the
+    tightest cap among the supported providers. GeminiLLMClient calls
+    pre_request(..., wait=True) so this throttles proactively instead of
+    reacting to 429s; OpenAILLMClient keeps the reactive default (wait=False),
+    so this same conservative number only ever makes OpenAI calls wait if a
+    deployment somehow mixes both providers' traffic through one process -
+    the common case is one EXTRACTION_MODEL (and therefore one provider) per
+    deployment. Override via GEMINI_FREE_TIER_RPM.
     """
     global _shared_governance
     if _shared_governance is None:
@@ -296,6 +349,10 @@ def get_shared_governance() -> "LLMGovernance":
             cache=ResponseCache(
                 max_size=int(os.getenv("LLM_CACHE_MAX_SIZE", "5000")),
                 max_age_seconds=int(os.getenv("LLM_CACHE_MAX_AGE_SECONDS", str(24 * 3600))),
+            ),
+            rate_limiter=RateLimiter(
+                max_requests=int(os.getenv("GEMINI_FREE_TIER_RPM", str(DEFAULT_GEMINI_FREE_TIER_RPM))),
+                window_seconds=60,
             ),
         )
     return _shared_governance
@@ -330,28 +387,47 @@ class LLMGovernance:
                     prompt_version: str = "",
                     schema_version: str = "",
                     temperature: float = 0.0,
-                    provider: str = "") -> dict[str, Any]:
+                    provider: str = "",
+                    wait: bool = False) -> dict[str, Any]:
         """Check cache, rate limits, budget before making an LLM call.
         Returns metadata dict with {cached, cached_response, blocked, reason}.
+
+        `wait=False` (the default) is the original reactive behavior: a call
+        that would exceed the rate limit is rejected immediately
+        (blocked=True, reason="rate_limit_exceeded") and it is up to the
+        caller to decide what to do. `wait=True` instead blocks proactively
+        (via the rate limiter's sleep_fn) until a slot is free, so the call
+        almost never needs to be rejected or hit a real 429 in the first
+        place - used for providers with a known, tight free-tier RPM cap
+        (see llm_client.py's GeminiLLMClient).
         """
         # 1. Cache lookup
         cached = self.cache.get(model, messages, prompt_version, schema_version, temperature, provider=provider)
         if cached is not None:
             return {"cached": True, "cached_response": cached,
-                    "blocked": False, "reason": None}
+                    "blocked": False, "reason": None, "waited_seconds": 0.0}
 
         # 2. Rate limit
-        if not self.rate_limiter.is_allowed(key):
-            return {"cached": False, "cached_response": None,
-                    "blocked": True, "reason": "rate_limit_exceeded"}
+        if wait:
+            waited = self.rate_limiter.wait_and_allow(key)
+            if waited > 0:
+                logger.info("Rate limiter proactively waited before LLM call",
+                            extra={"key": key, "waited_seconds": round(waited, 2)})
+        else:
+            waited = 0.0
+            if not self.rate_limiter.is_allowed(key):
+                return {"cached": False, "cached_response": None,
+                        "blocked": True, "reason": "rate_limit_exceeded",
+                        "waited_seconds": 0.0}
 
         # 3. Budget
         if self.budget.is_over_limit(key):
             return {"cached": False, "cached_response": None,
-                    "blocked": True, "reason": "budget_exceeded"}
+                    "blocked": True, "reason": "budget_exceeded",
+                    "waited_seconds": waited}
 
         return {"cached": False, "cached_response": None,
-                "blocked": False, "reason": None}
+                "blocked": False, "reason": None, "waited_seconds": waited}
 
     def post_request(self, key: str, model: str,
                      messages: list[dict], response: Any,

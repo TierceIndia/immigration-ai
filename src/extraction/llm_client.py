@@ -649,7 +649,15 @@ class GeminiLLMClient(LLMClient):
             from llm_governance import LLMGovernance
             governance = LLMGovernance()
         self.governance = governance
-        self._gov_key = visa_category or "phase2-requirement-extraction"
+        # Deliberately NOT keyed by visa_category: Gemini's RPM quota is one
+        # project-wide pool, not one pool per category. A sync run processes
+        # sources sequentially (see orchestration/government_sync.py), but
+        # across many visa categories in the same run - keying this per
+        # category would let each category's rate limiter independently
+        # allow up to the configured RPM, so the real aggregate call rate
+        # against Gemini could still exceed the limit even though no single
+        # category's bucket ever did.
+        self._gov_key = "gemini-shared"
         prompt_path = _get_prompt_path(visa_category)
         with open(prompt_path, "r", encoding="utf-8") as f:
             self._system_prompt = f.read()
@@ -737,7 +745,7 @@ class GeminiLLMClient(LLMClient):
         gate = self.governance.pre_request(
             key=self._gov_key, model=self.model_name, messages=messages,
             prompt_version=PROMPT_VERSION, schema_version=SCHEMA_VERSION, temperature=0.0,
-            provider=GEMINI_PROVIDER,
+            provider=GEMINI_PROVIDER, wait=True,
         )
         if gate.get("blocked"):
             raise RuntimeError(
