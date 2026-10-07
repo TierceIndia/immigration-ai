@@ -93,14 +93,18 @@ def run_for_document(conn, document_id: str, model: str, dry_run: bool, limit: i
     if limit:
         outcomes = outcomes[:limit]
 
+    deferred_count = sum(1 for o in outcomes if getattr(o, "deferred", False))
     counters = {
-        "chunks_seen": len(chunks), "candidate_chunks": len(outcomes), "llm_calls": len(outcomes),
+        "chunks_seen": len(chunks), "candidate_chunks": len(outcomes),
+        "llm_calls": len(outcomes) - deferred_count,
         "requirements_extracted": 0, "validated": 0, "needs_review": 0, "rejected": 0,
-        "evidence_failures": 0, "schema_failures": 0,
+        "evidence_failures": 0, "schema_failures": 0, "deferred_chunks": deferred_count,
     }
     persisted = []
 
     for outcome in outcomes:
+        if getattr(outcome, "deferred", False):
+            continue
         if outcome.schema_errors:
             counters["schema_failures"] += 1
             continue
@@ -134,11 +138,12 @@ def run_for_document(conn, document_id: str, model: str, dry_run: bool, limit: i
             if any("evidence" in r.lower() or "fabricat" in r.lower() for r in item["reasons"]):
                 counters["evidence_failures"] += 1
 
-    complete_extraction_run(conn, run_id, counters, status="DRY_RUN" if dry_run else "COMPLETED")
+    final_status = "DRY_RUN" if dry_run else ("PARTIAL" if deferred_count else "COMPLETED")
+    complete_extraction_run(conn, run_id, counters, status=final_status)
 
     return {
         "document_id": document_id, "document_version": version, "run_id": run_id,
-        "model": model, "dry_run": dry_run, "status": "COMPLETED", **counters,
+        "model": model, "dry_run": dry_run, "status": final_status, **counters,
         "persisted": persisted,
     }
 

@@ -683,10 +683,22 @@ class TestAuditHardening:
         _seed_fk_chain(session)
         session.add(ExtractORM(
             run_id="RUN-BAD", document_id="D1", document_version=1,
-            model="mock-llm-v1", prompt_version="p1", status="PARTIAL", dry_run=0,
+            model="mock-llm-v1", prompt_version="p1", status="BOGUS_STATUS", dry_run=0,
         ))
         with pytest.raises(IntegrityError):
             session.flush()
+
+    def test_extraction_run_partial_status_accepted(self, session):
+        """PARTIAL means "completed, but some chunks were deferred by a
+        persistent provider quota 429 and need a retry" - a real, valid
+        status, not a typo of COMPLETED."""
+        _seed_fk_chain(session)
+        session.add(ExtractORM(
+            run_id="RUN-PARTIAL", document_id="D1", document_version=1,
+            model="mock-llm-v1", prompt_version="p1", status="PARTIAL", dry_run=0,
+            deferred_chunks=2,
+        ))
+        session.flush()
 
     def test_pipeline_run_invalid_status_rejected(self, session):
         _seed_fk_chain(session)

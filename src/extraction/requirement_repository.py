@@ -105,7 +105,7 @@ def complete_extraction_run(conn, run_id: str, counters: dict, status: str = "CO
         UPDATE extraction_runs SET
             completed_at = ?, chunks_seen = ?, candidate_chunks = ?, llm_calls = ?,
             requirements_extracted = ?, validated = ?, needs_review = ?, rejected = ?,
-            evidence_failures = ?, schema_failures = ?, status = ?, error = ?
+            evidence_failures = ?, schema_failures = ?, deferred_chunks = ?, status = ?, error = ?
         WHERE run_id = ?
         """,
         (
@@ -113,7 +113,8 @@ def complete_extraction_run(conn, run_id: str, counters: dict, status: str = "CO
             counters.get("llm_calls", 0), counters.get("requirements_extracted", 0),
             counters.get("validated", 0), counters.get("needs_review", 0),
             counters.get("rejected", 0), counters.get("evidence_failures", 0),
-            counters.get("schema_failures", 0), status, error, run_id,
+            counters.get("schema_failures", 0), counters.get("deferred_chunks", 0),
+            status, error, run_id,
         ),
     )
     conn.commit()

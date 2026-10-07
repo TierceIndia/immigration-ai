@@ -297,6 +297,10 @@ class ExtractionRun(Base, TimestampMixin):
     rejected = Column(Integer, nullable=False, default=0)
     evidence_failures = Column(Integer, nullable=False, default=0)
     schema_failures = Column(Integer, nullable=False, default=0)
+    # Chunks whose LLM call hit a persistent provider quota/rate-limit
+    # exhaustion and were skipped rather than extracted - a later sync
+    # should retry them, not treat them as "the model found nothing".
+    deferred_chunks = Column(Integer, nullable=False, default=0)
     status = Column(String(16), nullable=False, default="RUNNING")
     dry_run = Column(SmallInteger, nullable=False, default=0)
     error = Column(Text)
@@ -313,7 +317,9 @@ class ExtractionRun(Base, TimestampMixin):
         CheckConstraint("document_version > 0", name="ck_extract_version_positive"),
         CheckConstraint("dry_run IN (0,1)", name="ck_extract_dry_run"),
         CheckConstraint(
-            "status IN ('RUNNING','COMPLETED','FAILED','DRY_RUN')",
+            # PARTIAL: completed, but at least one chunk was deferred due to
+            # provider quota exhaustion and needs a retry on a later sync.
+            "status IN ('RUNNING','COMPLETED','FAILED','DRY_RUN','PARTIAL')",
             name="ck_extract_status",
         ),
     )

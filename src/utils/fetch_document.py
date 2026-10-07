@@ -451,6 +451,7 @@ def run_requirement_extraction(
         "rejected": 0,
         "evidence_failures": 0,
         "schema_failures": 0,
+        "deferred_chunks": 0,
     }
     persisted: list[dict[str, Any]] = []
 
@@ -461,6 +462,12 @@ def run_requirement_extraction(
         provider failure mid-document cannot discard completed work.
         """
         counters["candidate_chunks"] += 1
+        if getattr(outcome, "deferred", False):
+            # Provider quota exhausted on this one chunk - no LLM call
+            # actually completed, nothing to persist. Counted separately so
+            # it is never mistaken for "the model looked and found nothing".
+            counters["deferred_chunks"] += 1
+            return
         counters["llm_calls"] += 1
         if getattr(outcome, "schema_errors", None):
             counters["schema_failures"] += 1
@@ -534,13 +541,17 @@ def run_requirement_extraction(
             pass
         raise
 
-    complete_extraction_run(conn, run_id, counters, status="COMPLETED")
+    # PARTIAL (not COMPLETED) when any chunk was deferred by provider quota
+    # exhaustion - a signal that this document needs a retry, not that the
+    # model looked at every candidate chunk and found nothing.
+    final_status = "PARTIAL" if counters["deferred_chunks"] else "COMPLETED"
+    complete_extraction_run(conn, run_id, counters, status=final_status)
     return {
         "run_id": run_id,
         "document_id": document_id,
         "document_version": version_number,
         "model": model_name,
-        "status": "COMPLETED",
+        "status": final_status,
         **counters,
         "persisted": persisted,
     }

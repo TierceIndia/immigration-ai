@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from chunk_selector import build_context_window, select_candidates
 from evidence_validator import validate_evidence
-from llm_client import PROMPT_VERSION, LLMClient
+from llm_client import PROMPT_VERSION, LLMClient, QuotaExhaustedError
 from requirement_normalizer import normalize_requirement
 from requirement_validator import parse_llm_output, validate_logic, validate_schema
 
@@ -25,6 +25,12 @@ class ExtractionOutcome:
     accepted_requirements: list[dict] = field(default_factory=list)  # normalized, evidence-verified, ready to persist
     rejected_requirements: list[dict] = field(default_factory=list)  # {requirement, reasons}
     needs_review_requirements: list[dict] = field(default_factory=list)  # {requirement, reasons}
+    # True when this chunk's LLM call hit a persistent provider quota/rate-limit
+    # exhaustion (QuotaExhaustedError) rather than a real extraction attempt.
+    # The chunk was NOT processed - it should be retried on a later sync, not
+    # treated as "the model looked at this and found nothing".
+    deferred: bool = False
+    deferred_reason: str | None = None
 
 
 def extract_from_document(
@@ -62,7 +68,19 @@ def extract_from_document(
 
         outcome = ExtractionOutcome(candidate_chunk_id=candidate.chunk_id, llm_called=True)
         seen_semantics: dict[tuple, dict] = {}
-        raw_output = llm_client.extract(input_context)
+        try:
+            raw_output = llm_client.extract(input_context)
+        except QuotaExhaustedError as exc:
+            # One chunk's persistent 429 must not discard every other chunk in
+            # this document (or this source's other documents) - defer just
+            # this one and keep going. A later sync re-processes it normally
+            # since nothing was persisted for it.
+            outcome.deferred = True
+            outcome.deferred_reason = str(exc)
+            outcomes.append(outcome)
+            if on_outcome is not None:
+                on_outcome(outcome)
+            continue
         outcome.raw_llm_output = raw_output
 
         parsed, parse_errors = parse_llm_output(raw_output)

@@ -29,8 +29,9 @@ CREATE TABLE IF NOT EXISTS extraction_runs (
     rejected                INTEGER NOT NULL DEFAULT 0,
     evidence_failures        INTEGER NOT NULL DEFAULT 0,
     schema_failures          INTEGER NOT NULL DEFAULT 0,
+    deferred_chunks          INTEGER NOT NULL DEFAULT 0,  -- chunks skipped on persistent provider quota exhaustion; retry on a later sync
     status                  TEXT NOT NULL DEFAULT 'RUNNING' CHECK (status IN
-                     ('RUNNING','COMPLETED','FAILED','DRY_RUN')),
+                     ('RUNNING','COMPLETED','FAILED','DRY_RUN','PARTIAL')),
     dry_run                 INTEGER NOT NULL DEFAULT 0 CHECK (dry_run IN (0,1)),
     error                    TEXT
 );

@@ -64,6 +64,16 @@ GEMINI_PROVIDER = "gemini"
 SCHEMA_VERSION = "requirements.schema.json@v1"
 
 
+class QuotaExhaustedError(RuntimeError):
+    """Raised when a provider's rate limit/quota 429 persists through every retry.
+
+    Deliberately narrower than a bare RuntimeError so callers (requirement_extractor.py)
+    can catch exactly this one failure mode to defer just the one chunk and keep going,
+    without also swallowing unrelated bugs (bad API key, malformed request, etc.) that
+    should still abort loudly.
+    """
+
+
 def _get_prompt_path(visa_category: str | None = None) -> str:
     """Get the path to the prompt file for the given visa category.
     
@@ -519,7 +529,7 @@ class OpenAILLMClient(LLMClient):
             if detail == "insufficient_quota":
                 hint = (" This account has no API credits - add billing at "
                         "platform.openai.com/settings/organization/billing.")
-            raise RuntimeError(
+            raise QuotaExhaustedError(
                 f"OpenAI API rate limit/quota error (429, code={detail}).{hint} "
                 f"Model used: {self.model_name}."
             )
@@ -541,7 +551,8 @@ class OpenAILLMClient(LLMClient):
             provider=OPENAI_PROVIDER,
         )
         if gate.get("blocked"):
-            raise RuntimeError(
+            exc_cls = QuotaExhaustedError if gate.get("reason") == "rate_limit_exceeded" else RuntimeError
+            raise exc_cls(
                 f"OpenAI extraction blocked by LLM governance "
                 f"({gate.get('reason')}). Model: {self.model_name}."
             )
@@ -712,7 +723,7 @@ class GeminiLLMClient(LLMClient):
             break
 
         if resp.status_code == 429:
-            raise RuntimeError(
+            raise QuotaExhaustedError(
                 f"Gemini API rate limit exceeded (429). Model: {self.model_name}. "
                 f"Free tier has per-minute/per-day caps - wait and retry."
             )
@@ -748,7 +759,8 @@ class GeminiLLMClient(LLMClient):
             provider=GEMINI_PROVIDER, wait=True,
         )
         if gate.get("blocked"):
-            raise RuntimeError(
+            exc_cls = QuotaExhaustedError if gate.get("reason") == "rate_limit_exceeded" else RuntimeError
+            raise exc_cls(
                 f"Gemini extraction blocked by LLM governance "
                 f"({gate.get('reason')}). Model: {self.model_name}."
             )

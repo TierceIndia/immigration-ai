@@ -173,3 +173,81 @@ class TestRunRequirementExtractionWithMockLLM:
                      "rejected", "evidence_failures", "schema_failures"):
             assert key in result, f"missing counter: {key}"
             assert isinstance(result[key], int)
+
+
+class TestPersistentQuotaExhaustionIsolatesOnlyTheOneChunk:
+    """Part 2c regression: a persistent 429 (QuotaExhaustedError) on one
+    candidate chunk must defer only that chunk, not abort the rest of the
+    document's extraction or fail the whole run - the exact "one bad
+    chunk/source must never block the other 13" requirement."""
+
+    def test_one_deferred_chunk_does_not_stop_the_others(self, session, monkeypatch):
+        import json as _json
+        import utils.fetch_document as fetch_document_mod
+        from db.models import DocumentChunk
+        # Must match via the SAME module identity requirement_extractor.py
+        # imports from (the flat `llm_client` module put on sys.path by
+        # fetch_document's own import machinery) - importing QuotaExhaustedError
+        # via `extraction.llm_client` instead would be a different class
+        # object and extract_from_document's `except QuotaExhaustedError`
+        # would not catch an instance of it.
+        from llm_client import LLMClient, QuotaExhaustedError
+
+        source = _seed_doc(session, [
+            "Applicants must be under 45 years of age.",
+            "Must have competent english.",
+        ])
+        chunk_ids = [
+            c.chunk_id for c in
+            session.query(DocumentChunk)
+            .filter_by(document_id="DOC-AU-189")
+            .order_by(DocumentChunk.order_index)
+            .all()
+        ]
+        quota_exhausted_chunk_id, healthy_chunk_id = chunk_ids[0], chunk_ids[1]
+
+        class FlakyQuotaClient(LLMClient):
+            model_name = "flaky-quota-test-client"
+
+            def extract(self, input_context: dict) -> str:
+                chunk_id = input_context["primary_chunk"]["chunk_id"]
+                if chunk_id == quota_exhausted_chunk_id:
+                    raise QuotaExhaustedError(
+                        "Gemini API rate limit exceeded (429). Free tier has "
+                        "per-minute/per-day caps - wait and retry."
+                    )
+                return _json.dumps({
+                    "requirements": [{
+                        "category": "ENGLISH_LANGUAGE", "name": "English requirement",
+                        "content_kind": "REQUIREMENT", "field": "applicant.english_level",
+                        "operator": "GTE", "value": "competent", "unit": None,
+                        "mandatory": True, "condition": None, "exception": None,
+                        "criticality": "CRITICAL", "confidence": 0.9,
+                        "evidence": [{"chunk_id": healthy_chunk_id,
+                                      "evidence_text": "Must have competent english.",
+                                      "evidence_type": "DIRECT_TEXT"}],
+                        "references": [],
+                    }],
+                })
+
+        monkeypatch.setattr(fetch_document_mod, "get_client", lambda *a, **k: FlakyQuotaClient())
+
+        result = run_requirement_extraction(session, source, "DOC-AU-189", 1)
+
+        # The run completes (is never FAILED/aborted) - PARTIAL signals "some
+        # chunks still need a retry", distinct from a real failure.
+        assert result["status"] == "PARTIAL"
+        assert result["deferred_chunks"] == 1
+        # The healthy chunk's real LLM call still happened and its
+        # requirement was still persisted - the quota failure on the other
+        # chunk did not discard it.
+        assert result["llm_calls"] == 1
+        assert result["requirements_extracted"] == 1
+
+        run = session.query(ExtractionRun).filter_by(document_id="DOC-AU-189").one()
+        assert run.status == "PARTIAL"
+        assert run.deferred_chunks == 1
+
+        reqs = session.query(Requirement).all()
+        assert len(reqs) == 1
+        assert reqs[0].category == "ENGLISH_LANGUAGE"
