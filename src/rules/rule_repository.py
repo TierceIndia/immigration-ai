@@ -248,27 +248,11 @@ class EnhancedRuleRepo:
     # ------------------------------------------------------------------
     # Bulk operations for the orchestrator
     # ------------------------------------------------------------------
-    def upsert_from_compiled(self, rule_id: str, compiled_rule: Rule,
-                             requirement_id: str) -> tuple[RuleORM, bool]:
-        """Create or update a rule from a compiled Phase 3 Rule dataclass.
-        If the rule already exists, update its fields.
-        Rules in ACTIVE/SUPERSEDED/RETIRED status are NEVER downgraded to DRAFT.
-        This is the failure-safe invariant: recompilation never destroys active rules.
-
-        Returns (rule, changed) - `changed` is True only when a new row was
-        inserted or an existing row's fields actually differ from what's being
-        set; False for a genuine no-op (recompiling a requirement that
-        produces byte-for-byte the same rule as what's already stored).
-        Callers (compile_approved_requirements -> government_sync's
-        rules_created metric, and the version-snapshot audit trail) both rely
-        on this to avoid reporting/recording "created" for a sync that
-        touched nothing - a real bug found live: 3 rules with created_at from
-        a previous day were counted as freshly "created" in a run that
-        re-processed the same already-ACTIVE, unchanged rules.
-        """
-        existing = self.get(rule_id)
+    def _compiled_to_data(self, compiled_rule: Rule, requirement_id: str) -> dict[str, Any]:
+        """Shared field mapping used by both upsert_from_compiled (persists) and
+        would_change_from_compiled (dry-run preview, persists nothing)."""
         prov = compiled_rule.provenance
-        data = dict(
+        return dict(
             requirement_id=requirement_id,
             requirement_version_id=prov.requirement_version_id or None,
             program_id=compiled_rule.program_id,
@@ -290,6 +274,27 @@ class EnhancedRuleRepo:
             status="DRAFT",
             current_version=1,
         )
+
+    def upsert_from_compiled(self, rule_id: str, compiled_rule: Rule,
+                             requirement_id: str) -> tuple[RuleORM, bool]:
+        """Create or update a rule from a compiled Phase 3 Rule dataclass.
+        If the rule already exists, update its fields.
+        Rules in ACTIVE/SUPERSEDED/RETIRED status are NEVER downgraded to DRAFT.
+        This is the failure-safe invariant: recompilation never destroys active rules.
+
+        Returns (rule, changed) - `changed` is True only when a new row was
+        inserted or an existing row's fields actually differ from what's being
+        set; False for a genuine no-op (recompiling a requirement that
+        produces byte-for-byte the same rule as what's already stored).
+        Callers (compile_approved_requirements -> government_sync's
+        rules_created metric, and the version-snapshot audit trail) both rely
+        on this to avoid reporting/recording "created" for a sync that
+        touched nothing - a real bug found live: 3 rules with created_at from
+        a previous day were counted as freshly "created" in a run that
+        re-processed the same already-ACTIVE, unchanged rules.
+        """
+        existing = self.get(rule_id)
+        data = self._compiled_to_data(compiled_rule, requirement_id)
         if existing:
             protected_statuses = {"ACTIVE", "SUPERSEDED", "RETIRED"}
             if existing.status in protected_statuses:
@@ -305,3 +310,17 @@ class EnhancedRuleRepo:
             self._s.flush()
             return existing, changed
         return self.create(rule_id=rule_id, **data), True
+
+    def would_change_from_compiled(self, rule_id: str, compiled_rule: Rule,
+                                   requirement_id: str) -> bool:
+        """Preview whether upsert_from_compiled would report `changed=True`,
+        without persisting anything. Used by compile_approved_requirements'
+        dry_run mode so a preview doesn't just assume everything is new."""
+        existing = self.get(rule_id)
+        if existing is None:
+            return True
+        data = self._compiled_to_data(compiled_rule, requirement_id)
+        protected_statuses = {"ACTIVE", "SUPERSEDED", "RETIRED"}
+        fields = {k: v for k, v in data.items() if k != "status"} \
+            if existing.status in protected_statuses else data
+        return any(getattr(existing, k) != v for k, v in fields.items())

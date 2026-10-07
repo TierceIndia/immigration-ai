@@ -67,8 +67,8 @@ def find_gaps(
         {
             "field": g.field,
             "priority": g.priority.value if hasattr(g.priority, "value") else str(g.priority),
-            "message": g.message,
-            "rule_id": g.rule_id,
+            "message": g.question,
+            "rule_id": g.source_rule_ids[0] if g.source_rule_ids else None,
         }
         for g in gaps
     ]

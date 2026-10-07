@@ -29,6 +29,9 @@ class Category(str, Enum):
     FINANCIAL = "FINANCIAL"
     APPLICATION = "APPLICATION"
     OTHER = "OTHER"
+    DEBT = "DEBT"
+    VALUES_STATEMENT = "VALUES_STATEMENT"
+    VISA_HISTORY = "VISA_HISTORY"
 
 
 class Operator(str, Enum):

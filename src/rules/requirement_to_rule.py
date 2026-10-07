@@ -109,7 +109,7 @@ def compile_approved_requirements(
     """Load all APPROVED requirements from DB, compile each into a DRAFT rule.
 
     Returns a list of result dicts with keys:
-        requirement_id, rule_id, status ("created" | "updated" | "error"), error
+        requirement_id, rule_id, status ("created" | "unchanged" | "error"), error
     """
     rule_repo = EnhancedRuleRepo(session)
     results = []
@@ -149,8 +149,16 @@ def compile_approved_requirements(
             })
             continue
 
-        changed = True
-        if not dry_run:
+        if dry_run:
+            # Preview only - must reflect what upsert_from_compiled would
+            # actually report, not assume everything is new. Previously
+            # hardcoded True, so a dry-run on an already-synced program
+            # claimed every requirement would be "created" even when nothing
+            # would really change.
+            changed = rule_repo.would_change_from_compiled(
+                rule_id, compiled, req_orm.requirement_id
+            )
+        else:
             _, changed = rule_repo.upsert_from_compiled(rule_id, compiled, req_orm.requirement_id)
             # Only record a version snapshot (and report "created" below) when
             # something actually changed - recompiling a requirement into a

@@ -1,8 +1,10 @@
 """Normalization layer.
 
 Normalizes operator/unit/category tokens to the controlled vocabularies in
-requirements.schema.json. Deliberately conservative: if a value doesn't map cleanly onto the
-controlled set, it is left as UNKNOWN/None and flagged for review rather than silently coerced -
+requirements.schema.json. Deliberately conservative: an operator that doesn't map cleanly
+defaults to UNKNOWN, a category that doesn't map cleanly defaults to OTHER, and a unit that
+doesn't map cleanly is kept verbatim (not coerced). In every case the normalization is
+reported back as a warning for human review rather than silently accepted -
 "do not normalize away important legal meaning" (per Phase 2 spec).
 """
 from __future__ import annotations

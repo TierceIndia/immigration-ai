@@ -25,6 +25,10 @@ import json
 import re
 from pathlib import Path
 
+from logging_config import get_logger
+
+logger = get_logger(__name__)
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 GOLD_ROOT = ROOT / "data" / "gold"
 PROMPT_ROOT = ROOT / "prompts"
@@ -82,7 +86,9 @@ def _load_gold_datasets(gold_dir: Path) -> list[tuple[Path, dict]]:
     for path in sorted(gold_dir.glob("*.json")):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Skipping malformed gold dataset file",
+                            extra={"path": str(path), "error": str(e)})
             continue
         if isinstance(data, dict):
             datasets.append((path, data))

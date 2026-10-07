@@ -1,7 +1,7 @@
 """Health check routes — liveness + readiness.
 
 GET /health  → process is alive (always 200)
-GET /ready   → DB available + tables exist (200 or 503)
+GET /ready   → DB is reachable via `SELECT 1` (200 or 503)
 
 When the DB is disconnected, /ready includes safe, non-secret diagnostics
 (configured backend/host/name and the scrubbed last connection error) so an
@@ -52,8 +52,9 @@ def _diagnostics_for_disconnect(request: Request) -> dict:
 async def readiness_check(request: Request):
     """Readiness probe — can the application serve traffic?
 
-    Returns 200 if DB is connected and tables exist.
-    Returns 503 if DB is not available.
+    Returns 200 if the DB is connected and a `SELECT 1` succeeds.
+    Returns 503 if DB is not available or unreachable. Does not check that
+    any specific table exists.
     """
     engine = getattr(request.app.state, "db_engine", None)
     if engine is None:

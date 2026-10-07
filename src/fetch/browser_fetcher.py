@@ -52,7 +52,14 @@ BROWSER_NAVIGATION_TIMEOUT_MS = 30000
 # needs to finish its own normal rendering before looking at it. A genuinely
 # contentless page (e.g. a search-interface SPA with nothing to show) times
 # out here and is captured/classified exactly as it would have been before.
-CONTENT_READY_SELECTOR = "main :is(p, h1, h2, h3, h4, h5, h6, ul, ol, table)"
+# Must track extractor_html.py's _find_main_content() fallback chain (main,
+# [role=main], #content, #main-content, [class*=content]) — a page using one
+# of the non-<main> fallback containers would otherwise always burn the full
+# CONTENT_READY_TIMEOUT_MS even though extraction would succeed once captured.
+CONTENT_READY_SELECTOR = (
+    ":is(main, [role=main], #content, #main-content, [class*=content]) "
+    ":is(p, h1, h2, h3, h4, h5, h6, ul, ol, table)"
+)
 CONTENT_READY_TIMEOUT_MS = 8000
 
 # Chromium args. --no-sandbox/--disable-dev-shm-usage are required to run as root
@@ -216,7 +223,7 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
             )
     except Exception as e:
         return _browser_failure(
-            url, start, "browser_navigation_failed",
+            url, start, _classify_browser_exception(e),
             f"Browser fetch failed: {e}",
         )
 
