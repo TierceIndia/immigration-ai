@@ -267,6 +267,48 @@ def estimate_cost(model: str, tokens_in: int, tokens_out: int,
 
 
 # ---------------------------------------------------------------------------
+# Shared governance instance — for production call sites only
+# ---------------------------------------------------------------------------
+# get_client() previously built a brand-new, empty-state LLMGovernance() on
+# every single call. For a one-off extraction that's harmless, but a sync
+# run that extracts many documents/sources in the same process never let the
+# response cache or rate limiter see calls from anything but the one
+# document in front of it - the cache couldn't dedupe across a sync batch
+# and the rate limiter couldn't see load from other sources sharing the same
+# Gemini quota. Production call sites opt in explicitly by passing
+# get_shared_governance() into get_client(governance=...); tests and one-off
+# scripts that want isolated state keep constructing their own
+# LLMGovernance() (the default when governance=None), so this never leaks
+# state across tests.
+_shared_governance: "LLMGovernance | None" = None
+
+
+def get_shared_governance() -> "LLMGovernance":
+    """Lazily build and return ONE process-wide LLMGovernance instance.
+
+    The cache's max_age is set much longer than the per-call default (a full
+    day, not an hour) since a resync of the same unchanged content can
+    legitimately happen the next day, not just within the same hour.
+    """
+    global _shared_governance
+    if _shared_governance is None:
+        _shared_governance = LLMGovernance(
+            cache=ResponseCache(
+                max_size=int(os.getenv("LLM_CACHE_MAX_SIZE", "5000")),
+                max_age_seconds=int(os.getenv("LLM_CACHE_MAX_AGE_SECONDS", str(24 * 3600))),
+            ),
+        )
+    return _shared_governance
+
+
+def reset_shared_governance() -> None:
+    """Test-only: drop the process-wide instance so the next get_shared_governance()
+    call builds a fresh one. Production code never calls this."""
+    global _shared_governance
+    _shared_governance = None
+
+
+# ---------------------------------------------------------------------------
 # Governance Manager — ties everything together
 # ---------------------------------------------------------------------------
 class LLMGovernance:

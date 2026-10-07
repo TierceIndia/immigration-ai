@@ -216,6 +216,7 @@ _EXTRACTION_DIR = Path(__file__).resolve().parent.parent / "extraction"
 if str(_EXTRACTION_DIR) not in sys.path:
     sys.path.insert(0, str(_EXTRACTION_DIR))
 from llm_client import PROMPT_VERSION, get_client  # noqa: E402
+from llm_governance import get_shared_governance  # noqa: E402
 from requirement_extractor import extract_from_document  # noqa: E402
 from requirement_repository import (  # noqa: E402
     complete_extraction_run,
@@ -511,7 +512,10 @@ def run_requirement_extraction(
         persist_outcome(outcome)
 
     try:
-        client = get_client(model_name, visa_category=source.visa_category)
+        client = get_client(
+            model_name, visa_category=source.visa_category,
+            governance=get_shared_governance(),
+        )
         extract_from_document(
             source=source_ctx,
             document=document_ctx,

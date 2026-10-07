@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from db import ROOT, init_schema  # noqa: E402
 from llm_client import PROMPT_VERSION, DEFAULT_OPENAI_MODEL, get_client  # noqa: E402
+from llm_governance import get_shared_governance  # noqa: E402
 from requirement_extractor import extract_from_document  # noqa: E402
 from requirement_repository import complete_extraction_run, create_extraction_run, persist_requirement  # noqa: E402
 import review as review_mod  # noqa: E402
@@ -76,7 +77,7 @@ def run_for_document(conn, document_id: str, model: str, dry_run: bool, limit: i
     document_ctx = {"document_id": document_id, "version": version, "title": doc["title"]}
 
     try:
-        client = get_client(model, visa_category=visa_category)
+        client = get_client(model, visa_category=visa_category, governance=get_shared_governance())
         outcomes = extract_from_document(
             source=source_ctx, document=document_ctx, all_chunks=chunks, llm_client=client,
             context_window=context_window,

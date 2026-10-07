@@ -97,14 +97,15 @@ class MockLLMClient(LLMClient):
     textual match for; returns UNKNOWN/None fields otherwise - same discipline the real prompt
     demands. TEST-ONLY: never returned by ``get_client`` and never a production default.
 
-    The optional ``model`` argument is accepted (and ignored) so the class can substitute
-    for the OpenAI-only ``get_client`` factory signature in unit tests without breaking
-    call sites that pass a model name.
+    The optional ``model``/``governance`` arguments are accepted (and ignored) so the
+    class can substitute for the real ``get_client`` factory signature in unit tests
+    without breaking call sites that pass a model name or a shared governance instance.
     """
 
     model_name = "mock-llm-v1"
 
-    def __init__(self, model: str | None = None, visa_category: str | None = None):
+    def __init__(self, model: str | None = None, visa_category: str | None = None,
+                 governance=None):
         self.visa_category = visa_category
         self._system_prompt = ""
 
@@ -681,12 +682,10 @@ class GeminiLLMClient(LLMClient):
         backoff_seconds = [5, 15, 45]
         resp = None
         retries = 0
-        last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
                 resp = requests.post(url, headers=headers, json=payload, timeout=180)
             except (requests.Timeout, requests.ConnectionError) as exc:
-                last_exc = exc
                 if attempt < max_retries:
                     time.sleep(backoff_seconds[attempt])
                     retries += 1
@@ -703,7 +702,6 @@ class GeminiLLMClient(LLMClient):
                 retries += 1
                 continue
             break
-        del last_exc
 
         if resp.status_code == 429:
             raise RuntimeError(
@@ -800,7 +798,8 @@ class GeminiLLMClient(LLMClient):
         ]
 
 
-def get_client(model: str | None = None, visa_category: str | None = None) -> LLMClient:
+def get_client(model: str | None = None, visa_category: str | None = None,
+                governance=None) -> LLMClient:
     """Production factory — resolves to OpenAILLMClient or GeminiLLMClient.
 
     Resolves `model` from the argument, then `EXTRACTION_MODEL`, falling back to
@@ -808,6 +807,14 @@ def get_client(model: str | None = None, visa_category: str | None = None) -> LL
     ``mock-llm-v1`` or an unsupported provider such as Anthropic) raises immediately
     so that production never silently falls back to fake requirement output.  A
     missing API key for the resolved provider also fails fast.
+
+    `governance` is an optional pre-built LLMGovernance instance. When omitted,
+    each client builds its own fresh, empty-state instance (the old behavior) —
+    callers that extract more than one document/source in the same process
+    (e.g. a sync run covering many sources) should build ONE shared instance
+    via `llm_governance.get_shared_governance()` and pass it here, so the
+    response cache and rate limiter actually see calls across the whole run
+    instead of resetting on every single `get_client()` call.
     """
     if model is None:
         model = os.getenv("EXTRACTION_MODEL", DEFAULT_OPENAI_MODEL)
@@ -819,9 +826,9 @@ def get_client(model: str | None = None, visa_category: str | None = None) -> LL
             "(e.g. EXTRACTION_MODEL=gpt-4o-mini or EXTRACTION_MODEL=gemini-flash-lite-latest)."
         )
     if OpenAILLMClient._is_openai_model(model):
-        return OpenAILLMClient(model=model, visa_category=visa_category)
+        return OpenAILLMClient(model=model, visa_category=visa_category, governance=governance)
     if GeminiLLMClient._is_gemini_model(model):
-        return GeminiLLMClient(model=model, visa_category=visa_category)
+        return GeminiLLMClient(model=model, visa_category=visa_category, governance=governance)
     raise ValueError(
         f"Unsupported extraction model {model!r}.  Supported providers are OpenAI "
         "(examples: gpt-4o-mini, gpt-4o, ft:gpt-4o-mini-...) and Gemini "
