@@ -368,6 +368,36 @@ def create_source(
         return _source_to_response(obj)
 
 
+@router.post("/{source_id}/sync", status_code=202)
+def sync_one_source(
+    source_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Run exactly one government source's sync in the background (admin only).
+
+    Reuses the same process-wide sync lock as the global "sync all sources"
+    trigger (POST /api/v1/admin/sync) and the scheduled job, so this returns
+    409 if ANY sync - global or another single source - is already running.
+    Returns immediately with {"run_id", "status": "STARTED"}; progress is
+    readable via the existing GET /api/v1/admin/runs/{run_id}.
+    """
+    _require_admin(current_user)
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
+        repo = SourceRepo(session)
+        if not repo.get(source_id):
+            raise HTTPException(status_code=404, detail="Source not found")
+
+    from scheduler import start_single_source_sync_background
+    result = start_single_source_sync_background(engine, source_id, trigger_type="MANUAL")
+    if result.get("status") == "busy":
+        raise HTTPException(
+            status_code=409, detail=result.get("detail", "A sync is already in progress")
+        )
+    return result
+
+
 @router.patch("/{source_id}", response_model=SourceResponse)
 def update_source(
     source_id: str,

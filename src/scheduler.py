@@ -221,6 +221,97 @@ def _run_sync_job(run_id: str, engine, trigger_type: str) -> None:
         logger.exception("Failed to record terminal state for background sync %s", run_id)
 
 
+def _run_single_source_sync_job(run_id: str, engine, source_id: str, trigger_type: str) -> None:
+    """Background-thread body for a single-source sync. Mirrors _run_sync_job
+    exactly, but calls sync_source() for one source_id instead of
+    sync_all_sources() for every active source."""
+    from db.connection import get_session
+    from orchestration.government_sync import sync_source
+
+    _set_job(run_id, status="RUNNING", started_at=datetime.now(_tz.utc).isoformat())
+
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    try:
+        with get_session(engine) as session:
+            sync_result = sync_source(session, source_id, dry_run=False, trigger_type=trigger_type)
+            result = {"source_id": sync_result.source_id, "status": sync_result.status}
+    except Exception as e:
+        error = str(e)
+    finally:
+        # Same ordering/exactly-once guarantee as _run_sync_job: release before
+        # the terminal status is published, and only here, never twice.
+        _release_sync_lock()
+
+    try:
+        if error is None and result is not None:
+            _set_job(
+                run_id, status="COMPLETED", result=result,
+                completed_at=datetime.now(_tz.utc).isoformat(),
+            )
+            logger.info(
+                "Background single-source sync completed",
+                extra={"run_id": run_id, "source_id": source_id, "status": result["status"]},
+            )
+        else:
+            _set_job(
+                run_id, status="FAILED", error=error or "Background sync produced no result",
+                completed_at=datetime.now(_tz.utc).isoformat(),
+            )
+            logger.error(
+                "Background single-source sync failed",
+                extra={"run_id": run_id, "source_id": source_id,
+                       "error": error or "Background sync produced no result"},
+            )
+    except Exception:
+        logger.exception(
+            "Failed to record terminal state for background single-source sync %s", run_id
+        )
+
+
+def start_single_source_sync_background(
+    engine, source_id: str, trigger_type: str = "MANUAL"
+) -> dict[str, Any]:
+    """Start a sync for exactly one government source in a background thread.
+
+    Reuses the same _sync_lock as start_sync_background/the scheduled job, so
+    a per-source sync and a global "sync all" (or another per-source sync) can
+    never run concurrently either - at most one sync of any kind runs at a
+    time. Same immediate-rejection semantics: the lock is acquired
+    synchronously before the thread is spawned, so a concurrent call is
+    rejected right away, never blocks.
+
+    Returns {"run_id": <uuid>, "status": "STARTED"} on success, or
+    {"status": "busy", "detail": ...} if a sync is already running.
+    Progress/result is then readable via get_sync_job(run_id) - the same
+    registry and the same GET /admin/runs/{run_id} route used for the global
+    sync, with zero changes needed there.
+    """
+    if not _acquired_sync_lock():
+        logger.warning(
+            "Single-source background sync rejected — another sync is already running",
+            extra={"source_id": source_id},
+        )
+        return {"status": "busy", "detail": "A sync is already in progress"}
+
+    run_id = str(uuid.uuid4())
+    _set_job(
+        run_id,
+        status="STARTED", trigger_type=trigger_type, source_id=source_id,
+        started_at=None, completed_at=None, result=None, error=None,
+    )
+    thread = threading.Thread(
+        target=_run_single_source_sync_job, args=(run_id, engine, source_id, trigger_type),
+        name=f"sync-job-{run_id}", daemon=True,
+    )
+    thread.start()
+    logger.info(
+        "Single-source background sync started",
+        extra={"run_id": run_id, "source_id": source_id, "trigger_type": trigger_type},
+    )
+    return {"run_id": run_id, "status": "STARTED"}
+
+
 def start_sync_background(engine, trigger_type: str = "MANUAL") -> dict[str, Any]:
     """Start a government source sync in a background thread and return immediately.
 
