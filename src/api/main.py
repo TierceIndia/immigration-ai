@@ -190,7 +190,7 @@ async def request_id_middleware(request: Request, call_next):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs, admin_sources, admin_requirements, admin_documents, admin_knowledge, admin_schema, admin_scheduler  # noqa: E402
+from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs, admin_sources, admin_requirements, admin_documents, admin_knowledge, admin_schema, admin_scheduler, admin_applicants  # noqa: E402
 from api.routes.auth import require_admin  # noqa: E402
 
 app.include_router(health.router)
@@ -205,6 +205,7 @@ app.include_router(admin_documents.router, prefix="/api/v1/admin/documents", tag
 app.include_router(admin_knowledge.router, prefix="/api/v1/admin/knowledge-state", tags=["admin-knowledge-state"])
 app.include_router(admin_schema.router, prefix="/api/v1/admin/schema", tags=["admin-schema"])
 app.include_router(admin_scheduler.router, prefix="/api/v1/admin/scheduler", tags=["admin-scheduler"])
+app.include_router(admin_applicants.router, prefix="/api/v1/admin/applicants", tags=["admin-applicants"])
 
 
 @app.post("/api/v1/admin/sync", tags=["admin-sync"], status_code=202)
