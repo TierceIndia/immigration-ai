@@ -5,6 +5,19 @@ import { useToast } from "../components/ToastContext.jsx";
 
 const POLL_INTERVAL_MS = 1500;
 
+// A 409 means one of two very different things: the sync lock is held, or the
+// host behind this source refused a request and is paused (see
+// FETCH_COOLDOWN_HOURS). The API tags the second with code "host_cooldown" so
+// the two never collapse into the same misleading sentence — a busy server and
+// a hostile one deserve different words.
+function conflictMessage(err) {
+  const detail = err?.body?.detail;
+  if (detail && typeof detail === "object" && detail.code === "host_cooldown") {
+    return detail.message;
+  }
+  return "A sync is already in progress — try again shortly.";
+}
+
 // Shared "Run now" / "Run all sources" behavior: polls GET /admin/runs/{id}
 // until it settles, then shows a plain-language toast summary linking to
 // Review. Pipeline-run internals (run ids, raw statuses) are never shown -
@@ -34,7 +47,13 @@ export function useSyncRunner(onSettled) {
       if (typeof result.total_sources === "number") {
         message = `${result.changed} source${result.changed === 1 ? "" : "s"} updated, ${result.errors} failed`;
       } else if (result.source_id) {
-        const plain = { changed: "content changed", unchanged: "unchanged", error: "failed", no_document: "no document found" };
+        const plain = {
+          changed: "content changed",
+          unchanged: "unchanged",
+          error: "failed",
+          no_document: "no document found",
+          cooldown: "paused — this host refused a request",
+        };
         message = `${result.source_id}: ${plain[result.status] || result.status}`;
       } else {
         message = "Sync completed";
@@ -78,7 +97,7 @@ export function useSyncRunner(onSettled) {
         start(result.run_id);
       } catch (err) {
         if (err.status === 409) {
-          showToast("A sync is already in progress — try again shortly.");
+          showToast(conflictMessage(err));
         } else {
           showToast(err.message || "Could not start sync");
         }
@@ -93,7 +112,7 @@ export function useSyncRunner(onSettled) {
       start(result.run_id);
     } catch (err) {
       if (err.status === 409) {
-        showToast("A sync is already in progress — try again shortly.");
+        showToast(conflictMessage(err));
       } else {
         showToast(err.message || "Could not start sync");
       }

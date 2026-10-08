@@ -19,6 +19,15 @@ function formatDateTime(iso) {
   }
 }
 
+// True while the source's HOST is in a refusal cooldown: it answered one of
+// our requests with 403/429, so sync skips every source on it until then.
+// Evaluated at render time so an already-expired pause never disables a button.
+function isPaused(source, now = Date.now()) {
+  if (!source.blocked_until) return false;
+  const until = Date.parse(source.blocked_until);
+  return Number.isFinite(until) && until > now;
+}
+
 export default function SourcesPage() {
   const sourcesState = useApi(() => api.listSources(), []);
   const { running, runOne, runAll } = useSyncRunner(() => sourcesState.reload());
@@ -50,7 +59,7 @@ export default function SourcesPage() {
     return (
       <div>
         <h1>Sources</h1>
-        <TableSkeleton rows={6} cols={7} />
+        <TableSkeleton rows={6} cols={9} />
       </div>
     );
   }
@@ -81,18 +90,35 @@ export default function SourcesPage() {
     { key: "fetch_status", header: "Last result", render: (s) => <StatusBadge value={s.fetch_status} /> },
     { key: "consecutive_failures", header: "Failures", render: (s) => s.consecutive_failures ?? 0 },
     {
+      key: "blocked_until",
+      header: "Paused until",
+      render: (s) => (isPaused(s) ? formatDateTime(s.blocked_until) : "—"),
+    },
+    {
       key: "actions",
       header: "",
-      render: (s) => (
-        <div className="flex">
-          <button className="btn btn-sm" onClick={() => runOne(s.source_id)} disabled={running}>
-            Run now
-          </button>
-          <button className="btn btn-sm" onClick={() => toggleEnabled(s)} disabled={running}>
-            {s.status === "DISABLED" ? "Enable" : "Disable"}
-          </button>
-        </div>
-      ),
+      render: (s) => {
+        const paused = isPaused(s);
+        return (
+          <div className="flex">
+            <button
+              className="btn btn-sm"
+              onClick={() => runOne(s.source_id)}
+              disabled={running || paused}
+              title={
+                paused
+                  ? `This host refused our last request. Sync resumes after ${formatDateTime(s.blocked_until)}.`
+                  : undefined
+              }
+            >
+              {paused ? "Paused" : "Run now"}
+            </button>
+            <button className="btn btn-sm" onClick={() => toggleEnabled(s)} disabled={running}>
+              {s.status === "DISABLED" ? "Enable" : "Disable"}
+            </button>
+          </div>
+        );
+      },
     },
   ];
 

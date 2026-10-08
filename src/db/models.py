@@ -134,6 +134,40 @@ class GovernmentSource(Base, TimestampMixin):
 
 
 # ===========================================================================
+#  HOST COOLDOWN — one pause per hostname after it refused us (HTTP 403/429).
+# ===========================================================================
+
+class HostCooldown(Base, TimestampMixin):
+    """A temporary pause on fetching from one hostname after it refused us.
+
+    Keyed by host rather than by source: if a host refuses one of our URLs it
+    will refuse the others too, so every source on that host is skipped until
+    ``cooldown_until`` passes. This table is the *only* reaction to a refusal —
+    it never changes the IP address, user agent or fetch method we use, and
+    there is deliberately no override flag to skip it.
+    """
+    __tablename__ = "host_cooldowns"
+
+    host = Column(String(255), primary_key=True)
+    cooldown_until = Column(DateTime(timezone=True), nullable=False)
+    http_status = Column(Integer, nullable=True)
+    # How many times this host has refused us inside the current pause window.
+    # Refreshing a cooldown leaves an existing count intact; a new refusal
+    # window starts it again at 1.
+    hits = Column(Integer, nullable=False, default=1)
+    # The source whose fetch provoked the pause (diagnostic only).
+    source_id = Column(
+        String(32),
+        ForeignKey("government_sources.source_id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        Index("idx_host_cooldown_until", "cooldown_until"),
+    )
+
+
+# ===========================================================================
 #  GOVERNMENT SOURCE AUTO-DISCOVERY — Candidates proposed upstream of
 #  government_sources (never inserted into that table without admin approval).
 # ===========================================================================

@@ -1,4 +1,4 @@
-"""Government sync orchestrator — end-to-end pipeline from source to ACTIVE rules.
+﻿"""Government sync orchestrator — end-to-end pipeline from source to ACTIVE rules.
 
 Pipeline:
     1. Real fetch every due source (no stored-hash short-circuit)
@@ -44,6 +44,8 @@ from db.repositories import PipelineRunRepo
 from rules.requirement_to_rule import compile_approved_requirements
 from rules.rule_repository import EnhancedRuleRepo
 from logging_config import get_logger
+from fetch.politeness import host_of
+from orchestration.host_cooldown import blocked_until
 from utils.fetch_document import fetch_document_and_store
 
 logger = get_logger(__name__)
@@ -60,7 +62,7 @@ _DEFAULT_CRAWL_INTERVAL = _CRAWL_INTERVALS["DAILY"]
 class SyncResult:
     """Result of syncing a single government source."""
     source_id: str
-    status: str  # "unchanged" | "changed" | "error" | "no_document"
+    status: str  # "unchanged" | "changed" | "error" | "no_document" | "cooldown"
     document_id: str | None = None
     document_version: int | None = None
     old_hash: str | None = None
@@ -387,7 +389,34 @@ def sync_source(session: Session, source_id: str,
 
     Failure-safe: if any step fails, old ACTIVE rules remain untouched.
     PipelineRun is marked FAILED or PARTIAL with error details.
+
+    Refuses to run while the source's host is in a refusal cooldown: the run is
+    rejected *before* a PipelineRun is opened, because no request was made and
+    none should be. sync_all_sources() skips these sources up front; this guard
+    covers the single-source path and anything racing in between.
     """
+    if not dry_run:
+        # Look up first rather than raising here: a missing source must keep
+        # reporting through the existing "not found" error path below.
+        _pending = session.get(GovernmentSource, source_id)
+        if _pending is not None:
+            until = blocked_until(session, _pending.url)
+            if until is not None:
+                message = (
+                    f"Host {host_of(_pending.url)} refused our last request; "
+                    f"not trying again before {until.isoformat()}"
+                )
+                logger.warning(
+                    "Source sync refused — host is in a refusal cooldown",
+                    extra={
+                        "source_id": source_id,
+                        "host": host_of(_pending.url),
+                        "cooldown_until": until.isoformat(),
+                    },
+                )
+                return SyncResult(source_id=source_id, status="cooldown",
+                                  errors=[message])
+
     run_repo = PipelineRunRepo(session)
     rule_repo = EnhancedRuleRepo(session)
     run = run_repo.create(source_id=source_id, trigger_type=trigger_type)
@@ -640,6 +669,21 @@ def sync_all_sources(session: Session, dry_run: bool = False,
     )
     results = []
     for src in sources:
+        if not dry_run:
+            # A host that refused us is paused. Every source on it is skipped
+            # for the rest of the run — the refusal is about the host, not the
+            # one URL we happened to ask for.
+            until = blocked_until(session, src.url, now)
+            if until is not None:
+                logger.info(
+                    "Source skipped — host is in a refusal cooldown",
+                    extra={
+                        "source_id": src.source_id,
+                        "host": host_of(src.url),
+                        "cooldown_until": until.isoformat(),
+                    },
+                )
+                continue
         if (
             trigger_type == "SCHEDULED"
             and not dry_run

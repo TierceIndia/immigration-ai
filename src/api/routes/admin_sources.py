@@ -13,7 +13,9 @@ from api.routes.auth import require_admin
 from db.connection import get_session, get_db_engine
 from db.models import DiscoveredSource, GovernmentSource
 from db.repositories import DiscoveredSourceRepo, SourceRepo
+from fetch.politeness import host_of
 from logging_config import get_logger
+from orchestration.host_cooldown import blocked_until, blocked_until_map
 from source_discovery import discover_sources
 
 logger = get_logger(__name__)
@@ -87,9 +89,15 @@ class SourceResponse(BaseModel):
     last_error: str | None = None
     consecutive_failures: int | None = None
     created_at: str | None = None
+    # When the source's HOST will talk to us again after refusing a fetch
+    # (HTTP 403/429). Null while the host is reachable. Sources on such a host
+    # are skipped by sync, and "Run now" answers 409 until this passes.
+    blocked_until: str | None = None
 
 
-def _source_to_response(obj: GovernmentSource) -> SourceResponse:
+def _source_to_response(
+    obj: GovernmentSource, host_cooldown_until=None
+) -> SourceResponse:
     return SourceResponse(
         source_id=obj.source_id,
         country_id=obj.country_id,
@@ -113,7 +121,16 @@ def _source_to_response(obj: GovernmentSource) -> SourceResponse:
         last_error=obj.last_error,
         consecutive_failures=obj.consecutive_failures,
         created_at=obj.created_at.isoformat() if obj.created_at else None,
+        blocked_until=(
+            host_cooldown_until.isoformat() if host_cooldown_until else None
+        ),
     )
+
+
+def _responses_for(session: Session, sources: list[GovernmentSource]) -> list[SourceResponse]:
+    """Serialize a page of sources with ONE cooldown query, not one per row."""
+    untils = blocked_until_map(session, [s.url for s in sources])
+    return [_source_to_response(s, untils.get(s.url)) for s in sources]
 
 
 # ===========================================================================
@@ -265,7 +282,7 @@ def approve_discovered(
             source_fields=source_fields,
         )
         session.commit()
-        return _source_to_response(source)
+        return _source_to_response(source, blocked_until(session, source.url))
 
 
 @router.post("/discovered/{discovered_source_id}/reject")
@@ -305,7 +322,7 @@ def list_sources(
         from sqlalchemy import select
         stmt = select(GovernmentSource)
         sources = list(session.execute(stmt).scalars())
-        return [_source_to_response(s) for s in sources]
+        return _responses_for(session, sources)
 
 
 @router.get("/{source_id}", response_model=SourceResponse)
@@ -321,7 +338,7 @@ def get_source(
         obj = repo.get(source_id)
         if not obj:
             raise HTTPException(status_code=404, detail="Source not found")
-        return _source_to_response(obj)
+        return _source_to_response(obj, blocked_until(session, obj.url))
 
 
 @router.post("", response_model=SourceResponse, status_code=201)
@@ -353,7 +370,7 @@ def create_source(
             notes=body.notes,
         )
         session.commit()
-        return _source_to_response(obj)
+        return _source_to_response(obj, blocked_until(session, obj.url))
 
 
 @router.post("/{source_id}/sync", status_code=202)
@@ -367,14 +384,39 @@ def sync_one_source(
     Reuses the same process-wide sync lock as the global "sync all sources"
     trigger (POST /api/v1/admin/sync) and the scheduled job, so this returns
     409 if ANY sync - global or another single source - is already running.
+
+    Also returns 409 when the source's HOST is in a refusal cooldown: the host
+    answered our last request with 403/429 and every source on it is paused
+    until ``FETCH_COOLDOWN_HOURS`` elapse. Deliberately no override flag — a
+    forced request is still a request the host asked us not to make.
+
     Returns immediately with {"run_id", "status": "STARTED"}; progress is
     readable via the existing GET /api/v1/admin/runs/{run_id}.
     """
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = SourceRepo(session)
-        if not repo.get(source_id):
+        source = repo.get(source_id)
+        if not source:
             raise HTTPException(status_code=404, detail="Source not found")
+        until = blocked_until(session, source.url)
+        if until is not None:
+            # Structured detail (unlike the plain-string "busy" 409) so the
+            # client can tell a paused host from an in-flight sync without
+            # guessing at prose.
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "host_cooldown",
+                    "message": (
+                        f"Host {host_of(source.url)} refused our last request and is "
+                        f"paused until {until.isoformat()}. "
+                        f"Sources on that host are skipped by sync until then."
+                    ),
+                    "host": host_of(source.url),
+                    "blocked_until": until.isoformat(),
+                },
+            )
 
     from scheduler import start_single_source_sync_background
     result = start_single_source_sync_background(engine, source_id, trigger_type="MANUAL")
@@ -409,4 +451,4 @@ def update_source(
         for k, v in update_fields.items():
             setattr(obj, k, v)
         session.commit()
-        return _source_to_response(obj)
+        return _source_to_response(obj, blocked_until(session, obj.url))

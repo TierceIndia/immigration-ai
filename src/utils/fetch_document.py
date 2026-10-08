@@ -50,6 +50,7 @@ from fetch.extractor_html import extract_html as _extract_html
 from fetch.extractor_pdf import extract_pdf as _extract_pdf
 from change_detection.hashing import sha256_bytes
 from logging_config import get_logger
+from orchestration.host_cooldown import clear_cooldown, is_refusal, start_cooldown
 from sqlalchemy.orm import Session
 
 import fetch.browser_fetcher as browser_fetcher
@@ -305,6 +306,16 @@ def _record_fetch_failure(
     source.last_error = fetch_result.error
     source.last_error_type = fetch_result.error_type
     source.consecutive_failures = (source.consecutive_failures or 0) + 1
+
+    # A refusal (403/429) pauses the whole host, not just this source: the next
+    # request would be refused too. Timeouts, DNS failures and 5xx are faults,
+    # not refusals, and never pause anything. The pause is the *only* reaction —
+    # we keep the same IP, the same User-Agent and the same fetch method.
+    if is_refusal(fetch_result.http_status):
+        start_cooldown(
+            session, source.url, fetch_result.http_status,
+            source_id=source.source_id, now=now,
+        )
 
     session.add(
         FetchLog(
@@ -581,6 +592,12 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
         acquisition = "browser"
     if not fetch_result.ok:
         return _record_fetch_failure(session, source, fetch_result, now)
+
+    # A real response proves the host is reachable again, so drop any pause it
+    # (or a sibling source on the same host) left behind. Self-healing: a pause
+    # that has already expired is removed rather than left to linger until some
+    # later success happens to touch the same host.
+    clear_cooldown(session, source.url)
 
     raw_bytes = fetch_result.raw_bytes
     content_hash = sha256_bytes(raw_bytes)
