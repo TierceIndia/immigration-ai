@@ -1,6 +1,8 @@
 """Auth routes — register, login, me."""
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 
@@ -52,8 +54,21 @@ def get_current_user_id(request: Request) -> str:
     return get_current_user(request)["user_id"]
 
 
+def _public_registration_allowed() -> bool:
+    return os.getenv("ALLOW_PUBLIC_REGISTRATION", "false").strip().lower() == "true"
+
+
 @router.post("/register", response_model=RegisterResponse, status_code=201)
 def register(body: UserCreate, request: Request):
+    """Self-service registration — gated behind ALLOW_PUBLIC_REGISTRATION
+    (default false). Admin accounts are bootstrapped separately via
+    ADMIN_EMAIL/ADMIN_PASSWORD (src/create_admin.py), never through this
+    route - self-registration always yields role="applicant" regardless."""
+    if not _public_registration_allowed():
+        raise HTTPException(
+            status_code=403,
+            detail="Public registration is disabled. Set ALLOW_PUBLIC_REGISTRATION=true to enable it.",
+        )
     engine = get_db_engine(request)
     with get_session(engine) as session:
         svc = AuthService(session)

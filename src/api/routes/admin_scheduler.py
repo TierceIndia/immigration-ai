@@ -7,7 +7,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
-from api.routes.auth import get_current_user
+from api.routes.auth import require_admin
 from db.connection import get_session, get_db_engine
 from db.repositories import SchedulerSettingsRepo
 from logging_config import get_logger
@@ -15,11 +15,6 @@ from scheduler import apply_live_schedule, compute_next_run_at
 
 logger = get_logger(__name__)
 router = APIRouter()
-
-
-def _require_admin(user: dict) -> None:
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
 
 
 class SchedulerResponse(BaseModel):
@@ -63,10 +58,9 @@ def _settings_to_response(obj) -> SchedulerResponse:
 @router.get("", response_model=SchedulerResponse)
 def get_scheduler_settings(
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Current global sync schedule and its next computed run time."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         settings = SchedulerSettingsRepo(session).get()
@@ -78,12 +72,11 @@ def get_scheduler_settings(
 def update_scheduler_settings(
     body: SchedulerUpdateRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Change the global sync schedule. Persists to scheduler_settings (so it
     survives a restart) and applies it to the live scheduler job immediately,
     best-effort, via APScheduler's reschedule_job/pause_job/resume_job."""
-    _require_admin(current_user)
     if body.mode == "daily" and (body.hour_utc is None or body.minute_utc is None):
         raise HTTPException(
             status_code=422,

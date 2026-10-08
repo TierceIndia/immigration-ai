@@ -530,42 +530,65 @@ _cors_origins = [o.strip() for o in _cors_origins_str.split(",") if o.strip()]
 
 ### Route Registry
 
+Updated as part of the admin-frontend build-out (see "Route removal" note below for what
+changed and why).
+
 ```
-/health                              — GET health check (no auth)
-/api/v1/auth/register                — POST (no auth)
-/api/v1/auth/login                   — POST (no auth)
-/api/v1/auth/me                      — GET (JWT required)
-/api/v1/applicants/                  — POST, GET (JWT required)
-/api/v1/applicants/{id}              — GET, PATCH (JWT required)
-/api/v1/assessments/                 — POST, GET (JWT required)
-/api/v1/assessments/{id}             — GET (JWT required)
-/api/v1/assessments/evaluate         — POST (JWT required)
-/api/v1/admin/rules/                 — GET (admin only)
-/api/v1/admin/rules/queue            — GET (admin only)
-/api/v1/admin/rules/{id}             — GET (admin only)
-/api/v1/admin/rules/{id}/validate    — POST (admin only)
-/api/v1/admin/rules/{id}/approve     — POST (admin only)
-/api/v1/admin/rules/{id}/activate    — POST (admin only)
-/api/v1/admin/rules/{id}/reject      — POST (admin only)
-/api/v1/admin/rules/{id}/retire      — POST (admin only)
-/api/v1/admin/requirements/          — GET (admin only)
-/api/v1/admin/requirements/{id}      — GET (admin only)
-/api/v1/admin/requirements/{id}/approve — POST (admin only)
-/api/v1/admin/requirements/{id}/reject  — POST (admin only)
-/api/v1/admin/sources/               — GET (admin only)
-/api/v1/admin/sources/{id}           — GET (admin only)
-/api/v1/admin/documents/             — GET (admin only)
-/api/v1/admin/documents/{id}         — GET (admin only)
-/api/v1/admin/documents/{id}/versions — GET (admin only)
-/api/v1/admin/documents/{id}/chunks  — GET (admin only)
-/api/v1/admin/documents/{id}/diff    — GET (admin only)
-/api/v1/admin/knowledge-state/       — GET (admin only)
-/api/v1/admin/runs/                  — GET (admin only)
-/api/v1/admin/runs/summary           — GET (admin only)
-/api/v1/admin/runs/{id}              — GET (admin only)
-/api/v1/admin/runs/source/{id}       — GET (admin only)
-/api/v1/admin/sync                   — POST (admin only)
+/health                                        — GET health check (no auth)
+/ready                                         — GET readiness check (no auth)
+/api/v1/auth/register                          — POST (no auth; 403 unless ALLOW_PUBLIC_REGISTRATION=true)
+/api/v1/auth/login                             — POST (no auth)
+/api/v1/auth/me                                — GET (JWT required)
+/api/v1/applicants/                            — POST, GET (JWT required, owner-scoped)
+/api/v1/applicants/{id}                        — GET, PATCH (JWT required, owner-scoped)
+/api/v1/assessments/                           — POST, GET (JWT required, owner-scoped)
+/api/v1/assessments/{id}                       — GET (JWT required, owner-scoped)
+/api/v1/assessments/evaluate                   — POST (JWT required, owner-scoped)
+/api/v1/admin/rules/queue                      — GET (admin only)
+/api/v1/admin/rules/                           — GET, ?status=/?program_id= (admin only)
+/api/v1/admin/rules/batch/validate             — POST (admin only)
+/api/v1/admin/rules/batch/approve              — POST (admin only)
+/api/v1/admin/rules/batch/activate             — POST (admin only)
+/api/v1/admin/rules/{id}                       — GET (admin only)
+/api/v1/admin/rules/{id}/validate              — POST (admin only)
+/api/v1/admin/rules/{id}/approve               — POST (admin only)
+/api/v1/admin/rules/{id}/activate              — POST (admin only)
+/api/v1/admin/rules/{id}/reject                — POST (admin only)
+/api/v1/admin/rules/{id}/retire                — POST (admin only)
+/api/v1/admin/requirements/review-queue        — GET, ?status=/?program_id= (admin only)
+/api/v1/admin/requirements/{id}                — GET (admin only)
+/api/v1/admin/requirements/review/{id}/approve           — POST (admin only)
+/api/v1/admin/requirements/review/{id}/reject            — POST (admin only)
+/api/v1/admin/requirements/review/{id}/mark-needs-review — POST (admin only)
+/api/v1/admin/sources/                         — GET, POST (admin only)
+/api/v1/admin/sources/{id}                     — GET, PATCH (admin only)
+/api/v1/admin/sources/{id}/sync                — POST (admin only; shares the sync lock with /admin/sync)
+/api/v1/admin/sources/discover                 — POST (admin only, API-only - no frontend page)
+/api/v1/admin/sources/discovered               — GET (admin only, API-only)
+/api/v1/admin/sources/discovered/{id}/approve  — POST (admin only, API-only)
+/api/v1/admin/sources/discovered/{id}/reject   — POST (admin only, API-only)
+/api/v1/admin/documents/                       — GET (admin only)
+/api/v1/admin/documents/{id}                   — GET (admin only)
+/api/v1/admin/documents/{id}/versions          — GET (admin only)
+/api/v1/admin/documents/{id}/chunks            — GET (admin only)
+/api/v1/admin/documents/{id}/diff              — GET (admin only)
+/api/v1/admin/runs/{id}                        — GET (admin only; status polling only)
+/api/v1/admin/scheduler/                       — GET, PUT (admin only)
+/api/v1/admin/applicants/                      — GET (admin only, read-only, cross-user)
+/api/v1/admin/applicants/{id}                  — GET (admin only, read-only, cross-user)
+/api/v1/admin/sync                             — POST (admin only; all active sources)
 ```
+
+**Route removal (admin-frontend build-out)**: `GET /api/v1/admin/schema` (dev/introspection,
+backed by `db/schema_info.py`) and `GET /api/v1/admin/knowledge-state` (unused by any test or
+by the new frontend) were deleted outright, along with their dedicated test files.
+`GET /api/v1/admin/runs` (list), `/admin/runs/summary`, and `/admin/runs/source/{id}` were
+also removed — the admin frontend deliberately has no pipeline-runs/extraction-runs page
+(only a non-blocking "sync in progress" banner backed by `GET /admin/runs/{run_id}`, which is
+kept). Source auto-discovery (`/admin/sources/discover` + `/discovered/*`) is a real, tested
+feature that stays — it's simply not wired into a frontend page in this build. All 7
+previously-duplicated local `_require_admin()` helpers across the admin route files were
+replaced with the single shared `Depends(require_admin)` from `api/routes/auth.py`.
 
 ### Error Responses
 

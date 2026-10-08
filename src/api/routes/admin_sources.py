@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from api.routes.auth import get_current_user
+from api.routes.auth import require_admin
 from db.connection import get_session, get_db_engine
 from db.models import DiscoveredSource, GovernmentSource
 from db.repositories import DiscoveredSourceRepo, SourceRepo
@@ -18,11 +18,6 @@ from source_discovery import discover_sources
 
 logger = get_logger(__name__)
 router = APIRouter()
-
-
-def _require_admin(user: dict) -> None:
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
 
 
 class SourceCreateRequest(BaseModel):
@@ -195,11 +190,10 @@ class DiscoveryRejectRequest(BaseModel):
 def discover(
     body: DiscoveryRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Run source auto-discovery from a seed URL and return newly created candidates
     (status PENDING_REVIEW). Never activates anything — approval is a separate action."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         _, report = discover_sources(
@@ -220,10 +214,9 @@ def list_discovered(
     request: Request,
     status: str | None = None,
     suggested_visa_category: str | None = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """List discovered candidates, filterable by status / suggested category."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = DiscoveredSourceRepo(session)
@@ -236,11 +229,10 @@ def approve_discovered(
     discovered_source_id: str,
     body: DiscoveryApproveRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Promote a candidate into a real government_sources row (admin action). The
     candidate_url is fixed to the discovered page; the admin fills the remaining fields."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = DiscoveredSourceRepo(session)
@@ -281,10 +273,9 @@ def reject_discovered(
     discovered_source_id: str,
     body: DiscoveryRejectRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Reject a discovered candidate with a reason."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = DiscoveredSourceRepo(session)
@@ -306,10 +297,9 @@ def reject_discovered(
 @router.get("", response_model=list[SourceResponse])
 def list_sources(
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """List all government sources."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         from sqlalchemy import select
@@ -322,10 +312,9 @@ def list_sources(
 def get_source(
     source_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Get a single government source by ID."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = SourceRepo(session)
@@ -339,10 +328,9 @@ def get_source(
 def create_source(
     body: SourceCreateRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Create a new government source."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = SourceRepo(session)
@@ -372,7 +360,7 @@ def create_source(
 def sync_one_source(
     source_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Run exactly one government source's sync in the background (admin only).
 
@@ -382,7 +370,6 @@ def sync_one_source(
     Returns immediately with {"run_id", "status": "STARTED"}; progress is
     readable via the existing GET /api/v1/admin/runs/{run_id}.
     """
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = SourceRepo(session)
@@ -403,10 +390,9 @@ def update_source(
     source_id: str,
     body: SourceUpdateRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Update a government source (status, priority, crawl_frequency, notes, url)."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = SourceRepo(session)

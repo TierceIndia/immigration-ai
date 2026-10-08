@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from api.routes.auth import get_current_user
+from api.routes.auth import require_admin
 from db.connection import get_session, get_db_engine
 from db.models import Rule as RuleORM, RuleVersion
 from logging_config import get_logger
@@ -74,11 +74,6 @@ class BatchActionRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _require_admin(user: dict) -> None:
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
-
-
 def _actor_from(current_user: dict) -> str:
     """The audit-trail actor identity for a rule action: ALWAYS the
     authenticated admin, never the request body's own `actor` field (which
@@ -116,10 +111,9 @@ def _orm_to_response(obj: RuleORM) -> RuleResponse:
 def review_queue(
     request: Request,
     program_id: str | None = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Get the review queue — all rules grouped by status."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         from orchestration.government_sync import get_review_queue
@@ -131,10 +125,9 @@ def list_rules(
     request: Request,
     status: str | None = None,
     program_id: str | None = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """List rules, optionally filtered by status and program."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
@@ -158,10 +151,9 @@ def list_rules(
 def batch_validate(
     body: BatchActionRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Batch DRAFT → VALIDATED."""
-    _require_admin(current_user)
     actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -182,10 +174,9 @@ def batch_validate(
 def batch_approve(
     body: BatchActionRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Batch VALIDATED → APPROVED."""
-    _require_admin(current_user)
     actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -206,10 +197,9 @@ def batch_approve(
 def batch_activate(
     body: BatchActionRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Batch APPROVED → ACTIVE (each transactionally supersedes old version)."""
-    _require_admin(current_user)
     actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -229,10 +219,9 @@ def batch_activate(
 def get_rule(
     rule_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Get a single rule by ID."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
@@ -247,10 +236,9 @@ def validate_rule(
     rule_id: str,
     body: RuleActionRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """DRAFT → VALIDATED (admin confirms automated validation passed)."""
-    _require_admin(current_user)
     actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -268,10 +256,9 @@ def approve_rule(
     rule_id: str,
     body: RuleActionRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """VALIDATED → APPROVED (human review passes)."""
-    _require_admin(current_user)
     actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -289,10 +276,9 @@ def reject_rule(
     rule_id: str,
     body: RuleActionRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Any pre-active status → REJECTED."""
-    _require_admin(current_user)
     actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -310,10 +296,9 @@ def activate_rule(
     rule_id: str,
     body: RuleActionRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """APPROVED → ACTIVE. Transactionally supersedes any existing active version."""
-    _require_admin(current_user)
     actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -330,10 +315,9 @@ def retire_rule(
     rule_id: str,
     body: RuleActionRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """SUPERSEDED/ACTIVE → RETIRED."""
-    _require_admin(current_user)
     actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:

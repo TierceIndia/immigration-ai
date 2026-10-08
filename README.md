@@ -90,15 +90,17 @@ DB connectivity — 200 when connected, else 503 with safe, credential-scrubbed 
 `db_error_detail` outside TESTING). Credentials are scrubbed before they can appear in the
 response body.
 
-Scheduler: government source sync runs **once daily at a fixed clock time** (UTC), not on a
-random/interval offset. Configure with `GOVERNMENT_SYNC_HOUR_UTC` (0-23, default `3`) and
-optional `GOVERNMENT_SYNC_MINUTE_UTC` (0-59, default `0`). The legacy interval mode
-(`GOVERNMENT_SYNC_INTERVAL_MINUTES`) is still honored when set by standalone pipeline
-scripts. Manual sync is always available via `POST /api/v1/admin/sync`.
+Scheduler: government source sync runs **once daily at a fixed clock time** (UTC) by default,
+not on a random/interval offset. The env vars (`GOVERNMENT_SYNC_HOUR_UTC` 0-23 default `3`,
+optional `GOVERNMENT_SYNC_MINUTE_UTC` 0-59 default `0`, legacy `GOVERNMENT_SYNC_INTERVAL_MINUTES`)
+are only the startup default — a schedule set via `PUT /api/v1/admin/scheduler` is persisted
+(`scheduler_settings`) and overrides them on every subsequent restart. Manual sync is always
+available via `POST /api/v1/admin/sync` (all sources) or `POST /api/v1/admin/sources/{id}/sync`
+(one source) — both share the same lock, so only one sync ever runs at a time.
 
-Database structure: `GET /api/v1/admin/schema-report` (admin-only, read-only) returns the
-full structure — tables, columns, primary/foreign keys, exact row counts, and the current
-alembic revision. A static snapshot is maintained in [`DBSTRUCTURE.md`](DBSTRUCTURE.md).
+A static DB structure snapshot is maintained in [`DBSTRUCTURE.md`](DBSTRUCTURE.md) (the
+dev-only `GET /api/v1/admin/schema-report` introspection route was removed — unused outside
+its own tests, see DESIGN.md's route-removal note).
 
 ```bash
 # Run API
@@ -247,9 +249,9 @@ Government Source → Phase 1 → Phase 2 → Approved Requirement
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/register` | Register new user (409 on duplicate email) |
+| `POST` | `/register` | Register new user (409 on duplicate email). Gated behind `ALLOW_PUBLIC_REGISTRATION` (default `false` — 403 when disabled); admin accounts are bootstrapped separately via `ADMIN_EMAIL`/`ADMIN_PASSWORD`, never through this route |
 | `POST` | `/login` | Login → JWT token |
-| `GET` | `/me` | Current user info |
+| `GET` | `/me` | Current user info (includes live DB role, not the JWT claim) |
 
 ### Applicants (`/api/v1/applicants`)
 
@@ -273,26 +275,35 @@ All applicant endpoints require JWT authentication.
 
 ### Admin Rules (`/api/v1/admin/rules`)
 
+All mutations are admin-only (`Depends(require_admin)`) and record the **authenticated**
+admin as the actor in `rule_versions.created_by` — the request body's `actor` field is
+accepted (optional, for backward compatibility) but always ignored for the audit value.
+
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/queue` | Review queue (admin only) |
-| `GET` | `/` | List all rules |
-| `GET` | `?status=STATUS` | Filter by status |
+| `GET` | `/queue` | Review queue grouped by status (drafts/validated/approved_pending/active + counts) |
+| `GET` | `/` | List all rules, optional `?status=`/`?program_id=` filters |
 | `GET` | `/{id}` | Get rule |
 | `POST` | `/{id}/validate` | DRAFT → VALIDATED |
 | `POST` | `/{id}/approve` | VALIDATED → APPROVED |
 | `POST` | `/{id}/activate` | APPROVED → ACTIVE (transactional supersession) |
 | `POST` | `/{id}/reject` | Pre-active → REJECTED |
-| `POST` | `/{id}/retire` | SUPERSEDED/RETIRED |
+| `POST` | `/{id}/retire` | SUPERSEDED/ACTIVE → RETIRED |
+| `POST` | `/batch/validate`, `/batch/approve`, `/batch/activate` | Same transitions, by a list of rule_ids |
 
 ### Admin Requirements (`/api/v1/admin/requirements`)
 
+Review actions are admin-only and record the **authenticated** admin in
+`requirement_review.reviewer` (the body's `reviewer` field is accepted but ignored, same as
+rules' `actor` above).
+
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/` | List all requirements with optional status filter |
-| `GET` | `/{id}` | Get requirement detail with evidence |
-| `POST` | `/{id}/approve` | Mark requirement APPROVED |
-| `POST` | `/{id}/reject` | Mark requirement REJECTED |
+| `GET` | `/review-queue` | Requirements awaiting review (`?status=`, default `NEEDS_REVIEW`; `?program_id=`). Each item includes description, confidence, evidence text, source document/version, and — for a CONFLICT — the conflicting `previous_value` |
+| `GET` | `/{id}` | Get requirement detail |
+| `POST` | `/review/{id}/approve` | Mark requirement APPROVED |
+| `POST` | `/review/{id}/reject` | Mark requirement REJECTED |
+| `POST` | `/review/{id}/mark-needs-review` | Mark requirement NEEDS_REVIEW |
 
 ### Admin Documents (`/api/v1/admin/documents`)
 
@@ -304,20 +315,14 @@ All applicant endpoints require JWT authentication.
 | `GET` | `/{document_id}/chunks` | List text chunks (filter by version) |
 | `GET` | `/{document_id}/diff` | Diff between two document versions |
 
-### Admin Knowledge State (`/api/v1/admin/knowledge-state`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/?country_id=AU` | Hierarchical tree: country → visa category → programs → sources → requirement/rule counts |
-
 ### Pipeline Runs (`/api/v1/admin/runs`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/` | List all pipeline runs (newest first, paginated) |
-| `GET` | `/summary` | Aggregate counts by status |
-| `GET` | `/{id}` | Get single pipeline run (with computed rule counters) |
-| `GET` | `/source/{id}` | List runs for a specific source |
+| `GET` | `/{id}` | Get a single pipeline run or background sync job's status (used to poll a Run now/Run all sync to completion) |
+
+The list/summary/per-source history routes that used to live here were removed — the admin
+frontend has no pipeline-runs page (see DESIGN.md's route-removal note).
 
 ### Admin Sources (`/api/v1/admin/sources`)
 
@@ -327,22 +332,34 @@ All applicant endpoints require JWT authentication.
 | `POST` | `/` | Create a source (admin only) |
 | `GET` | `/{source_id}` | Get a single source (admin only) |
 | `PATCH` | `/{source_id}` | Update source — `status` limited to `ACTIVE`/`DISABLED`/`NEEDS_MANUAL_CAPTURE`, 422 otherwise (admin only) |
-| `POST` | `/discover` | Run source discovery (admin only) |
-| `GET` | `/discovered` | List discovered source candidates (admin only) |
-| `POST` | `/discovered/{id}/approve` | Approve a candidate into a real source (admin only) |
-| `POST` | `/discovered/{id}/reject` | Reject a candidate (admin only) |
+| `POST` | `/{source_id}/sync` | Sync just this one source in the background — shares the same lock as `/admin/sync`, 409 if any sync is running. Poll via `GET /admin/runs/{run_id}` |
+| `POST` | `/discover` | Run source discovery (admin only, API-only — no frontend page yet) |
+| `GET` | `/discovered` | List discovered source candidates (admin only, API-only) |
+| `POST` | `/discovered/{id}/approve` | Approve a candidate into a real source (admin only, API-only) |
+| `POST` | `/discovered/{id}/reject` | Reject a candidate (admin only, API-only) |
 
-### Admin Schema (`/api/v1/admin/schema-report`)
+### Admin Scheduler (`/api/v1/admin/scheduler`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/` | Full DB structure: tables, columns, PK/FK/unique/check/index/triggers, live row counts, alembic head (admin only, read-only) |
+| `GET` | `/` | Current global sync schedule (enabled, mode, hour/minute or interval) + computed `next_run_at` |
+| `PUT` | `/` | Change the schedule — validates hour 0-23/minute 0-59/interval ≥15, persists it (`scheduler_settings`, survives a restart), and applies it to the live scheduler job immediately |
+
+### Admin Applicants (`/api/v1/admin/applicants`)
+
+Read-only, admin-only, cross-user view — separate from the owner-scoped `/applicants`/
+`/assessments` routes above, which are unchanged.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | All applicants, paginated, each with its owner's email |
+| `GET` | `/{id}` | One applicant's profile plus their full assessment history |
 
 ### Admin Sync (`/api/v1/admin/sync`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/` | Manually trigger government source sync — **admin only** (401 without token, 403 for non-admins) |
+| `POST` | `/` | Manually trigger a sync of **all** active sources — **admin only** (401 without token, 403 for non-admins, 409 if a sync is already running) |
 
 #### Does `/admin/sync` touch all 14 sources? (updated 2026-10-05)
 

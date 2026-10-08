@@ -10,18 +10,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from api.routes.auth import get_current_user
+from api.routes.auth import require_admin
 from db.connection import get_session, get_db_engine
 from db.models import GovernmentDocument, DocumentVersion, DocumentChunk
 from logging_config import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
-
-
-def _require_admin(user: dict) -> None:
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
 
 
 class DocumentResponse(BaseModel):
@@ -120,10 +115,9 @@ def list_documents(
     source_id: str | None = None,
     program_id: str | None = None,
     status: str | None = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """List government documents, optionally filtered."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         from sqlalchemy import select
@@ -143,10 +137,9 @@ def list_documents(
 def get_document(
     document_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Get a single document by ID."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         doc = session.get(GovernmentDocument, document_id)
@@ -159,10 +152,9 @@ def get_document(
 def list_document_versions(
     document_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """List all versions for a document, newest first."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         doc = session.get(GovernmentDocument, document_id)
@@ -183,10 +175,9 @@ def list_document_chunks(
     document_id: str,
     request: Request,
     version_id: int | None = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """List chunks for a document, ordered by position."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         doc = session.get(GovernmentDocument, document_id)
@@ -210,14 +201,13 @@ def get_document_diff(
     request: Request,
     from_version: int | None = None,
     to_version: int | None = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Get a human-readable diff between two document versions.
 
     If versions not specified, compares the two most recent versions.
     Returns old vs new chunk text side by side.
     """
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         doc = session.get(GovernmentDocument, document_id)

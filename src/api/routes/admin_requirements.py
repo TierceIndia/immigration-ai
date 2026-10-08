@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from api.routes.auth import get_current_user
+from api.routes.auth import require_admin
 from db.connection import get_session, get_db_engine
 from db.models import (
     DocumentVersion, GovernmentDocument, GovernmentSource,
@@ -25,11 +25,6 @@ from logging_config import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
-
-
-def _require_admin(user: dict) -> None:
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
 
 
 def _reviewer_from(current_user: dict) -> str:
@@ -164,13 +159,12 @@ def review_queue(
     request: Request,
     status: str = "NEEDS_REVIEW",
     program_id: str | None = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """List requirements awaiting human review, with full review-feed detail
     (description, evidence, source document/version, and the conflicting
     previous value when applicable) - everything Part 1d's review screen
     needs without a second request per item."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         stmt = select(Requirement).filter(Requirement.status == status)
@@ -186,10 +180,9 @@ def approve_requirement(
     requirement_id: str,
     body: RequirementReviewRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Approve a requirement (change status from NEEDS_REVIEW to APPROVED)."""
-    _require_admin(current_user)
     reviewer = _reviewer_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -209,10 +202,9 @@ def reject_requirement(
     requirement_id: str,
     body: RequirementReviewRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Reject a requirement (change status to REJECTED)."""
-    _require_admin(current_user)
     reviewer = _reviewer_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -232,10 +224,9 @@ def mark_needs_review(
     requirement_id: str,
     body: RequirementReviewRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Mark a requirement as needing human review."""
-    _require_admin(current_user)
     reviewer = _reviewer_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
@@ -254,10 +245,9 @@ def mark_needs_review(
 def get_requirement(
     requirement_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """Get a single requirement by ID."""
-    _require_admin(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = RequirementRepo(session)

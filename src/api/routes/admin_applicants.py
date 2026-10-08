@@ -12,18 +12,13 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from api.helpers import parse_uuid_or_404
-from api.routes.auth import get_current_user
+from api.routes.auth import require_admin
 from db.connection import get_session, get_db_engine
 from db.models import ApiUser, ApplicantProfile, Assessment
 from logging_config import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
-
-
-def _require_admin(user: dict) -> None:
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
 
 
 class AdminApplicantResponse(BaseModel):
@@ -89,10 +84,9 @@ def list_applicants(
     request: Request,
     limit: int = 50,
     offset: int = 0,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """All applicants across all users, paginated, with each one's owner email."""
-    _require_admin(current_user)
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
     engine = get_db_engine(request)
@@ -117,11 +111,10 @@ def list_applicants(
 def get_applicant(
     applicant_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
     """One applicant's profile plus their assessment history (result, ruleset
     hash, date) - no owner check, this is the admin cross-user view."""
-    _require_admin(current_user)
     parse_uuid_or_404(applicant_id)
     engine = get_db_engine(request)
     with get_session(engine) as session:

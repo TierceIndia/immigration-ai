@@ -42,8 +42,16 @@ else:
 @pytest.fixture(autouse=True, scope="session")
 def _set_testing_env():
     os.environ["TESTING"] = "true"
+    # POST /auth/register is gated behind ALLOW_PUBLIC_REGISTRATION in
+    # production (default false). A large number of unrelated test files use
+    # self-registration purely as a way to mint a test user/admin, so the
+    # test session opts in globally here rather than requiring every one of
+    # them to set the flag individually. The gate itself is still covered by
+    # a dedicated test that explicitly overrides this back to false/unset.
+    os.environ["ALLOW_PUBLIC_REGISTRATION"] = "true"
     yield
     os.environ.pop("TESTING", None)
+    os.environ.pop("ALLOW_PUBLIC_REGISTRATION", None)
 
 
 # ---------------------------------------------------------------------------
