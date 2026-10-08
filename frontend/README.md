@@ -1,9 +1,15 @@
 # Admin frontend
 
-Minimal read-only admin console: login, a sources dashboard, and a pipeline
-runs view, with a button to trigger a sync. Plain React + Vite, talks to the
-existing FastAPI backend (`src/api/main.py`) over `fetch` — no new backend
-routes.
+Full admin console for the Immigration Knowledge backend: Dashboard, Sources
+(with per-source and all-sources sync), Review (requirement approvals),
+Rules (lifecycle actions), Documents (versions + diffs), Applicants
+(read-only), and Scheduler. Plain React + Vite + react-router-dom, talks to
+the existing FastAPI backend (`src/api/main.py`) over `fetch` — no UI kit, no
+CSS framework.
+
+Pipeline-run internals (run IDs, raw pipeline-run tables) are deliberately
+not exposed anywhere in the UI — only a non-blocking "sync in progress"
+banner and a final plain-language toast summary.
 
 ## Run
 
@@ -15,6 +21,48 @@ npm run dev
 ```
 
 Opens on http://localhost:5173, which is already in the backend's default
-`CORS_ORIGINS` (see docker-compose.yml). Requires the backend to be running
-(`docker compose up -d`) and at least one admin user (`ADMIN_EMAIL` /
-`ADMIN_PASSWORD` env vars bootstrap one on startup).
+`CORS_ORIGINS` (see `docker-compose.yml` — **not** a wildcard; add your own
+origin there if you run on a different port). Requires the backend to be
+running (`docker compose up -d`) and at least one admin user (`ADMIN_EMAIL` /
+`ADMIN_PASSWORD` env vars bootstrap one on startup). Self-registration
+(`/auth/register`) is disabled by default in the backend
+(`ALLOW_PUBLIC_REGISTRATION=false`) — this console is admin-only and admins
+are provisioned out of band, not through a sign-up form.
+
+## Build
+
+```
+npm run build      # outputs to dist/ (gitignored, not committed)
+npm run preview    # serve the production build locally
+```
+
+## Test
+
+```
+npm test           # vitest, runs once
+npm run test:watch # vitest, watch mode
+```
+
+Uses Vitest + React Testing Library + jsdom. Tests mock `src/api/client.js`
+directly rather than hitting a real backend.
+
+## Structure
+
+```
+src/
+  api/client.js        — fetch wrapper: base URL from VITE_API_BASE_URL, JWT
+                          header, normalized errors, global 401 → logout
+  auth/                 — AuthContext (session state), AdminRoute (route guard)
+  components/           — Layout, Sidebar, Topbar, DataTable, StatusBadge,
+                          Modal, ConfirmDialog, ToastContext, DiffView,
+                          DocumentCard, EmptyState, ErrorState, Skeleton
+  hooks/                — useApi (load/error/data), useSyncRunner (Run now /
+                          Run all, with polling + a plain-language summary toast)
+  pages/                — one file per route
+  styles/               — tokens.css (design tokens), base.css (everything else)
+```
+
+Auth: the JWT lives in `sessionStorage` (cleared when the tab closes). There
+is no refresh endpoint, so **any** 401 from any API call clears the session
+and redirects to `/login` with "Session expired". Client-side role checks
+(`AdminRoute`) are UX only — every admin route is still enforced server-side.

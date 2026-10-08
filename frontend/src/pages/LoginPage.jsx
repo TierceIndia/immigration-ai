@@ -1,61 +1,63 @@
 import { useState } from "react";
-import { api, setSession } from "../api.js";
+import { useLocation, useNavigate } from "react-router-dom";
+import { useAuth } from "../auth/AuthContext.jsx";
 
-export default function LoginPage({ onLoggedIn }) {
+export default function LoginPage() {
+  const { login, message } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   async function handleSubmit(e) {
     e.preventDefault();
+    setBusy(true);
     setError(null);
-    setSubmitting(true);
     try {
-      const result = await api.login(email, password);
-      setSession(result.access_token, result.role);
-      onLoggedIn(result.role);
+      await login(email, password);
+      const dest = location.state?.from?.pathname || "/";
+      navigate(dest, { replace: true });
     } catch (err) {
       setError(err.message || "Login failed");
     } finally {
-      setSubmitting(false);
+      setBusy(false);
     }
   }
 
   return (
     <div className="login-page">
-      <div className="login-card">
-        <h1>Immigration Knowledge</h1>
-        <p className="subtitle">Sign in to the admin console.</p>
-        {error && <div className="error-banner">{error}</div>}
-        <form onSubmit={handleSubmit}>
-          <div className="field">
-            <label htmlFor="email">Email</label>
-            <input
-              id="email"
-              type="email"
-              autoComplete="username"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="password">Password</label>
-            <input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </div>
-          <button className="btn" type="submit" disabled={submitting}>
-            {submitting ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-      </div>
+      <form className="card login-card" onSubmit={handleSubmit}>
+        <h1>Immigration Knowledge — Admin</h1>
+        {message && <p className="field-error">{message}</p>}
+        <div className="field">
+          <label htmlFor="login-email">Email</label>
+          <input
+            id="login-email"
+            type="email"
+            autoComplete="username"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="login-password">Password</label>
+          <input
+            id="login-password"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+        </div>
+        {error && <p className="field-error">{error}</p>}
+        <button className="btn btn-primary" type="submit" disabled={busy}>
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+      </form>
     </div>
   );
 }

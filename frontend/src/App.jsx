@@ -1,64 +1,46 @@
-import { useEffect, useState } from "react";
-import { getToken, getRole, clearSession } from "./api.js";
+import { Navigate, Route, Routes } from "react-router-dom";
+import { AuthProvider } from "./auth/AuthContext.jsx";
+import AdminRoute from "./auth/AdminRoute.jsx";
+import { ToastProvider } from "./components/ToastContext.jsx";
+import Layout from "./components/Layout.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
-import SourcesDashboard from "./pages/SourcesDashboard.jsx";
-import PipelineRunsPage from "./pages/PipelineRunsPage.jsx";
-import SyncButton from "./components/SyncButton.jsx";
+import DashboardPage from "./pages/DashboardPage.jsx";
+import SourcesPage from "./pages/SourcesPage.jsx";
+import SourceDetailPage from "./pages/SourceDetailPage.jsx";
+import ReviewPage from "./pages/ReviewPage.jsx";
+import RulesPage from "./pages/RulesPage.jsx";
+import DocumentsPage from "./pages/DocumentsPage.jsx";
+import ApplicantsPage from "./pages/ApplicantsPage.jsx";
+import ApplicantDetailPage from "./pages/ApplicantDetailPage.jsx";
+import SchedulerPage from "./pages/SchedulerPage.jsx";
 
 export default function App() {
-  const [authed, setAuthed] = useState(() => Boolean(getToken()));
-  const [role, setRole] = useState(() => getRole());
-  const [view, setView] = useState("sources");
-
-  useEffect(() => {
-    if (!authed) setRole(null);
-  }, [authed]);
-
-  function handleLoggedIn(nextRole) {
-    setRole(nextRole);
-    setAuthed(true);
-  }
-
-  function handleLogout() {
-    clearSession();
-    setAuthed(false);
-  }
-
-  if (!authed) {
-    return <LoginPage onLoggedIn={handleLoggedIn} />;
-  }
-
   return (
-    <>
-      <header className="app-header">
-        <h1>Immigration Knowledge — Admin</h1>
-        <nav className="nav">
-          <button
-            className={view === "sources" ? "active" : ""}
-            onClick={() => setView("sources")}
+    <ToastProvider>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route
+            path="/"
+            element={
+              <AdminRoute>
+                <Layout />
+              </AdminRoute>
+            }
           >
-            Sources
-          </button>
-          <button
-            className={view === "runs" ? "active" : ""}
-            onClick={() => setView("runs")}
-          >
-            Pipeline Runs
-          </button>
-        </nav>
-        <div className="right">
-          <SyncButton />
-          <span className="muted" style={{ fontSize: 13 }}>
-            {role}
-          </span>
-          <button className="btn-secondary" onClick={handleLogout}>
-            Log out
-          </button>
-        </div>
-      </header>
-      <main className="app-main">
-        {view === "sources" ? <SourcesDashboard /> : <PipelineRunsPage />}
-      </main>
-    </>
+            <Route index element={<DashboardPage />} />
+            <Route path="sources" element={<SourcesPage />} />
+            <Route path="sources/:sourceId" element={<SourceDetailPage />} />
+            <Route path="review" element={<ReviewPage />} />
+            <Route path="rules" element={<RulesPage />} />
+            <Route path="documents" element={<DocumentsPage />} />
+            <Route path="applicants" element={<ApplicantsPage />} />
+            <Route path="applicants/:applicantId" element={<ApplicantDetailPage />} />
+            <Route path="scheduler" element={<SchedulerPage />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AuthProvider>
+    </ToastProvider>
   );
 }
