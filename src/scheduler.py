@@ -447,6 +447,50 @@ def get_scheduler() -> BackgroundScheduler | None:
     return _scheduler
 
 
+def compute_next_run_at(
+    interval_minutes: int | None, hour_utc: int | None, minute_utc: int | None,
+) -> str | None:
+    """The next time a trigger built from this exact config would fire, computed
+    independently of whether the live scheduler is running - CronTrigger and
+    IntervalTrigger both support get_next_fire_time() as a pure function, so
+    this works even in a process that never called start_scheduler() (e.g. a
+    GET /admin/scheduler request when ENABLE_SCHEDULER=false, or in tests)."""
+    trigger, _ = _build_trigger(interval_minutes, hour_utc, minute_utc)
+    next_fire = trigger.get_next_fire_time(None, datetime.now(_tz.utc))
+    return next_fire.isoformat() if next_fire else None
+
+
+def apply_live_schedule(
+    interval_minutes: int | None, hour_utc: int | None, minute_utc: int | None,
+    enabled: bool,
+) -> None:
+    """Apply a schedule change to the LIVE running job, without a restart.
+
+    Best-effort: if the scheduler process isn't running (ENABLE_SCHEDULER=false,
+    or this is a worker/test process that never started one), this is a no-op -
+    the persisted setting still takes effect the next time start_scheduler()
+    runs. get_scheduler() being non-None is exactly "is a job running right now".
+    """
+    sched = get_scheduler()
+    if sched is None:
+        return
+    trigger, _ = _build_trigger(interval_minutes, hour_utc, minute_utc)
+    try:
+        sched.reschedule_job("government_source_sync", trigger=trigger)
+        if enabled:
+            sched.resume_job("government_source_sync")
+        else:
+            sched.pause_job("government_source_sync")
+    except Exception:
+        # The persisted setting (the source of truth across restarts) is
+        # already saved by the caller before this runs - a live scheduler
+        # object in an inconsistent state (e.g. its job was removed out from
+        # under it, only possible via direct test manipulation of
+        # get_scheduler()) must not turn into a 500 on an otherwise-successful
+        # PUT. The next restart picks up the persisted setting regardless.
+        logger.exception("Failed to apply schedule change to the live scheduler job")
+
+
 def trigger_sync_now(engine) -> dict[str, Any]:
     """Manually trigger an immediate sync (for admin endpoints / testing).
 

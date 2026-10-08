@@ -750,6 +750,44 @@ class PipelineRun(Base, TimestampMixin):
     )
 
 
+class SchedulerSettings(Base, TimestampMixin):
+    """Live, admin-editable override of the government sync schedule.
+
+    Single-row table (id is fixed to 1 by the CheckConstraint below) so there
+    is always exactly one current schedule, global across all sources - not
+    per-source. When this row exists, its values override the
+    GOVERNMENT_SYNC_*_UTC / GOVERNMENT_SYNC_INTERVAL_MINUTES env-var defaults
+    at startup (see src/api/main.py's lifespan) and PUT /admin/scheduler
+    applies a change live via APScheduler's reschedule_job/pause_job, without
+    requiring a restart.
+    """
+    __tablename__ = "scheduler_settings"
+    id = Column(Integer, primary_key=True, default=1)
+    enabled = Column(Boolean, nullable=False, default=True)
+    mode = Column(String(16), nullable=False, default="daily")  # daily | interval
+    hour_utc = Column(Integer)
+    minute_utc = Column(Integer)
+    interval_minutes = Column(Integer)
+    updated_by = Column(String(256))  # admin's email, server-derived - never client-supplied
+
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_scheduler_settings_singleton"),
+        CheckConstraint("mode IN ('daily', 'interval')", name="ck_scheduler_settings_mode"),
+        CheckConstraint(
+            "hour_utc IS NULL OR (hour_utc >= 0 AND hour_utc <= 23)",
+            name="ck_scheduler_settings_hour",
+        ),
+        CheckConstraint(
+            "minute_utc IS NULL OR (minute_utc >= 0 AND minute_utc <= 59)",
+            name="ck_scheduler_settings_minute",
+        ),
+        CheckConstraint(
+            "interval_minutes IS NULL OR interval_minutes >= 15",
+            name="ck_scheduler_settings_interval",
+        ),
+    )
+
+
 # ===========================================================================
 #  PRODUCTION — Authentication + API + Audit
 # ===========================================================================

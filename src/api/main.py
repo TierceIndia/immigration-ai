@@ -66,13 +66,40 @@ async def lifespan(app: FastAPI):
                 logger.warning("Admin bootstrap skipped",
                                extra={"error": str(e)})
 
-    # Start scheduler if ENABLE_SCHEDULER=true (skip in TESTING mode)
+    # Start scheduler if ENABLE_SCHEDULER=true (skip in TESTING mode). A
+    # persisted SchedulerSettings row (set via PUT /admin/scheduler) overrides
+    # the GOVERNMENT_SYNC_*_UTC / GOVERNMENT_SYNC_INTERVAL_MINUTES env defaults.
     if os.getenv("TESTING") != "true":
         if os.getenv("ENABLE_SCHEDULER", "false").lower() == "true":
             if getattr(app.state, "db_engine", None):
-                from scheduler import start_scheduler
-                start_scheduler(app.state.db_engine)
-                logger.info("Scheduler started")
+                from scheduler import start_scheduler, get_scheduler
+                from db.connection import get_session
+                from db.repositories import SchedulerSettingsRepo
+
+                interval_minutes = hour_utc = minute_utc = None
+                enabled = True
+                try:
+                    with get_session(app.state.db_engine) as session:
+                        settings = SchedulerSettingsRepo(session).get()
+                        enabled = settings.enabled
+                        if settings.mode == "daily":
+                            hour_utc, minute_utc = settings.hour_utc, settings.minute_utc
+                        else:
+                            interval_minutes = settings.interval_minutes
+                        session.commit()
+                except Exception as e:
+                    logger.warning("Could not load persisted scheduler settings — "
+                                   "using env defaults", extra={"error": str(e)})
+
+                start_scheduler(
+                    app.state.db_engine, interval_minutes=interval_minutes,
+                    hour_utc=hour_utc, minute_utc=minute_utc,
+                )
+                if not enabled:
+                    sched = get_scheduler()
+                    if sched is not None:
+                        sched.pause_job("government_source_sync")
+                logger.info("Scheduler started", extra={"enabled": enabled})
             else:
                 logger.warning("Scheduler disabled — no database connection")
 
@@ -163,7 +190,7 @@ async def request_id_middleware(request: Request, call_next):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs, admin_sources, admin_requirements, admin_documents, admin_knowledge, admin_schema  # noqa: E402
+from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs, admin_sources, admin_requirements, admin_documents, admin_knowledge, admin_schema, admin_scheduler  # noqa: E402
 from api.routes.auth import require_admin  # noqa: E402
 
 app.include_router(health.router)
@@ -177,6 +204,7 @@ app.include_router(admin_requirements.router, prefix="/api/v1/admin/requirements
 app.include_router(admin_documents.router, prefix="/api/v1/admin/documents", tags=["admin-documents"])
 app.include_router(admin_knowledge.router, prefix="/api/v1/admin/knowledge-state", tags=["admin-knowledge-state"])
 app.include_router(admin_schema.router, prefix="/api/v1/admin/schema", tags=["admin-schema"])
+app.include_router(admin_scheduler.router, prefix="/api/v1/admin/scheduler", tags=["admin-scheduler"])
 
 
 @app.post("/api/v1/admin/sync", tags=["admin-sync"], status_code=202)
