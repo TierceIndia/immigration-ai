@@ -11,6 +11,7 @@ from collections import defaultdict
 from typing import Any
 
 from logging_config import get_logger
+from fetch.politeness import jittered_backoff
 
 logger = get_logger(__name__)
 
@@ -76,16 +77,39 @@ class RateLimiter:
 # ---------------------------------------------------------------------------
 # Retry with exponential backoff
 # ---------------------------------------------------------------------------
+def _shared_retry_backoff() -> tuple[float, Any]:
+    """The fetch layer's jitter setting + RNG, shared with LLM retries.
+
+    Read at call time (not import time) so the policy always tracks the live
+    process-wide limiter rather than a snapshot of it. Defensive by design: if
+    politeness cannot be reached the policy gets ``jitter=0.0`` (no RNG), i.e.
+    exactly the deterministic backoff this module always had.
+    """
+    try:
+        from fetch.politeness import get_limiter
+        limiter = get_limiter()
+        return limiter.jitter, limiter.rng
+    except Exception:  # pragma: no cover - only hit if fetch package is absent
+        return 0.0, None
+
+
 @dataclass
 class RetryPolicy:
     max_retries: int = 3
     base_delay: float = 1.0
     max_delay: float = 30.0
     retryable_exceptions: tuple = (TimeoutError, ConnectionError, OSError)
+    # Jitter shared with fetch.politeness (see _shared_retry_backoff). Both
+    # default to 0.0/None so a bare RetryPolicy() stays byte-for-byte the
+    # legacy deterministic delay and never draws from an RNG.
+    jitter: float = 0.0
+    rng: Any = None
 
     def delay_for_attempt(self, attempt: int) -> float:
-        delay = self.base_delay * (2 ** attempt)
-        return min(delay, self.max_delay)
+        delay = min(self.base_delay * (2 ** attempt), self.max_delay)
+        if self.jitter <= 0 or self.rng is None:
+            return delay
+        return jittered_backoff(delay, self.jitter, self.rng)
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +433,15 @@ class LLMGovernance:
                  budget: BudgetTracker | None = None,
                  usage_log: UsageLog | None = None):
         self.rate_limiter = rate_limiter or RateLimiter()
-        self.retry_policy = retry_policy or RetryPolicy()
+        if retry_policy is not None:
+            self.retry_policy = retry_policy
+        else:
+            # Share the fetch layer's jitter + RNG so retries across the whole
+            # process are spaced by the same configuration (FETCH_JITTER_SECONDS).
+            # A caller passing their own RetryPolicy() still gets the exact
+            # deterministic legacy delay, because that is what it defaults to.
+            _jitter, _rng = _shared_retry_backoff()
+            self.retry_policy = RetryPolicy(jitter=_jitter, rng=_rng)
         self.cache = cache or ResponseCache()
         self.budget = budget or BudgetTracker()
         self.usage_log = usage_log or UsageLog()

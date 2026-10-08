@@ -34,9 +34,11 @@ from fetch.fetcher import (
     _CHALLENGE_MARKERS,
 )
 
-# A modest minimum inter-request delay so a genuine browser session still behaves
-# politely and does not hammer a government origin.
-MIN_BROWSER_DELAY_SECONDS = 2.0
+# Spacing/jitter between browser fetches is owned by fetch.politeness.HostLimiter
+# (shared with the plain-HTTP path), not by a constant here. This module used to
+# define a MIN_BROWSER_DELAY_SECONDS + _polite_delay() pair that nothing ever
+# called — dead code the tests never caught. It is gone; every browser fetch now
+# goes through the same limiter wait as every plain fetch.
 
 # How long we let an individual page load before giving up.
 BROWSER_NAVIGATION_TIMEOUT_MS = 30000
@@ -89,6 +91,7 @@ def fetch_with_browser(
     source_type: str = "HTML",
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     launch_fn=None,
+    limiter=None,
 ) -> FetchResult:
     """Fetch a URL through a real Chromium session (headless by default).
 
@@ -97,7 +100,17 @@ def fetch_with_browser(
 
     `launch_fn` is an injectable seam (defaults to _patchright_fetch) used only
     by tests to mock the browser call chain — production always uses Patchright.
+    `limiter` is likewise injectable; production uses the process-wide one.
+
+    The limiter wait happens *here*, before dispatching to ``launch_fn``, so
+    every browser fetch is spaced by the same per-host rule as a plain fetch —
+    including the ones a test drives through a fake ``launch_fn``.
     """
+    from fetch.politeness import get_limiter
+
+    if limiter is None:
+        limiter = get_limiter()
+    limiter.wait(url)
     if launch_fn is None:
         launch_fn = _patchright_fetch
     return launch_fn(url, source_type, timeout_seconds)
@@ -290,11 +303,6 @@ def _classify_browser_result(url: str, status_code: int | None, body_bytes: byte
         error=f"Unexpected HTTP {status_code} via browser",
         error_type="unexpected_http_status",
     )
-
-
-def _polite_delay() -> None:
-    """Minimum inter-request delay between browser fetches."""
-    time.sleep(MIN_BROWSER_DELAY_SECONDS)
 
 
 def is_same_domain(a: str, b: str) -> bool:

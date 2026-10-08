@@ -18,8 +18,11 @@ import socket
 import time
 from dataclasses import dataclass
 from enum import Enum
+from urllib.parse import urlparse
 
 import requests
+
+from fetch.politeness import HostLimiter, get_limiter
 
 USER_AGENT = "AU-Immigration-Source-Monitor/0.1"
 
@@ -119,10 +122,110 @@ def _classify_response(resp: requests.Response, source_type: str) -> FetchStatus
     return FetchStatus.OK
 
 
+def _parse_crawl_delay(robots_text: str, user_agent: str = USER_AGENT) -> float | None:
+    """Largest ``Crawl-delay`` that applies to us, from a robots.txt body.
+
+    Returns None when no applicable directive exists. Group handling follows
+    the usual convention: a run of consecutive ``User-agent`` lines opens one
+    group, whose directives run until the next group. When several applicable
+    groups disagree the *larger* value wins, which is the conservative reading.
+    """
+    ours = (user_agent or "").lower()
+    best: float | None = None
+    lines = robots_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].split("#", 1)[0].strip()
+        if not line.lower().startswith("user-agent"):
+            i += 1
+            continue
+        agents: list[str] = []
+        while i < len(lines):
+            entry = lines[i].split("#", 1)[0].strip()
+            if not entry.lower().startswith("user-agent"):
+                break
+            agents.append(entry.partition(":")[2].strip().lower())
+            i += 1
+        applies = any(
+            agent == "*"
+            or (agent and (ours.startswith(agent) or agent in ours))
+            for agent in agents
+        )
+        while i < len(lines):
+            entry = lines[i].split("#", 1)[0].strip()
+            if not entry:
+                i += 1
+                continue
+            if entry.lower().startswith("user-agent"):
+                break
+            field, _, value = entry.partition(":")
+            if field.strip().lower() == "crawl-delay" and applies:
+                try:
+                    seconds = float(value.strip())
+                except ValueError:
+                    seconds = 0.0
+                if seconds > 0:
+                    best = seconds if best is None else max(best, seconds)
+            i += 1
+    return best
+
+
+def _honour_robots_crawl_delay(url: str, limiter: HostLimiter, timeout: int) -> None:
+    """Fetch a host's robots.txt once per run and register its Crawl-delay.
+
+    Consulted at most once per host per limiter lifetime (the limiter owns that
+    bit of state, so it is naturally scoped to one sync run and reset with the
+    limiter). Any failure — network, absence, unparsable body — simply leaves
+    the default spacing in force; a missing robots.txt is not an error.
+    """
+    if not limiter.mark_robots_checked(url):
+        return
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return
+    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+    try:
+        resp = requests.get(
+            robots_url,
+            headers={"User-Agent": USER_AGENT, "Accept": "text/plain,*/*"},
+            timeout=timeout,
+        )
+    except requests.RequestException:
+        return
+    if resp.status_code != 200 or not resp.text:
+        return
+    crawl_delay = _parse_crawl_delay(resp.text)
+    if crawl_delay:
+        limiter.note_crawl_delay(url, crawl_delay)
+
+
+def _honour_retry_after(resp: requests.Response, url: str, limiter: HostLimiter) -> None:
+    """Register a 429/503 ``Retry-After`` so this host pauses, if present.
+
+    Only the delta-seconds form is honoured; an HTTP-date is ignored rather
+    than guessed at, which keeps the pause a plain, auditable number.
+    """
+    if resp.status_code not in (429, 503):
+        return
+    raw = (resp.headers.get("Retry-After") or "").strip()
+    if not raw:
+        return
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return  # HTTP-date form: ignored on purpose (see docstring)
+    if seconds > 0:
+        limiter.note_retry_after(url, seconds)
+
+
 def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SECONDS,
-          max_retries: int = MAX_RETRIES) -> FetchResult:
+          max_retries: int = MAX_RETRIES, limiter: HostLimiter | None = None) -> FetchResult:
+    """Plain HTTP GET, spaced and jittered per host via the shared HostLimiter."""
+    limiter = limiter if limiter is not None else get_limiter()
+    _honour_robots_crawl_delay(url, limiter, timeout)
     last_error: str | None = None
     for attempt in range(1, max_retries + 1):
+        limiter.wait(url)
         start = time.monotonic()
         try:
             resp = requests.get(
@@ -132,9 +235,11 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
             )
             duration_ms = int((time.monotonic() - start) * 1000)
 
+            _honour_retry_after(resp, url, limiter)
+
             if resp.status_code >= 500 and attempt < max_retries:
                 last_error = f"HTTP {resp.status_code} on attempt {attempt}"
-                time.sleep(BACKOFF_BASE_SECONDS * attempt)
+                limiter.backoff(BACKOFF_BASE_SECONDS * attempt)
                 continue
 
             status = _classify_response(resp, source_type)
@@ -157,7 +262,7 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
             duration_ms = int((time.monotonic() - start) * 1000)
             last_error = str(e)
             if attempt < max_retries:
-                time.sleep(BACKOFF_BASE_SECONDS * attempt)
+                limiter.backoff(BACKOFF_BASE_SECONDS * attempt)
                 continue
             return FetchResult(
                 url=url, status=FetchStatus.FETCH_FAILED, http_status=None,

@@ -155,4 +155,7 @@ class TestRealPatchrightFetchesRealContent:
             "patchright", reason="patchright ships in the runtime image only"
         )
         assert browser_fetcher.fetch_with_browser is not None
-        assert browser_fetcher.MIN_BROWSER_DELAY_SECONDS > 0
+        # Spacing moved to fetch.politeness.HostLimiter (the old
+        # MIN_BROWSER_DELAY_SECONDS/_polite_delay pair was dead code).
+        from fetch.politeness import get_limiter
+        assert get_limiter().min_interval >= 0
