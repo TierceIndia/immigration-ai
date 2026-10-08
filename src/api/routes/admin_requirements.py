@@ -32,9 +32,22 @@ def _require_admin(user: dict) -> None:
         raise HTTPException(status_code=403, detail="Admin role required")
 
 
+def _reviewer_from(current_user: dict) -> str:
+    """The audit-trail reviewer identity for a requirement review action:
+    ALWAYS the authenticated admin, never the request body's own `reviewer`
+    field (accepted for backward compatibility but ignored - see
+    admin_rules.py's identical _actor_from and the same rationale)."""
+    return current_user.get("email") or current_user.get("user_id") or "unknown-admin"
+
+
 class RequirementReviewRequest(BaseModel):
     requirement_id: str = Field(..., description="Requirement ID")
-    reviewer: str = Field(..., description="User ID or name of the reviewer")
+    reviewer: str | None = Field(
+        None,
+        description="Deprecated and ignored - the audit trail always records the "
+                     "authenticated admin, never a client-supplied value. Kept "
+                     "optional only for backward compatibility with existing callers.",
+    )
     action: str = Field(..., description="'APPROVE', 'REJECT', or 'MARK_NEEDS_REVIEW'")
     notes: str | None = None
 
@@ -177,6 +190,7 @@ def approve_requirement(
 ):
     """Approve a requirement (change status from NEEDS_REVIEW to APPROVED)."""
     _require_admin(current_user)
+    reviewer = _reviewer_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = RequirementRepo(session)
@@ -185,7 +199,7 @@ def approve_requirement(
             raise HTTPException(status_code=404, detail=f"Requirement {requirement_id} not found")
         req.status = "APPROVED"
         req.updated_at = datetime.now(timezone.utc)
-        _record_review(session, requirement_id, body.reviewer, "APPROVE", body.notes)
+        _record_review(session, requirement_id, reviewer, "APPROVE", body.notes)
         session.commit()
         return _req_to_summary(req)
 
@@ -199,6 +213,7 @@ def reject_requirement(
 ):
     """Reject a requirement (change status to REJECTED)."""
     _require_admin(current_user)
+    reviewer = _reviewer_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = RequirementRepo(session)
@@ -207,7 +222,7 @@ def reject_requirement(
             raise HTTPException(status_code=404, detail=f"Requirement {requirement_id} not found")
         req.status = "REJECTED"
         req.updated_at = datetime.now(timezone.utc)
-        _record_review(session, requirement_id, body.reviewer, "REJECT", body.notes)
+        _record_review(session, requirement_id, reviewer, "REJECT", body.notes)
         session.commit()
         return _req_to_summary(req)
 
@@ -221,6 +236,7 @@ def mark_needs_review(
 ):
     """Mark a requirement as needing human review."""
     _require_admin(current_user)
+    reviewer = _reviewer_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = RequirementRepo(session)
@@ -229,7 +245,7 @@ def mark_needs_review(
             raise HTTPException(status_code=404, detail=f"Requirement {requirement_id} not found")
         req.status = "NEEDS_REVIEW"
         req.updated_at = datetime.now(timezone.utc)
-        _record_review(session, requirement_id, body.reviewer, "MARK_NEEDS_REVIEW", body.notes)
+        _record_review(session, requirement_id, reviewer, "MARK_NEEDS_REVIEW", body.notes)
         session.commit()
         return _req_to_summary(req)
 

@@ -27,7 +27,12 @@ router = APIRouter()
 # Request / Response schemas
 # ---------------------------------------------------------------------------
 class RuleActionRequest(BaseModel):
-    actor: str = Field(..., description="User ID or name of the person performing the action")
+    actor: str | None = Field(
+        None,
+        description="Deprecated and ignored - the audit trail always records the "
+                     "authenticated admin, never a client-supplied value. Kept "
+                     "optional only for backward compatibility with existing callers.",
+    )
     notes: str | None = None
 
 
@@ -59,7 +64,10 @@ class ReviewQueueResponse(BaseModel):
 
 class BatchActionRequest(BaseModel):
     rule_ids: list[str]
-    actor: str
+    actor: str | None = Field(
+        None,
+        description="Deprecated and ignored - see RuleActionRequest.actor.",
+    )
     notes: str | None = None
 
 
@@ -69,6 +77,15 @@ class BatchActionRequest(BaseModel):
 def _require_admin(user: dict) -> None:
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin role required")
+
+
+def _actor_from(current_user: dict) -> str:
+    """The audit-trail actor identity for a rule action: ALWAYS the
+    authenticated admin, never the request body's own `actor` field (which
+    is accepted for backward compatibility but ignored - a client could
+    previously type any name there and have it recorded as who acted,
+    which defeats the point of an audit trail)."""
+    return current_user.get("email") or current_user.get("user_id") or "unknown-admin"
 
 
 def _orm_to_response(obj: RuleORM) -> RuleResponse:
@@ -145,14 +162,15 @@ def batch_validate(
 ):
     """Batch DRAFT → VALIDATED."""
     _require_admin(current_user)
+    actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         results = []
         for rule_id in body.rule_ids:
             try:
-                obj = repo.validate_rule(rule_id, actor=body.actor)
-                repo.save_version_snapshot(rule_id, "VALIDATED", body.actor)
+                obj = repo.validate_rule(rule_id, actor=actor)
+                repo.save_version_snapshot(rule_id, "VALIDATED", actor)
                 results.append(_orm_to_response(obj))
             except ValueError as e:
                 logger.warning("Batch validate failed for rule",
@@ -168,14 +186,15 @@ def batch_approve(
 ):
     """Batch VALIDATED → APPROVED."""
     _require_admin(current_user)
+    actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         results = []
         for rule_id in body.rule_ids:
             try:
-                obj = repo.approve_rule(rule_id, actor=body.actor)
-                repo.save_version_snapshot(rule_id, "APPROVED", body.actor)
+                obj = repo.approve_rule(rule_id, actor=actor)
+                repo.save_version_snapshot(rule_id, "APPROVED", actor)
                 results.append(_orm_to_response(obj))
             except ValueError as e:
                 logger.warning("Batch approve failed for rule",
@@ -191,13 +210,14 @@ def batch_activate(
 ):
     """Batch APPROVED → ACTIVE (each transactionally supersedes old version)."""
     _require_admin(current_user)
+    actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         results = []
         for rule_id in body.rule_ids:
             try:
-                obj = repo.activate_rule(rule_id, actor=body.actor)
+                obj = repo.activate_rule(rule_id, actor=actor)
                 results.append(_orm_to_response(obj))
             except ValueError as e:
                 logger.warning("Batch activate failed for rule",
@@ -231,12 +251,13 @@ def validate_rule(
 ):
     """DRAFT → VALIDATED (admin confirms automated validation passed)."""
     _require_admin(current_user)
+    actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         try:
-            obj = repo.validate_rule(rule_id, actor=body.actor)
-            repo.save_version_snapshot(rule_id, "VALIDATED", body.actor)
+            obj = repo.validate_rule(rule_id, actor=actor)
+            repo.save_version_snapshot(rule_id, "VALIDATED", actor)
             return _orm_to_response(obj)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -251,12 +272,13 @@ def approve_rule(
 ):
     """VALIDATED → APPROVED (human review passes)."""
     _require_admin(current_user)
+    actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         try:
-            obj = repo.approve_rule(rule_id, actor=body.actor)
-            repo.save_version_snapshot(rule_id, "APPROVED", body.actor)
+            obj = repo.approve_rule(rule_id, actor=actor)
+            repo.save_version_snapshot(rule_id, "APPROVED", actor)
             return _orm_to_response(obj)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -271,12 +293,13 @@ def reject_rule(
 ):
     """Any pre-active status → REJECTED."""
     _require_admin(current_user)
+    actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         try:
-            obj = repo.reject_rule(rule_id, actor=body.actor)
-            repo.save_version_snapshot(rule_id, "REJECTED", body.actor)
+            obj = repo.reject_rule(rule_id, actor=actor)
+            repo.save_version_snapshot(rule_id, "REJECTED", actor)
             return _orm_to_response(obj)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -291,11 +314,12 @@ def activate_rule(
 ):
     """APPROVED → ACTIVE. Transactionally supersedes any existing active version."""
     _require_admin(current_user)
+    actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         try:
-            obj = repo.activate_rule(rule_id, actor=body.actor)
+            obj = repo.activate_rule(rule_id, actor=actor)
             return _orm_to_response(obj)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -310,12 +334,13 @@ def retire_rule(
 ):
     """SUPERSEDED/ACTIVE → RETIRED."""
     _require_admin(current_user)
+    actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
         try:
-            obj = repo.retire_rule(rule_id, actor=body.actor)
-            repo.save_version_snapshot(rule_id, "RETIRED", body.actor)
+            obj = repo.retire_rule(rule_id, actor=actor)
+            repo.save_version_snapshot(rule_id, "RETIRED", actor)
             return _orm_to_response(obj)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
