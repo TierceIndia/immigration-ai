@@ -8,10 +8,14 @@ import DocumentCard from "../components/DocumentCard.jsx";
 import ErrorState from "../components/ErrorState.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 
-// Requirements don't carry a direct source_id (only a document_version_id
-// lineage) - program_id is the practical join available today, and in this
-// dataset is effectively 1:1 with source. Documented limitation, not a
-// silent approximation.
+// The backend resolves each requirement's exact source via
+// Requirement.document_version_id -> DocumentVersion.document_id ->
+// GovernmentDocument.source_id (see admin_requirements.py::_req_to_review_item) -
+// never guessed from program_id. Several real programs have more than one
+// source (SKILLED_189 has 4), so fetching by program_id and keeping
+// everything would silently mix in a sibling source's requirements. We fetch
+// by program_id (there is no "list by source" endpoint) purely to get the
+// candidate set, then partition client-side on the exact resolved source_id.
 const REQUIREMENT_STATUSES = ["NEEDS_REVIEW", "APPROVED", "CONFLICT", "REJECTED"];
 
 async function fetchRequirementsForProgram(programId) {
@@ -19,6 +23,23 @@ async function fetchRequirementsForProgram(programId) {
     REQUIREMENT_STATUSES.map((status) => api.getReviewQueue({ status, programId }))
   );
   return pages.flatMap((p) => p.requirements);
+}
+
+function partitionBySource(requirements, sourceId) {
+  const own = [];
+  let unattributed = 0;
+  for (const r of requirements) {
+    if (r.source && r.source.source_id === sourceId) {
+      own.push(r);
+    } else if (!r.source) {
+      // No document_version_id to resolve - never guessed into this (or
+      // any) source's bucket, just counted honestly.
+      unattributed += 1;
+    }
+    // Anything resolving to a DIFFERENT source_id belongs to a sibling
+    // source sharing this program and is excluded entirely.
+  }
+  return { own, unattributed };
 }
 
 export default function SourceDetailPage() {
@@ -40,6 +61,9 @@ export default function SourceDetailPage() {
   if (sourceState.error) return <ErrorState error={sourceState.error} onRetry={sourceState.reload} />;
 
   const source = sourceState.data;
+  const { own: ownRequirements, unattributed } = requirementsState.data
+    ? partitionBySource(requirementsState.data, sourceId)
+    : { own: null, unattributed: 0 };
 
   const reqColumns = [
     { key: "name", header: "Requirement", render: (r) => r.name },
@@ -100,14 +124,23 @@ export default function SourceDetailPage() {
       <h2>Requirements extracted from this source</h2>
       {requirementsState.loading && <p className="muted">Loading requirements…</p>}
       {requirementsState.error && <ErrorState error={requirementsState.error} onRetry={requirementsState.reload} />}
-      {requirementsState.data && (
-        <DataTable
-          columns={reqColumns}
-          rows={requirementsState.data}
-          rowKey={(r) => r.requirement_id}
-          emptyTitle="No requirements yet"
-          emptyMessage="Nothing has been extracted from this source's program yet."
-        />
+      {ownRequirements && (
+        <>
+          <DataTable
+            columns={reqColumns}
+            rows={ownRequirements}
+            rowKey={(r) => r.requirement_id}
+            emptyTitle="No requirements yet"
+            emptyMessage="Nothing has been extracted from this exact source yet."
+          />
+          {unattributed > 0 && (
+            <p className="muted">
+              {unattributed} requirement{unattributed === 1 ? "" : "s"} in this program{" "}
+              {unattributed === 1 ? "has" : "have"} no document link and can't be attributed to
+              this or any other source — not shown above.
+            </p>
+          )}
+        </>
       )}
     </div>
   );

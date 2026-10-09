@@ -141,6 +141,84 @@ def _make_requirement(session, requirement_id, semantic_key, status, value, run_
     return req
 
 
+def _seed_second_source_same_program(session):
+    """A second source/document/version/run sharing SKILLED_189 with the
+    first (_seed_chain) - the exact scenario the provenance join must get
+    right: 12 of the real 14 seeded sources share a program with another
+    source, so "filter by program_id" and "filter by source" are NOT
+    interchangeable."""
+    session.merge(GovernmentSource(
+        source_id="SRC-AU-189-POINTS", country_id="AU", program_id="SKILLED_189",
+        visa_category="SKILLED", authority="Home Affairs",
+        url="https://example.invalid/189-points", source_type="HTML",
+        priority="SECONDARY", monitoring_method="WEB", crawl_frequency="DAILY",
+        status="ACTIVE",
+    ))
+    session.merge(GovernmentDocument(
+        document_id="DOC-AU-189-POINTS", source_id="SRC-AU-189-POINTS", country_id="AU",
+        program_id="SKILLED_189", visa_category="SKILLED", document_type="GENERAL",
+        url="https://example.invalid/189-points", title="Skilled 189 points table",
+        retrieved_at=datetime.now(timezone.utc), content_hash="def456",
+        current_version=1, language="en", raw_path="fetch:doc:v1", status="CURRENT",
+    ))
+    session.flush()
+    session.merge(DocumentVersion(
+        document_id="DOC-AU-189-POINTS", version_number=1, content_hash="def456",
+        retrieved_at=datetime.now(timezone.utc), raw_path="fetch:doc:v1",
+        change_type="INITIAL",
+    ))
+    session.flush()
+    version_id = (
+        session.query(DocumentVersion)
+        .filter_by(document_id="DOC-AU-189-POINTS", version_number=1)
+        .one()
+        .version_id
+    )
+    run = ExtractionRun(
+        run_id="RUN-REVIEWQ-2", document_id="DOC-AU-189-POINTS", document_version=1,
+        document_version_id=version_id, model="mock", prompt_version="v1",
+        status="COMPLETED",
+    )
+    session.add(run)
+    session.flush()
+    session.commit()
+    return version_id
+
+
+class TestExactProvenanceJoinAcrossSiblingSources:
+    """Two sources sharing one program must each surface only their own
+    requirements - proves the join is Requirement.document_version_id ->
+    DocumentVersion.document_id -> GovernmentDocument.source_id, not an
+    approximation by program_id."""
+
+    def test_each_sibling_source_lists_only_its_own_requirement(self, client, admin_headers, engine):
+        with get_session_factory(engine)() as s:
+            version_id_1 = _seed_chain(s)
+            version_id_2 = _seed_second_source_same_program(s)
+            _make_requirement(s, "REQ-SRC1", "semkey-src1", "NEEDS_REVIEW", 45, "RUN-REVIEWQ-1", version_id_1)
+            _make_requirement(s, "REQ-SRC2", "semkey-src2", "NEEDS_REVIEW", 50, "RUN-REVIEWQ-2", version_id_2)
+
+        resp = client.get(
+            "/api/v1/admin/requirements/review-queue?status=NEEDS_REVIEW&program_id=SKILLED_189",
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        items = {i["requirement_id"]: i for i in resp.json()["requirements"]}
+        assert len(items) == 2
+
+        # Both share program_id=SKILLED_189, but each resolves to its OWN
+        # source via the document/version chain, never the sibling's.
+        assert items["REQ-SRC1"]["source"]["source_id"] == "SRC-AU-189"
+        assert items["REQ-SRC2"]["source"]["source_id"] == "SRC-AU-189-POINTS"
+
+        # Filtering client-side by exact source_id (what Source Detail now
+        # does) must isolate exactly one requirement per source, not both.
+        for_src1 = [i for i in items.values() if i["source"]["source_id"] == "SRC-AU-189"]
+        for_src2 = [i for i in items.values() if i["source"]["source_id"] == "SRC-AU-189-POINTS"]
+        assert [i["requirement_id"] for i in for_src1] == ["REQ-SRC1"]
+        assert [i["requirement_id"] for i in for_src2] == ["REQ-SRC2"]
+
+
 class TestReviewQueueDetail:
     def test_needs_review_item_has_full_detail_and_no_previous_value(self, client, admin_headers, engine):
         with get_session_factory(engine)() as s:
