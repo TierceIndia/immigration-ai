@@ -309,8 +309,15 @@ def test_launch_args_are_container_hardening_not_evasion():
 # ---------------------------------------------------------------------------
 # Driver-level failure classification
 # ---------------------------------------------------------------------------
-def test_patchright_missing_returns_launch_failure():
-    """With no Patchright installed the failure is classified, not crashed."""
+def test_patchright_missing_returns_launch_failure(monkeypatch):
+    """With no Patchright importable the failure is classified, not crashed.
+
+    The import is forced to fail via ``sys.modules`` (a ``None`` entry halts the
+    import), so this stays hermetic whether or not patchright happens to be
+    installed in the running environment.
+    """
+    monkeypatch.setitem(sys.modules, "patchright", None)
+    monkeypatch.setitem(sys.modules, "patchright.sync_api", None)
     res = _patchright_fetch("https://example.gov/page", "HTML", 20)
     assert res.status == FetchStatus.FETCH_FAILED
     assert res.error_type == "browser_launch_failed"
@@ -323,6 +330,29 @@ def test_browser_launch_failure_is_classified(monkeypatch):
     assert res.status == FetchStatus.FETCH_FAILED
     assert res.error_type == "browser_launch_failed"
     assert "no chromium binary" in (res.error or "")
+
+
+def test_patchright_installed_but_browser_binary_missing(monkeypatch):
+    """Patchright importable but its Chromium never downloaded.
+
+    This is the real machine-dependent case: ``import patchright.sync_api``
+    succeeds and ``chromium.launch()`` raises Playwright's own "Executable
+    doesn't exist" error because the browser was never installed. It must still
+    classify as ``browser_launch_failed`` rather than leaking the raw exception.
+    """
+    _install_fake_patchright(
+        monkeypatch,
+        launch_exc=RuntimeError(
+            "Executable doesn't exist at "
+            "C:\\Users\\me\\AppData\\Local\\ms-playwright\\chromium-1234\\chrome.exe\n"
+            "Please run the following command to download new browsers: "
+            "patchright install chromium"
+        ),
+    )
+    res = _patchright_fetch("https://example.gov/page", "HTML", 20)
+    assert res.status == FetchStatus.FETCH_FAILED
+    assert res.error_type == "browser_launch_failed"
+    assert "Executable doesn't exist" in (res.error or "")
 
 
 def test_browser_context_failure_is_classified(monkeypatch):

@@ -711,7 +711,7 @@ class TestPostgreSQLCodePaths:
     def test_pg_engine_uses_connection_pool(self):
         """PostgreSQL URL creates pooled engine (not StaticPool)."""
         from db.connection import get_engine
-        eng = get_engine("postgresql://user:pass@localhost:5432/testdb")
+        eng = get_engine("postgresql+psycopg2://user:pass@localhost:5432/testdb")
         from sqlalchemy.pool import QueuePool
         assert eng.pool.__class__ is QueuePool
         assert eng.pool.size() == 5
@@ -727,7 +727,7 @@ class TestPostgreSQLCodePaths:
     def test_pg_engine_pool_pre_ping(self):
         """PostgreSQL engine has pool_pre_ping enabled."""
         from db.connection import get_engine
-        eng = get_engine("postgresql://user:pass@localhost:5432/testdb")
+        eng = get_engine("postgresql+psycopg2://user:pass@localhost:5432/testdb")
         assert eng.pool._pre_ping is True or getattr(eng.pool, 'pre_ping', None) is True
 
     def test_get_db_engine_returns_engine(self):
