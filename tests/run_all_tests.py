@@ -13,7 +13,6 @@ ROOT = Path(__file__).resolve().parent.parent
 
 MODULES = [
     "tests/test_pipeline_offline.py",
-    "tests/test_extractor_ha_api.py",
     "tests/extraction/test_schema.py",
     "tests/extraction/test_evidence.py",
     "tests/extraction/test_normalization.py",

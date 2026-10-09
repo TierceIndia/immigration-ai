@@ -540,7 +540,7 @@ immigration-knowledge/
 │   ├── assessment/                 # Eligibility + Gap Engine — was phase3c/
 │   ├── change_detection/           # change_detector.py, hashing.py
 │   ├── fetch/                      # fetcher.py, browser_fetcher.py, extractor_html.py,
-│   │                                #   extractor_pdf.py, extractor_ha_api.py
+│   │                                #   extractor_pdf.py
 │   ├── orchestration/
 │   │   └── government_sync.py      # Source sync orchestrator (always-fetch + crawl gating)
 │   ├── services/
