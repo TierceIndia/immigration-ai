@@ -11,6 +11,11 @@ Pipeline-run internals (run IDs, raw pipeline-run tables) are deliberately
 not exposed anywhere in the UI — only a non-blocking "sync in progress"
 banner and a final plain-language toast summary.
 
+When a government host has refused a request (HTTP 403/429), the backend pauses
+every source on it for a while. The Sources table surfaces this: a "Paused
+until" column and a disabled that-row "Run now" button. "Run all sources" stays
+enabled, since the server simply skips paused hosts.
+
 ## Run
 
 ```

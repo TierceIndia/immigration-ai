@@ -651,6 +651,7 @@ government_documents        (NOT NULL visa_category, raw_path, retrieved_at)
 document_versions
 document_chunks             (NOT NULL version_id FK)
 fetch_log
+host_cooldowns              (host PK; cooldown_until; FK source_id)
 
 requirements                (NOT NULL status, extracted_at)
 requirement_evidence
@@ -922,7 +923,7 @@ Government Source
 | test_pipeline_runs.py | 42 | PipelineRun model, repo CRUD, API endpoints, computed counters, orchestrator integration |
 | test_e2e_scenarios.py | 14 | Multi-program, multi-version, gap engine, evaluation, orchestration |
 
-### Total: 1058 collected — 1042 passed / 13 skipped, 3 pre-existing environment-only failures (2026-10-05)
+### Total: 1266 collected — 1250 passed / 13 skipped, 3 pre-existing environment-only failures (2026-10-09)
 
 (The table above is a representative subset, and its per-file counts are from the 2026-09-15
 checkpoint — several of these files have grown since; the complete, current per-file inventory
@@ -975,6 +976,9 @@ lives in the README test suite summary.)
 - `src/llm_governance.py` — RateLimiter, RetryPolicy, ResponseCache, BudgetTracker
 - `src/logging_config.py` — Structured logging, PII redaction
 - `src/orchestration/government_sync.py` — Source sync orchestrator (on-demand)
+- `src/fetch/politeness.py` — Per-host spacing with jitter (shared limiter)
+- `src/orchestration/host_cooldown.py` — Refusal (403/429) host pauses
+- `src/fetch/proxy.py` — Optional single static egress proxy (fail-closed, redacted)
 
 ### Configuration
 
@@ -1013,13 +1017,53 @@ lives in the README test suite summary.)
 
 10. **Fail-fast in production**: JWT secret must be set. CORS wildcard is blocked. Database errors surface immediately.
 
+11. **Polite, non-evasive retrieval**: Egress discipline changes *when* we ask, never *how we identify ourselves*. Per-host spacing with jitter, honouring `Crawl-delay`/`Retry-After`, and pausing a host that refused us are the whole toolkit. No User-Agent rotation, no IP/proxy rotation, no CAPTCHA bypass, no stealth headers; `FETCH_PROXY_URL` is one static egress, not a rotation.
+
 ---
+
+## 17. Retrieval Politeness & Access Discipline
+
+**Motivation.** The 2026-10-05 finding (§16) was that `immi.homeaffairs.gov.au`'s WAF degrades under
+**per-URL request volume**: a full 14-source sync could return 0/14 failures, while a single URL hit
+repeatedly minutes later progressively degraded (200 → corrupted content → 403), with every
+other URL left healthy. The measured baseline was ~10 requests to one host in ~3.4s (~3 req/s), with
+no spacing, no jitter and no reaction to a refusal. The correct response is ordinary client-side
+etiquette — not evasion.
+
+**Spacing with jitter** (`src/fetch/politeness.py`). A single process-wide `HostLimiter` is keyed by
+`host[:port]`. Every request to the same host waits at least `FETCH_MIN_INTERVAL_SECONDS` (8) plus a
+random `uniform(0, FETCH_JITTER_SECONDS)` (4), so the pattern is not metronomic. Different hosts do
+not delay each other. Both retrieval paths (`fetcher.fetch`, `browser_fetcher.fetch_with_browser`)
+share the one limiter, and a `robots.txt` `Crawl-delay` / `Retry-After` tightens the interval further.
+Clock, sleep and RNG are injectable so tests run on a virtual clock and never sleep.
+
+**Refusal cooldown** (`src/orchestration/host_cooldown.py`). Only **403/429** are refusals; a timeout,
+DNS failure or 5xx is a *fault* and never pauses anything. A refusal upserts a `host_cooldowns` row
+(one per host, `cooldown_until = now + FETCH_COOLDOWN_HOURS`, default 6) and every source on that host
+is skipped until it expires — by a full sync, by a single-source sync, and surfaced to the admin UI
+("Paused until" column, `409 host_cooldown` on manual run). A successful fetch clears the row. The
+reaction to a refusal is **pause only**: the IP, the User-Agent and the HTTP-vs-browser choice are
+byte-for-byte unchanged, and there is no override flag.
+
+**Optional static egress** (`src/fetch/proxy.py`). `FETCH_PROXY_URL` (default unset = direct) routes
+every fetch through **one fixed** proxy for reachability/egress control. It is never rotated and never
+changes in response to a refusal. It **fails closed**: a malformed value makes affected fetches return
+`NETWORK_RESTRICTED` + `error_type=proxy_config_error` rather than fall back to a direct connection,
+and `user:password@` credentials are redacted from logs and error strings.
+
+**Cost.** With defaults, same-host requests are ~`8 + uniform(0,4)`s apart (first request immediate),
+so 10 sources on one host take ~`72s` min / `~90s` average / `108s` max, versus the ~`3.4s` pre-change
+baseline. A refusal makes a run shorter, not longer, by skipping the rest of that host. See the README
+"Fetch politeness guard" section for the table. The trade is intentional: a run that stays welcome is
+worth far more than one that is fast and gets the IP blocked.
+
+
 
 ## 16. Production Readiness Assessment
 
 ### Strengths
 
-- 1058 collected / 1042 passing (13 skipped, 3 pre-existing environment-only failures) with comprehensive coverage
+- 1266 collected / 1250 passing (13 skipped, 3 pre-existing environment-only failures) with comprehensive coverage
 - Strong domain separation (LLM extraction vs deterministic rules)
 - Complete provenance chain from rule to government URL
 - Structured logging with PII redaction
@@ -1078,7 +1122,7 @@ lives in the README test suite summary.)
 
 ### Verification performed (2026-08-27; re-verified 2026-09-15, 2026-09-25, 2026-10-05)
 
-1. **1042 passed / 13 skipped / 3 failed** (2026-10-05), up from 956 passed / 11 skipped / 0 failed
+1. **1250 passed / 13 skipped / 3 failed** (2026-10-09), up from 956 passed / 11 skipped / 0 failed
    at the 2026-09-25 checkpoint — the growth is real new regression coverage for every bug found
    and fixed since: requirement_id/rule_id truncation, the ACTIVE-rule category-uniqueness gap, the
    `<form>`-unwrapping extraction fix, the background-sync lock-ordering race, raw-snapshot

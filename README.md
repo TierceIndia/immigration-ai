@@ -2,7 +2,7 @@
 
 End-to-end deterministic immigration eligibility system for Australian skilled migration visas.
 
-**Phases completed**: 1 → 2 → 3 → 3C → 3D → Admin API → Admin Knowledge → DB Readiness + API Surface Hardening → security hardening → browser-fetch escalation → Gemini provider support → Patchright migration → requirement_id/rule-uniqueness bug fixes → raw-snapshot persistence → folder rename (`extraction`/`rules`/`assessment`/`fetch`/`change_detection`) → minimal admin frontend (all fully tested, **1042 passing / 13 skipped / 3 pre-existing unrelated failures** — see [Test Suite](#test-suite)).
+**Phases completed**: 1 → 2 → 3 → 3C → 3D → Admin API → Admin Knowledge → DB Readiness + API Surface Hardening → security hardening → browser-fetch escalation → Gemini provider support → Patchright migration → requirement_id/rule-uniqueness bug fixes → raw-snapshot persistence → folder rename (`extraction`/`rules`/`assessment`/`fetch`/`change_detection`) → minimal admin frontend → fetch politeness (per-host spacing + refusal cooldown + optional static proxy) (all fully tested, **1250 passing / 13 skipped / 3 pre-existing unrelated failures** — see [Test Suite](#test-suite)).
 
 **Core principle**: Every eligibility decision is deterministic, auditable, and traceable to exact government evidence. No LLM decides eligibility.
 
@@ -33,6 +33,7 @@ live-verified.
 | Source fetch → store → version → change-detect → downstream extraction | WORKING end-to-end against the real running stack, **and raw snapshots are now durably persisted** (see Current Gaps — this was broken until 2026-10-05) |
 | Plain-HTTP fetch of `immi.homeaffairs.gov.au` | NOT WORKING — real HTTP 403 (WAF). Expected; this is what the browser-escalation path exists for. |
 | Browser-escalation fetch of `immi.homeaffairs.gov.au` | **Migrated to Patchright, headless (2026-10-01).** ⚠️ **Not a reliable fix for WAF blocking** — live-verified 2026-10-05 that this WAF blocks *intermittently under per-URL request volume*, independent of headless/headed or Playwright/Patchright: a full 14-source sync got 0/14 failures, but a URL hit repeatedly afterward progressively degraded to a real 403. See Current Gaps. |
+| Fetch politeness (per-host spacing + refusal cooldown) | **NEW 2026-10-09** — same-host requests are spaced by `FETCH_MIN_INTERVAL_SECONDS` (8) plus up to `FETCH_JITTER_SECONDS` (4) of random jitter; a host that answers 403/429 pauses **every** source on it for `FETCH_COOLDOWN_HOURS` (6). Changes *when* we ask, never how — no User-Agent or IP rotation was added. See "Fetch politeness guard". |
 | LLM extraction — **OpenAI** | WORKING when the account has billing credits; fails safely and visibly (`FAILED` run, real error) when it doesn't |
 | LLM extraction — **Gemini** | WORKING for most content — `EXTRACTION_MODEL=gemini-flash-lite-latest`, fully wired to the same governance layer as OpenAI. **New gap found 2026-10-05**: on `SRC-AU-600-MAIN`'s real content, all 16 candidate chunks came back with schema-violating JSON (wrong keys, invalid enums) — 0/16 succeeded, vs. 13/13 and 2/2 on other real sources. Not yet investigated. |
 | Real requirement extraction end-to-end | **PROVEN WITH REAL CONTENT 2026-10-05** — `SRC-AU-MIGRATION-REGS-1994` (13 real requirements) and `SKILLED_189`'s other sources (2 real requirements) both extracted real, evidence-backed requirements via a real sync. `SRC-AU-CRICOS-REGISTER` still returns 0 (genuine JS-only SPA, confirmed unrecoverable via render-wait). `SRC-AU-600-MAIN`'s 0-chunk bug is fixed (see Current Gaps) but hit the new Gemini schema gap above instead. |
@@ -46,7 +47,7 @@ live-verified.
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests/ -q    # 1042 passed / 13 skipped / 3 failed (pre-existing, environment-only — see Test Suite)
+python -m pytest tests/ -q    # 1250 passed / 13 skipped / 3 failed (pre-existing, environment-only — see Test Suite)
 ```
 
 ```bash
@@ -433,7 +434,7 @@ from db.repositories import (
 
 ## Test Suite
 
-> **1042 passed / 13 skipped / 3 failed** (2026-10-05), real auth enforced throughout. The 3
+> **1250 passed / 13 skipped / 3 failed** (2026-10-09), real auth enforced throughout. The 3
 > failures are pre-existing and environment-only, not caused by any work in this round: 2 are a
 > **host-venv-only** `psycopg` v3 issue (importable but its native `pq` wrapper isn't — Docker is
 > unaffected, see Current Gaps), 1 is `test_patchright_missing_returns_launch_failure` hitting a
@@ -469,7 +470,14 @@ python -m pytest tests/test_e2e_scenarios.py -q  # End-to-end scenarios: 14 test
 | Scheduler | 38 | APScheduler start/stop, manual sync trigger, concurrent-sync lock, background sync job + lock-release ordering |
 | E2E Scenarios | 14 | Multi-program, multi-version, gap engine, evaluation, orchestration |
 | Fetch / sync / admin / integration (everything else) | ~334 | fetch→store→version, change detection, raw-snapshot persistence + durability, refetch lifecycle, crawl-frequency gating, Patchright browser escalation, source PATCH/no-manual-capture, driver pinning, form-wrapped-content extraction, lineage integrity |
-| **Total** | **1058 collected** | **1042 passed / 13 skipped / 3 failed (2026-10-05), real auth enforced throughout.** |
+| Fetch politeness (`tests/test_politeness.py`) | 46 | Per-host spacing, jitter window, crawl-delay, Retry-After, virtual-clock + thread safety, shared by the plain and browser paths |
+| Host cooldowns (`tests/test_host_cooldown.py`) | 53 | Refusal classification (403/429 vs faults), pause window/expiry/hits, sync skip, API `409 host_cooldown` + `blocked_until`, no-override, refusal never changes how we fetch |
+| Static proxy (`tests/test_proxy.py`) | 32 | Default off, fail-closed on malformed config, no credential leak, wiring into both paths, static-never-rotated |
+| **Total** | **1266 collected** | **1250 passed / 13 skipped / 3 failed (2026-10-09), real auth enforced throughout.** |
+
+(The per-layer counts above are the representative 2026-09-15 snapshot and do not individually
+reconcile with the current total — several layers have grown since; the new politeness / cooldown /
+proxy rows are exact.)
 
 ## Expression Types
 
@@ -613,12 +621,15 @@ immigration-knowledge/
 
 8. **Transactional activation**: Activating a rule version for a logical key supersedes any existing ACTIVE version. Atomic operation, never two ACTIVE for same field.
 
+9. **Polite, non-evasive retrieval**: We change *when* we ask (per-host spacing + jitter, respect `Crawl-delay`/`Retry-After`, stop hitting a host that refused us) and *not how we identify ourselves*. There is no User-Agent rotation, no IP/proxy rotation, no CAPTCHA bypass and no stealth headers; the optional `FETCH_PROXY_URL` is a single static egress, not a rotation.
+
 ## Security
 
 - **JWT secret fail-fast**: Production environment requires `JWT_SECRET_KEY` env var. Missing → startup error.
 - **CORS**: Configurable via `CORS_ORIGINS` (comma-separated). Defaults to `http://localhost:3000`. Wildcard `*` with credentials is explicitly avoided.
 - **bcrypt pinned**: `bcrypt==4.2.1` to ensure passlib compatibility.
 - **PII redaction**: Date of birth, passport number, email never logged. Structured logging with PII filters.
+- **Egress proxy fail-closed**: `FETCH_PROXY_URL` credentials are redacted from logs and error strings, and a malformed proxy URL causes affected fetches to be refused (reported as `proxy_config_error`) rather than silently sent direct.
 - **Admin role check**: Non-admin users get 403 on admin endpoints.
 
 ## LLM Governance
@@ -718,7 +729,7 @@ python -m pytest tests/extraction/test_category_gold_harness.py -q   # 12 guard 
 
 ### Database-agnostic core (runs on SQLite for tests, PostgreSQL for prod)
 
-The ORM rule lifecycle and rule-activation pipeline are fully database-agnostic — they run identically against in-memory SQLite (1042 passed / 13 skipped, see [Test Suite](#test-suite)) and real PostgreSQL (re-verified live 2026-10-05, including the two new migrations for the requirement_id/rule_id widening and the ACTIVE-rule category fix).
+The ORM rule lifecycle and rule-activation pipeline are fully database-agnostic — they run identically against in-memory SQLite (1250 passed / 13 skipped, see [Test Suite](#test-suite)) and real PostgreSQL (re-verified live 2026-10-05, including the two new migrations for the requirement_id/rule_id widening and the ACTIVE-rule category fix).
 
 ### Real PostgreSQL verification (performed 2026-08-27)
 
@@ -775,6 +786,47 @@ adding retries or stealth.
 The 2 non-Home-Affairs sources (`SRC-AU-CRICOS-REGISTER`, `SRC-AU-MIGRATION-REGS-1994`) are on
 different domains and have never been subject to this WAF at all — see the "What works / what
 doesn't" table above for their separate, content-level issues.
+
+### Fetch politeness guard (added 2026-10-09)
+
+The 2026-10-05 finding above was that the WAF degrades under **per-URL request volume** — not a
+fingerprint block. The response is therefore to change *when* we ask, not *how*: two rules, plus
+one opt-in egress setting, all owned by `src/fetch/politeness.py`, `src/orchestration/host_cooldown.py`
+and `src/fetch/proxy.py`. **No evasion was added** — `fetcher.USER_AGENT` is still the single fixed
+string `AU-Immigration-Source-Monitor/0.1`, and there is still no rotation of any kind.
+
+- **Per-host spacing with jitter.** Two requests to the **same host** are separated by at least
+  `FETCH_MIN_INTERVAL_SECONDS` (default `8`) plus a random `uniform(0, FETCH_JITTER_SECONDS)`
+  (default up to `4`) — so the pattern is not metronomic. Different hosts never delay each other,
+  and the plain-HTTP and browser paths share the one limiter. A `robots.txt` `Crawl-delay` and a
+  `Retry-After` header are honoured when present.
+- **Refusal cooldown.** When a host answers **403 or 429** — the two statuses that mean *refused*,
+  as opposed to a timeout/DNS/5xx *fault* — every source on that host is paused for
+  `FETCH_COOLDOWN_HOURS` (default `6`). The sync layer skips paused hosts (both a full sync and a
+  single-source "Run now"); the API returns `409` with a `host_cooldown` detail, and the admin
+  Sources table shows a "Paused until" column. There is deliberately **no force/override flag** —
+  a forced request is still a request the host asked us not to make. A successful fetch clears the
+  pause.
+- **Optional static egress proxy.** `FETCH_PROXY_URL` (default unset = direct) points every
+  outbound fetch at **one fixed** proxy for reachability/egress control — a host that only allows a
+  known exit IP, a corporate gateway, and so on. It is never rotated and never changes in response
+  to a refusal. A malformed value **fails closed**: affected fetches are refused with an explicit
+  `proxy_config_error` (never silently sent direct). Any `user:password@` credentials are redacted
+  from logs and error strings.
+
+**Expected sync duration.** With the defaults above, requests to one host are ~`8 + uniform(0,4)`s
+apart (average ≈ `10`s); the *first* request to a host is immediate. So a run over the 10
+`immi.homeaffairs.gov.au` sources takes roughly:
+
+| Same-host requests | Minimum (jitter = 0) | Average (jitter ≈ 2s) | Maximum (jitter = 4s) |
+|--------------------|----------------------|-----------------------|-----------------------|
+| 10 (9 gaps)        | `9 × 8 = 72s`        | `9 × 10 = 90s`        | `9 × 12 = 108s`       |
+
+That is the intended trade — **~90s on average instead of the ~3.4s / ~3 req/s the registry-wide
+sync measured before this change** — and it is a *per host* figure: the 2 other-domain sources run
+concurrently on their own host clock. A refusal makes the run **shorter**, not longer: after the
+first 403/429 the host is skipped for the rest of the run (and for the next `FETCH_COOLDOWN_HOURS`),
+so no further requests are sent at all.
 
 ## License
 
