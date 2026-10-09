@@ -1,15 +1,17 @@
 """Tests for Part 1e: the rule/requirement review audit trail must always
 record the AUTHENTICATED admin, never a client-supplied actor/reviewer
-string from the request body.
+string.
 
-Before this fix, every rule lifecycle action (validate/approve/reject/
+Before Part 1e, every rule lifecycle action (validate/approve/reject/
 activate/retire, single and batch) and every requirement review action
 (approve/reject/mark-needs-review) persisted whatever free-text string the
 client put in the request body's actor/reviewer field - despite the route
 itself requiring admin auth, the identity recorded in rule_versions.created_by
-/ requirement_review.reviewer could be spoofed to anyone's name. The field is
-kept (optional) for backward compatibility, but is now always ignored for
-the audit value itself.
+/ requirement_review.reviewer could be spoofed to anyone's name. Part 1e made
+the field ignored; a later pass removed it from the request schema entirely
+(it is no longer a field FastAPI/Pydantic even recognizes), so these tests
+now also prove that sending it anyway - an old client, or a probe - is
+harmlessly dropped as an unrecognized key rather than rejected or honoured.
 """
 from __future__ import annotations
 
@@ -206,3 +208,20 @@ class TestRequirementAuditTrailIsServerDerived:
         with get_session_factory(engine)() as s:
             review = s.query(RequirementReview).filter_by(requirement_id=req_id).one()
             assert review.reviewer == "audit-admin@test.com"
+
+
+class TestActorReviewerFieldsAreFullyRemoved:
+    """actor/reviewer went from "ignored but present" (Part 1e) to simply
+    gone - this proves removal, not just non-effect."""
+
+    def test_actor_is_not_in_the_openapi_schema_for_rule_actions(self, client):
+        schema = client.get("/openapi.json").json()
+        rule_action = schema["components"]["schemas"]["RuleActionRequest"]
+        assert "actor" not in rule_action.get("properties", {})
+        batch_action = schema["components"]["schemas"]["BatchActionRequest"]
+        assert "actor" not in batch_action.get("properties", {})
+
+    def test_reviewer_is_not_in_the_openapi_schema_for_requirement_review(self, client):
+        schema = client.get("/openapi.json").json()
+        review_request = schema["components"]["schemas"]["RequirementReviewRequest"]
+        assert "reviewer" not in review_request.get("properties", {})

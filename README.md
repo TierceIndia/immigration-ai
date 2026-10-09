@@ -277,8 +277,8 @@ All applicant endpoints require JWT authentication.
 ### Admin Rules (`/api/v1/admin/rules`)
 
 All mutations are admin-only (`Depends(require_admin)`) and record the **authenticated**
-admin as the actor in `rule_versions.created_by` — the request body's `actor` field is
-accepted (optional, for backward compatibility) but always ignored for the audit value.
+admin as the actor in `rule_versions.created_by` — there is no client-supplied `actor` field
+at all; a request body cannot name a different actor even accidentally.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -295,8 +295,8 @@ accepted (optional, for backward compatibility) but always ignored for the audit
 ### Admin Requirements (`/api/v1/admin/requirements`)
 
 Review actions are admin-only and record the **authenticated** admin in
-`requirement_review.reviewer` (the body's `reviewer` field is accepted but ignored, same as
-rules' `actor` above).
+`requirement_review.reviewer` — same as rules' `actor` above, there is no client-supplied
+`reviewer` field.
 
 | Method | Path | Description |
 |--------|------|-------------|

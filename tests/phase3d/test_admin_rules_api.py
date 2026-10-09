@@ -147,7 +147,7 @@ class TestStatusTransitionsAPI:
             _create_rule(s, "R-1", status="DRAFT")
         resp = client.post(
             "/api/v1/admin/rules/R-1/validate",
-            json={"actor": "admin1"},
+            json={},
             headers=admin_headers,
         )
         assert resp.status_code == 200
@@ -158,7 +158,7 @@ class TestStatusTransitionsAPI:
             _create_rule(s, "R-1", status="VALIDATED")
         resp = client.post(
             "/api/v1/admin/rules/R-1/approve",
-            json={"actor": "admin1"},
+            json={},
             headers=admin_headers,
         )
         assert resp.status_code == 200
@@ -169,7 +169,7 @@ class TestStatusTransitionsAPI:
             _create_rule(s, "R-1", status="APPROVED")
         resp = client.post(
             "/api/v1/admin/rules/R-1/activate",
-            json={"actor": "admin1"},
+            json={},
             headers=admin_headers,
         )
         assert resp.status_code == 200
@@ -180,7 +180,7 @@ class TestStatusTransitionsAPI:
             _create_rule(s, "R-1", status="DRAFT")
         resp = client.post(
             "/api/v1/admin/rules/R-1/reject",
-            json={"actor": "admin1"},
+            json={},
             headers=admin_headers,
         )
         assert resp.status_code == 200
@@ -191,7 +191,7 @@ class TestStatusTransitionsAPI:
             _create_rule(s, "R-1", status="DRAFT")
         resp = client.post(
             "/api/v1/admin/rules/R-1/activate",
-            json={"actor": "admin1"},
+            json={},
             headers=admin_headers,
         )
         assert resp.status_code == 400
@@ -202,15 +202,15 @@ class TestStatusTransitionsAPI:
             _create_rule(s, "R-1", status="DRAFT")
 
         resp = client.post("/api/v1/admin/rules/R-1/validate",
-                           json={"actor": "a"}, headers=admin_headers)
+                           json={}, headers=admin_headers)
         assert resp.json()["status"] == "VALIDATED"
 
         resp = client.post("/api/v1/admin/rules/R-1/approve",
-                           json={"actor": "a"}, headers=admin_headers)
+                           json={}, headers=admin_headers)
         assert resp.json()["status"] == "APPROVED"
 
         resp = client.post("/api/v1/admin/rules/R-1/activate",
-                           json={"actor": "a"}, headers=admin_headers)
+                           json={}, headers=admin_headers)
         assert resp.json()["status"] == "ACTIVE"
 
 
@@ -222,7 +222,7 @@ class TestTransactionalActivation:
             _create_rule(s, "R-2", status="APPROVED", category="AGE", field="age")
 
         resp = client.post("/api/v1/admin/rules/R-2/activate",
-                           json={"actor": "a"}, headers=admin_headers)
+                           json={}, headers=admin_headers)
         assert resp.json()["status"] == "ACTIVE"
 
         # Check R-1 was superseded
@@ -258,7 +258,7 @@ class TestBatchRoutesNotShadowed:
         legitimately returns [] for zero ids."""
         resp = client.post(
             "/api/v1/admin/rules/batch/validate",
-            json={"rule_ids": [], "actor": "admin1"},
+            json={"rule_ids": []},
             headers=admin_headers,
         )
         assert resp.status_code == 200
@@ -267,7 +267,7 @@ class TestBatchRoutesNotShadowed:
     def test_batch_approve_dispatch(self, client, engine, admin_headers):
         resp = client.post(
             "/api/v1/admin/rules/batch/approve",
-            json={"rule_ids": [], "actor": "admin1"},
+            json={"rule_ids": []},
             headers=admin_headers,
         )
         assert resp.status_code == 200
@@ -276,7 +276,7 @@ class TestBatchRoutesNotShadowed:
     def test_batch_activate_dispatch(self, client, engine, admin_headers):
         resp = client.post(
             "/api/v1/admin/rules/batch/activate",
-            json={"rule_ids": [], "actor": "admin1"},
+            json={"rule_ids": []},
             headers=admin_headers,
         )
         assert resp.status_code == 200
@@ -289,7 +289,7 @@ class TestBatchRoutesNotShadowed:
             _create_rule(s, "R-2", status="DRAFT")
         resp = client.post(
             "/api/v1/admin/rules/batch/validate",
-            json={"rule_ids": ["R-1", "R-2"], "actor": "admin1"},
+            json={"rule_ids": ["R-1", "R-2"]},
             headers=admin_headers,
         )
         assert resp.status_code == 200

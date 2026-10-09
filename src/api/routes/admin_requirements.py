@@ -37,12 +37,6 @@ def _reviewer_from(current_user: dict) -> str:
 
 class RequirementReviewRequest(BaseModel):
     requirement_id: str = Field(..., description="Requirement ID")
-    reviewer: str | None = Field(
-        None,
-        description="Deprecated and ignored - the audit trail always records the "
-                     "authenticated admin, never a client-supplied value. Kept "
-                     "optional only for backward compatibility with existing callers.",
-    )
     action: str = Field(..., description="'APPROVE', 'REJECT', or 'MARK_NEEDS_REVIEW'")
     notes: str | None = None
 

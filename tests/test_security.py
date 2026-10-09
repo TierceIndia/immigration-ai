@@ -520,7 +520,7 @@ class TestAuthorization:
         token = self._register_and_get_token(client, "regular2@example.com")
         resp = client.post(
             "/api/v1/admin/rules/RULE-TEST/activate",
-            json={"actor": "user-123"},
+            json={},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 403

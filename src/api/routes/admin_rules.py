@@ -27,12 +27,6 @@ router = APIRouter()
 # Request / Response schemas
 # ---------------------------------------------------------------------------
 class RuleActionRequest(BaseModel):
-    actor: str | None = Field(
-        None,
-        description="Deprecated and ignored - the audit trail always records the "
-                     "authenticated admin, never a client-supplied value. Kept "
-                     "optional only for backward compatibility with existing callers.",
-    )
     notes: str | None = None
 
 
@@ -64,10 +58,6 @@ class ReviewQueueResponse(BaseModel):
 
 class BatchActionRequest(BaseModel):
     rule_ids: list[str]
-    actor: str | None = Field(
-        None,
-        description="Deprecated and ignored - see RuleActionRequest.actor.",
-    )
     notes: str | None = None
 
 
