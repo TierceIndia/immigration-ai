@@ -9,7 +9,9 @@ require an X server, so the Xvfb wrapper is no longer needed.
 
 No evasive/anti-bot-bypass technique is used or will be added here, matching the
 principle stated in ``fetcher.py``: no stealth plugins, no credential abuse, no
-proxy/IP rotation, no CAPTCHA bypass, and no retry amplification. Escalating to a
+proxy/IP rotation, no CAPTCHA bypass, and no retry amplification. The single
+static egress proxy from ``FETCH_PROXY_URL`` (see ``fetch/proxy.py``) is honoured
+here too, for reachability — it is one fixed value, never rotated. Escalating to a
 real browser and honestly reporting the outcome is not evasion — it is a genuine
 browser session. If a source blocks even that, the correct response is to report
 the block as data (``fetch_status`` + ``error_type``) and let the source be
@@ -33,6 +35,7 @@ from fetch.fetcher import (
     FetchStatus,
     _CHALLENGE_MARKERS,
 )
+from fetch.proxy import ProxyConfigError, browser_proxy
 
 # Spacing/jitter between browser fetches is owned by fetch.politeness.HostLimiter
 # (shared with the plain-HTTP path), not by a constant here. This module used to
@@ -145,6 +148,19 @@ def _classify_browser_exception(exc: BaseException) -> str:
 def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> FetchResult:
     """Actual Patchright-backed implementation."""
     start = time.monotonic()
+
+    # Resolve the optional static egress proxy before launching anything. A
+    # malformed FETCH_PROXY_URL must fail closed here too: launching Chromium
+    # directly would be exactly the silent fallback the proxy setting exists to
+    # prevent. Both retrieval paths therefore share one proxy decision.
+    try:
+        proxy = browser_proxy()
+    except ProxyConfigError as exc:
+        return _browser_failure(
+            url, start, "proxy_config_error", str(exc),
+            status=FetchStatus.NETWORK_RESTRICTED,
+        )
+
     try:
         from patchright.sync_api import sync_playwright
     except ImportError as e:
@@ -173,7 +189,7 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
                     # No automation-detectable properties are overridden. Chromium
                     # is a real browser session; only the runtime leaks Patchright
                     # exists to fix are addressed by the driver itself.
-                    context = browser.new_context(locale="en-AU")
+                    context = browser.new_context(locale="en-AU", proxy=proxy)
                     page = context.new_page()
                 except Exception as e:
                     return _browser_failure(

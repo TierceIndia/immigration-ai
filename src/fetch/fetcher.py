@@ -10,7 +10,9 @@ facts and conflating them was the real Phase-1 defect this module fixes.
 
 No evasive/anti-bot-bypass technique is used or will be added here: no user-agent rotation, no
 proxy rotation, no CAPTCHA/anti-bot bypass, no stealth headers. Retrieval is a plain, honestly
-identified HTTP GET.
+identified HTTP GET. A single *static* egress proxy may be configured by the operator through
+FETCH_PROXY_URL for reachability/egress control; it is one fixed value that is never rotated and
+never changes in response to a refusal. See fetch/proxy.py.
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from urllib.parse import urlparse
 import requests
 
 from fetch.politeness import HostLimiter, get_limiter
+from fetch.proxy import ProxyConfigError, requests_proxies
 
 USER_AGENT = "AU-Immigration-Source-Monitor/0.1"
 
@@ -170,7 +173,10 @@ def _parse_crawl_delay(robots_text: str, user_agent: str = USER_AGENT) -> float 
     return best
 
 
-def _honour_robots_crawl_delay(url: str, limiter: HostLimiter, timeout: int) -> None:
+def _honour_robots_crawl_delay(
+    url: str, limiter: HostLimiter, timeout: int,
+    proxies: dict[str, str] | None = None,
+) -> None:
     """Fetch a host's robots.txt once per run and register its Crawl-delay.
 
     Consulted at most once per host per limiter lifetime (the limiter owns that
@@ -189,6 +195,7 @@ def _honour_robots_crawl_delay(url: str, limiter: HostLimiter, timeout: int) -> 
             robots_url,
             headers={"User-Agent": USER_AGENT, "Accept": "text/plain,*/*"},
             timeout=timeout,
+            proxies=proxies,
         )
     except requests.RequestException:
         return
@@ -222,7 +229,20 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
           max_retries: int = MAX_RETRIES, limiter: HostLimiter | None = None) -> FetchResult:
     """Plain HTTP GET, spaced and jittered per host via the shared HostLimiter."""
     limiter = limiter if limiter is not None else get_limiter()
-    _honour_robots_crawl_delay(url, limiter, timeout)
+
+    # Resolve the optional static egress proxy *before* touching the network.
+    # A misconfigured proxy must fail closed (no request, an explicit error)
+    # rather than be ignored and silently retried as a direct connection.
+    try:
+        proxies = requests_proxies()
+    except ProxyConfigError as exc:
+        return FetchResult(
+            url=url, status=FetchStatus.NETWORK_RESTRICTED, http_status=None,
+            content_type=None, raw_bytes=None, duration_ms=0,
+            error=str(exc), error_type="proxy_config_error",
+        )
+
+    _honour_robots_crawl_delay(url, limiter, timeout, proxies)
     last_error: str | None = None
     for attempt in range(1, max_retries + 1):
         limiter.wait(url)
@@ -232,6 +252,7 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
                 url,
                 headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/pdf,*/*"},
                 timeout=timeout,
+                proxies=proxies,
             )
             duration_ms = int((time.monotonic() - start) * 1000)
 

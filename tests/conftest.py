@@ -49,6 +49,10 @@ def _set_testing_env():
     # them to set the flag individually. The gate itself is still covered by
     # a dedicated test that explicitly overrides this back to false/unset.
     os.environ["ALLOW_PUBLIC_REGISTRATION"] = "true"
+    # A developer's shell must not be able to point the suite's fetches at a
+    # real egress proxy (FETCH_PROXY_URL). Remove it for the whole session; the
+    # proxy tests set it back explicitly and per-test.
+    os.environ.pop("FETCH_PROXY_URL", None)
     yield
     os.environ.pop("TESTING", None)
     os.environ.pop("ALLOW_PUBLIC_REGISTRATION", None)
