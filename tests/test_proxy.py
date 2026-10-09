@@ -93,7 +93,7 @@ class TestConfiguration:
             "password": "s3cr3t",
         }
 
-    @pytest.mark.parametrize("scheme", ["http", "https", "socks5", "socks5h"])
+    @pytest.mark.parametrize("scheme", ["http", "https"])
     def test_accepted_schemes(self, monkeypatch, scheme):
         url = f"{scheme}://proxy.internal:1080"
         monkeypatch.setenv(ENV_VAR, url)
@@ -109,6 +109,14 @@ class TestMalformedConfiguration:
         [
             "proxy.internal:3128",       # no scheme
             "ftp://proxy.internal:21",   # unsupported scheme
+            # SOCKS is deliberately unsupported: requests needs PySocks
+            # (requests[socks]) for a real socks5 proxy, which this project
+            # does not declare or install. Accepting the scheme here would
+            # pass validation and then fail at request time with a confusing
+            # dependency error instead of this module's clean, immediate
+            # ProxyConfigError - see proxy.py's _ALLOWED_SCHEMES comment.
+            "socks5://proxy.internal:1080",
+            "socks5h://proxy.internal:1080",
             "http://",                   # no host
             "http://proxy.internal:99999",  # port out of range
             "://nope",

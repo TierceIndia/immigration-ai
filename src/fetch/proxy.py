@@ -33,9 +33,15 @@ from urllib.parse import SplitResult, urlsplit
 
 ENV_VAR = "FETCH_PROXY_URL"
 
-# Schemes ``requests`` can actually speak. Anything else is a misconfiguration
-# we refuse to guess at (guessing is how a typo becomes a silent direct fetch).
-_ALLOWED_SCHEMES = ("http", "https", "socks5", "socks5h")
+# Schemes we actually support end-to-end. SOCKS is deliberately excluded even
+# though `requests` can parse a socks5:// proxies value: real SOCKS support
+# needs PySocks installed (`requests[socks]`), which this project does not
+# declare or install - accepting the scheme here would pass validation and
+# then fail at request time with a dependency error instead of the clean,
+# immediate ProxyConfigError this module exists to guarantee. The spec this
+# module implements only ever asks for http://user:pass@host:port; add socks
+# support (scheme + dependency) together if it is ever actually needed.
+_ALLOWED_SCHEMES = ("http", "https")
 
 
 class ProxyConfigError(ValueError):
