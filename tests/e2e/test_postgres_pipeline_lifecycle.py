@@ -58,7 +58,10 @@ pytestmark = [
 
 E2E_URL = os.environ.get(
     "POSTGRES_E2E_URL",
-    "postgresql://immigration:immigration_dev@localhost:5432/immigration",
+    # Driver named explicitly - see test_db_driver_pinning.py: a bare
+    # postgresql:// re-inherits SQLAlchemy's version-dependent default
+    # dialect (psycopg v3 on 2.1+, not a project dependency).
+    "postgresql+psycopg2://immigration:immigration_dev@localhost:5432/immigration",
 )
 
 SOURCE_ID = "SRC-AU-E2E-189"

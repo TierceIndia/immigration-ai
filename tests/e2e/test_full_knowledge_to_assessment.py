@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from db.models import (
     ApiUser, ApplicantProfile, VisaSelection, Country, ImmigrationProgram,
-    GovernmentSource, Assessment, AssessmentRuleResult, Gap,
+    GovernmentSource, Assessment, AssessmentRuleResult, Gap, DocumentVersion,
 )
 from db.connection import get_session_factory
 from db.repositories import PipelineRunRepo
@@ -48,7 +48,10 @@ pytestmark = [
 
 E2E_URL = os.environ.get(
     "POSTGRES_E2E_URL",
-    "postgresql://immigration:immigration_dev@localhost:5432/immigration",
+    # Driver named explicitly - see test_db_driver_pinning.py: a bare
+    # postgresql:// re-inherits SQLAlchemy's version-dependent default
+    # dialect (psycopg v3 on 2.1+, not a project dependency).
+    "postgresql+psycopg2://immigration:immigration_dev@localhost:5432/immigration",
 )
 
 PROGRAM_ID = "SKILLED_189"
@@ -112,17 +115,30 @@ def _cleanup():
                 "DELETE FROM visa_selections WHERE applicant_id IN (:a1,:a2,:a3)",
                 "DELETE FROM applicant_profiles WHERE applicant_id IN (:a1,:a2,:a3)",
                 "DELETE FROM api_users WHERE user_id = :uid",
+                # Scoped by THIS test's own document lineage (document_id LIKE
+                # 'DOC-A2E-%'), never by program_id + a generic id pattern:
+                # real extraction produces requirement_ids in the exact same
+                # REQ-{program_id}-{hash} shape this test's fixture does, so a
+                # program_id-only filter would also match (and delete) real,
+                # unrelated SKILLED_189 data already extracted from a real
+                # sync sharing this dev Postgres - confirmed live: 45 real
+                # rows matched the old filter, 0 of them belonging to this test.
                 "DELETE FROM requirement_evidence WHERE document_id LIKE 'DOC-A2E-%'",
                 "DELETE FROM ruleset_rules WHERE ruleset_id IN "
                     "(SELECT ruleset_id FROM rulesets WHERE program_id = :prog)",
                 "DELETE FROM rulesets WHERE program_id = :prog",
-                "DELETE FROM rule_versions WHERE rule_id LIKE 'RULE-REQ-%'",
-                "DELETE FROM rules WHERE program_id = :prog AND rule_id LIKE 'RULE-REQ-%'",
+                "DELETE FROM rule_versions WHERE rule_id IN "
+                    "(SELECT rule_id FROM rules WHERE requirement_id IN "
+                    "(SELECT requirement_id FROM requirements WHERE document_version_id IN "
+                    "(SELECT version_id FROM document_versions WHERE document_id LIKE 'DOC-A2E-%')))",
+                "DELETE FROM rules WHERE requirement_id IN "
+                    "(SELECT requirement_id FROM requirements WHERE document_version_id IN "
+                    "(SELECT version_id FROM document_versions WHERE document_id LIKE 'DOC-A2E-%'))",
                 "DELETE FROM requirement_versions WHERE requirement_id IN "
-                    "(SELECT requirement_id FROM requirements WHERE program_id = :prog "
-                    "AND country_id = 'AU' AND requirement_id LIKE 'REQ-%')",
-                "DELETE FROM requirements WHERE program_id = :prog AND country_id = 'AU' "
-                    "AND requirement_id LIKE 'REQ-%'",
+                    "(SELECT requirement_id FROM requirements WHERE document_version_id IN "
+                    "(SELECT version_id FROM document_versions WHERE document_id LIKE 'DOC-A2E-%'))",
+                "DELETE FROM requirements WHERE document_version_id IN "
+                    "(SELECT version_id FROM document_versions WHERE document_id LIKE 'DOC-A2E-%')",
                 "DELETE FROM extraction_runs WHERE document_id LIKE 'DOC-A2E-%'",
                 "DELETE FROM document_chunks WHERE document_id LIKE 'DOC-A2E-%'",
                 "DELETE FROM document_versions WHERE document_id LIKE 'DOC-A2E-%'",
@@ -216,12 +232,22 @@ class TestFullKnowledgeToAssessment:
         assert result.status == "changed"
         session.commit()
 
-        # Extractor produced requirements via MockLLMClient; approve those
+        # Extractor produced requirements via MockLLMClient; approve those.
+        # Scoped to THIS test's own document (DOC-A2E-ASSESS-189), never to
+        # "every requirement for program_id=SKILLED_189" - this dev Postgres
+        # is shared with real extraction output and demo data (see
+        # seed_review_demo.py), and a program-wide filter would blindly
+        # overwrite their status too, not just fail: confirmed live, this
+        # exact filter previously swept in 45 real requirements plus 2 demo
+        # CONFLICT rows and bulk-set them all to APPROVED.
         from db.models import Requirement, ExtractionRun
+        document_id = f"DOC-{SOURCE_ID.replace('SRC-', '')}"
         extracted = (
             session.query(Requirement)
+            .join(DocumentVersion, DocumentVersion.version_id == Requirement.document_version_id)
             .filter(Requirement.program_id == PROGRAM_ID,
-                    Requirement.country_id == "AU")
+                    Requirement.country_id == "AU",
+                    DocumentVersion.document_id == document_id)
             .all()
         )
         assert len(extracted) >= 1, "extraction must produce at least one requirement"
