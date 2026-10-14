@@ -303,9 +303,10 @@ class TestRecording:
         sync_all_sources(session, trigger_type="MANUAL")
         session.commit()
 
-        # Set-based: a 403 escalates to the browser, so one source can produce
-        # two requests for the same URL. What matters is how many *sources*
-        # on that host were contacted at all.
+        # Set-based even though a 403 (ACCESS_BLOCKED) no longer escalates to
+        # the browser (item 2) and so never produces a second request for the
+        # same URL - the dedup still makes the point robustly: what matters is
+        # how many *sources* on that host were contacted at all.
         refusing_asked = {u for u in asked_for if "refusing.example.invalid" in u}
         assert len(refusing_asked) == 1, (
             "the first 403 must stop the other two sources on that host "

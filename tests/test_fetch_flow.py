@@ -122,6 +122,14 @@ def _blocked_result(url):
     )
 
 
+def _requires_browser_result(url):
+    return fetcher.FetchResult(
+        url=url, status=fetcher.FetchStatus.REQUIRES_BROWSER, http_status=403,
+        content_type="text/html", raw_bytes=None, duration_ms=100,
+        error="Challenge page detected",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -226,11 +234,41 @@ class TestFetchDocumentAndStorePlainOK:
 
 
 class TestFetchDocumentAndStoreBrowserEscalation:
-    def test_blocked_then_browser_ok(self, session, monkeypatch):
+    def test_access_blocked_does_not_escalate_to_browser(self, session, monkeypatch):
+        """Item 2 / B4: a real 401/403/429 refusal is the origin telling us
+        "no", not "render me properly" - a browser hitting the same URL
+        cannot change that answer, so it must never even be tried. Only
+        REQUIRES_BROWSER (a rendering problem a browser can plausibly fix)
+        escalates."""
         _seed_source(session)
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
 
         monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _blocked_result(url))
+        browser_called = {"called": False}
+
+        def fake_browser(url, source_type="HTML"):
+            browser_called["called"] = True
+            return _ok_result(url)
+
+        monkeypatch.setattr(browser_fetcher, "fetch_with_browser", fake_browser)
+
+        outcome = fetch_document_and_store(session, source)
+        session.commit()
+
+        assert browser_called["called"] is False, "ACCESS_BLOCKED must make zero browser calls"
+        assert outcome.status == "ACCESS_BLOCKED"
+        assert outcome.document_id is None
+
+        assert source.status == "ACTIVE"
+        assert source.fetch_status == "ACCESS_BLOCKED"
+
+    def test_requires_browser_does_escalate(self, session, monkeypatch):
+        """A genuine rendering problem (JS/anti-bot challenge, empty SPA
+        shell) is exactly what browser escalation exists for."""
+        _seed_source(session)
+        source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+
+        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _requires_browser_result(url))
         browser_called = {"called": False}
 
         def fake_browser(url, source_type="HTML"):
@@ -288,12 +326,20 @@ class TestFetchDocumentAndStoreFailure:
         _seed_source(session)
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
 
+        browser_called = {"called": False}
+
+        def fake_browser(url, **kw):
+            browser_called["called"] = True
+            return _blocked_result(url)
+
         monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _blocked_result(url))
-        monkeypatch.setattr(browser_fetcher, "fetch_with_browser",
-                            lambda url, **kw: _blocked_result(url))
+        monkeypatch.setattr(browser_fetcher, "fetch_with_browser", fake_browser)
 
         outcome = fetch_document_and_store(session, source)
         session.commit()
+
+        # ACCESS_BLOCKED never escalates (item 2) - exactly one fetch attempt.
+        assert browser_called["called"] is False
 
         # Still ACTIVE, still in the sync set, still retried on schedule.
         assert source.status == "ACTIVE"

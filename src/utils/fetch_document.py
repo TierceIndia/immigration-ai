@@ -59,8 +59,15 @@ import fetch.browser_fetcher as browser_fetcher
 
 logger = get_logger(__name__)
 
+# Browser escalation is for a rendering problem (a JS/anti-bot challenge
+# page, or an SPA shell with no static content) that a real browser session
+# can plausibly get past. ACCESS_BLOCKED (a real 401/403/429 refusal) is
+# deliberately excluded: that is the origin telling us "no", not "render me
+# properly", and a browser hitting the same URL cannot change that answer -
+# see orchestration/host_cooldown.py's own rule that a refusal is never
+# answered by changing *how* we fetch. Escalating anyway used to burn a full
+# Patchright launch + navigation on every blocked source for no benefit.
 _BROWSER_ESCALATION_STATUSES = {
-    fetcher.FetchStatus.ACCESS_BLOCKED,
     fetcher.FetchStatus.REQUIRES_BROWSER,
 }
 
