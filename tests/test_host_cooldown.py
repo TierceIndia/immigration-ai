@@ -424,7 +424,7 @@ class TestSyncBehaviour:
         _seed_two_hosts(session)
         fetched = []
 
-        def fake_fetch_document(sess, source):
+        def fake_fetch_document(sess, source, **kw):
             fetched.append(source.source_id)
             return FetchStoreOutcome(source_id=source.source_id,
                                      status="FETCH_FAILED",
@@ -447,7 +447,7 @@ class TestSyncBehaviour:
         _seed_two_hosts(session)
         fetched = []
 
-        def fake_fetch_document(sess, source):
+        def fake_fetch_document(sess, source, **kw):
             fetched.append(source.source_id)
             return FetchStoreOutcome(source_id=source.source_id,
                                      status="FETCH_FAILED",

@@ -246,7 +246,7 @@ class TestFetchDocumentAndStoreBrowserEscalation:
         monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _blocked_result(url))
         browser_called = {"called": False}
 
-        def fake_browser(url, source_type="HTML"):
+        def fake_browser(url, source_type="HTML", **kw):
             browser_called["called"] = True
             return _ok_result(url)
 
@@ -271,7 +271,7 @@ class TestFetchDocumentAndStoreBrowserEscalation:
         monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _requires_browser_result(url))
         browser_called = {"called": False}
 
-        def fake_browser(url, source_type="HTML"):
+        def fake_browser(url, source_type="HTML", **kw):
             browser_called["called"] = True
             return _ok_result(url)
 

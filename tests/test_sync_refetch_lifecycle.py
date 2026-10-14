@@ -695,3 +695,122 @@ class TestSyncTimingSummary:
         # llm_calls/llm_wait_ms are present even when 0 (no LLM key configured in tests).
         assert timing.llm_calls >= 0
         assert timing.llm_wait_ms >= 0
+
+
+class TestSharedBrowserAcrossASyncRun:
+    """Item 4: sync_all_sources() shares one real browser across every
+    escalating source in the run, instead of each launching its own.
+    Drives the real BrowserSession/_patchright_fetch path through a fake
+    patchright.sync_api module - no real browser, no network."""
+
+    @staticmethod
+    def _install_fake_patchright(monkeypatch, status=200):
+        import sys
+        import types
+
+        sink = []
+
+        class _FakeResponse:
+            def __init__(self):
+                self.status = status
+                self.headers = {"content-type": "text/html"}
+
+        class _FakePage:
+            def set_default_timeout(self, ms):
+                pass
+
+            def route(self, pattern, handler):
+                pass
+
+            def goto(self, url, wait_until=None):
+                return _FakeResponse()
+
+            def wait_for_selector(self, selector, timeout=None):
+                pass
+
+            def content(self):
+                return "<html><body>" + ("blocked " * 10) + "</body></html>"
+
+        class _FakeContext:
+            def new_page(self):
+                return _FakePage()
+
+            def close(self):
+                sink.append("context.close")
+
+        class _FakeBrowser:
+            def new_context(self, **kwargs):
+                return _FakeContext()
+
+            def close(self):
+                sink.append("browser.close")
+
+        class _FakeChromium:
+            def launch(self, **kwargs):
+                sink.append("launch")
+                return _FakeBrowser()
+
+        class _FakePatchright:
+            chromium = _FakeChromium()
+
+        class _FakeCM:
+            def __enter__(self):
+                return _FakePatchright()
+
+            def __exit__(self, *exc_info):
+                return False
+
+        sync_api = types.ModuleType("patchright.sync_api")
+        sync_api.sync_playwright = lambda: _FakeCM()
+        patchright_pkg = types.ModuleType("patchright")
+        patchright_pkg.sync_api = sync_api
+        monkeypatch.setitem(sys.modules, "patchright", patchright_pkg)
+        monkeypatch.setitem(sys.modules, "patchright.sync_api", sync_api)
+        return sink
+
+    def test_two_escalating_sources_share_one_browser_launch(self, session, monkeypatch):
+        session.merge(Country(country_id="AU", name="Australia", iso_code="AUS"))
+        session.merge(ImmigrationProgram(
+            program_id="SKILLED_189", country_id="AU", visa_category="SKILLED",
+            subclass_code="189", name="Skilled Independent", status="ACTIVE",
+        ))
+        for source_id, path in (("SRC-AU-A", "a"), ("SRC-AU-B", "b")):
+            session.add(GovernmentSource(
+                source_id=source_id, country_id="AU", program_id="SKILLED_189",
+                visa_category="SKILLED", authority="Home Affairs",
+                url=f"https://immi.homeaffairs.gov.au/{path}", source_type="HTML",
+                priority="PRIMARY", monitoring_method="WEB", crawl_frequency="DAILY",
+                status="ACTIVE",
+            ))
+        session.commit()
+
+        def requires_browser_fetch(url, source_type="HTML", **kw):
+            return fetcher.FetchResult(
+                url=url, status=fetcher.FetchStatus.REQUIRES_BROWSER, http_status=403,
+                content_type="text/html", raw_bytes=None, duration_ms=5, error="challenge",
+            )
+
+        monkeypatch.setattr(fetcher, "fetch", requires_browser_fetch)
+        # The browser's own response is a genuine 200 (not another block) -
+        # otherwise the first ACCESS_BLOCKED would pause the whole host and
+        # the second source would never even be attempted, which would not
+        # test browser reuse at all.
+        sink = self._install_fake_patchright(monkeypatch, status=200)
+
+        results = sync_all_sources(session, trigger_type="MANUAL")
+        session.commit()
+
+        assert len(results) == 2
+        assert sink.count("launch") == 1, f"expected exactly one browser launch, got: {sink}"
+        assert sink.count("context.close") == 2
+        assert sink.count("browser.close") == 1
+
+    def test_browser_never_launched_when_no_source_escalates(self, session, monkeypatch):
+        _seed_source(session, "SRC-AU-189")
+        _patch_fetch(monkeypatch, HTML_V1)
+        sink = self._install_fake_patchright(monkeypatch)
+
+        sync_all_sources(session, trigger_type="MANUAL")
+        session.commit()
+
+        assert sink == [], "a plain-HTTP-only run must never launch a browser"

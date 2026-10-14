@@ -618,12 +618,19 @@ def run_requirement_extraction(
     }
 
 
-def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> FetchStoreOutcome:
+def fetch_document_and_store(
+    session_or_engine, source: GovernmentSource, browser_session=None,
+) -> FetchStoreOutcome:
     """Bootstrap a source: fetch (with browser escalation) → store document/version/chunks →
     run requirement extraction. Returns a ``FetchStoreOutcome`` describing what happened.
 
     On fetch/parse failure the source diagnostics are updated and a ``FetchLog`` row records
     the outcome; blocked sources are demoted to ``NEEDS_MANUAL_CAPTURE``.
+
+    ``browser_session`` (item 4): an optional ``browser_fetcher.BrowserSession``
+    shared across a whole sync run, so escalating sources reuse one already-
+    running Chromium process instead of each launching and tearing down its
+    own. Standalone callers (no session) keep the original per-call behaviour.
     """
     session = _resolve_session(session_or_engine)
     now = datetime.now(timezone.utc)
@@ -638,7 +645,7 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
             extra={"source_id": source.source_id, "status": fetch_result.status.value},
         )
         fetch_result = browser_fetcher.fetch_with_browser(
-            source.url, source_type=source_type
+            source.url, source_type=source_type, browser_session=browser_session,
         )
         acquisition = "browser"
     if not fetch_result.ok:

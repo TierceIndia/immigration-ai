@@ -95,6 +95,7 @@ def fetch_with_browser(
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     launch_fn=None,
     limiter=None,
+    browser_session: "BrowserSession | None" = None,
 ) -> FetchResult:
     """Fetch a URL through a real Chromium session (headless by default).
 
@@ -104,6 +105,10 @@ def fetch_with_browser(
     `launch_fn` is an injectable seam (defaults to _patchright_fetch) used only
     by tests to mock the browser call chain — production always uses Patchright.
     `limiter` is likewise injectable; production uses the process-wide one.
+    `browser_session` (item 4) lets a whole sync run share one real Chromium
+    process across many sources instead of launching a fresh one per source;
+    it is only honoured on the real ``_patchright_fetch`` path — a custom
+    ``launch_fn`` (always a test seam) keeps its existing 3-arg call shape.
 
     The limiter wait happens *here*, before dispatching to ``launch_fn``, so
     every browser fetch is spaced by the same per-host rule as a plain fetch —
@@ -115,14 +120,76 @@ def fetch_with_browser(
         limiter = get_limiter()
     limiter_wait_ms = int(limiter.wait(url) * 1000)
     if launch_fn is None:
-        launch_fn = _patchright_fetch
-    result = launch_fn(url, source_type, timeout_seconds)
+        result = _patchright_fetch(url, source_type, timeout_seconds, browser_session=browser_session)
+    else:
+        result = launch_fn(url, source_type, timeout_seconds)
     # launch_fn is a test seam and may return a bare sentinel rather than a
     # real FetchResult (e.g. to prove call plumbing) - only stamp the timing
     # when there is somewhere real to put it.
     if hasattr(result, "limiter_wait_ms"):
         result.limiter_wait_ms = limiter_wait_ms
     return result
+
+
+class BrowserSession:
+    """One real Chromium process, shared across many ``fetch_with_browser()``
+    calls in a single sync run (item 4).
+
+    A browser launch is slow (roughly a second) compared to navigating a page
+    in an already-running one. Re-launching a fresh browser for every source
+    that escalates in one sync run was pure waste when the whole run is going
+    to tear it down again a few seconds later anyway. Each source still gets
+    its own fresh *context* (cookies/storage never leak between sources) -
+    only the underlying browser process is reused.
+
+    Lazy: nothing is launched until the first ``ensure_browser()`` call, so a
+    sync run that never escalates never pays for a browser at all. Always
+    call ``close()`` (or use as a context manager) once the run is done.
+    """
+
+    def __init__(self):
+        self._cm = None
+        self.browser = None
+
+    def ensure_browser(self):
+        """Return the running browser, launching it on first use.
+
+        Returns ``(browser, launch_ms)`` - ``launch_ms`` is the real launch
+        time on the call that actually launched it, and ``None`` on every
+        later call that just reused the already-running process.
+        """
+        if self.browser is not None:
+            return self.browser, None
+        from patchright.sync_api import sync_playwright
+
+        self._cm = sync_playwright()
+        playwright = self._cm.__enter__()
+        launch_start = time.monotonic()
+        self.browser = playwright.chromium.launch(
+            headless=_is_headless(), args=BROWSER_LAUNCH_ARGS,
+        )
+        return self.browser, int((time.monotonic() - launch_start) * 1000)
+
+    def close(self) -> None:
+        if self.browser is not None:
+            try:
+                self.browser.close()
+            except Exception:
+                pass
+            self.browser = None
+        if self._cm is not None:
+            try:
+                self._cm.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._cm = None
+
+    def __enter__(self) -> "BrowserSession":
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        self.close()
+        return False
 
 
 def _browser_failure(
@@ -154,8 +221,139 @@ def _classify_browser_exception(exc: BaseException) -> str:
     return "browser_navigation_failed"
 
 
-def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> FetchResult:
-    """Actual Patchright-backed implementation."""
+# Resource types that never contribute to extraction (extraction reads the
+# rendered DOM/text, never binary assets) but can be a large share of a
+# page's load time. Scripts, stylesheets and XHR are deliberately kept: pages
+# like immi.homeaffairs.gov.au's Angular apps render their real content via
+# client-side JS and XHR-fetched data (see CONTENT_READY_SELECTOR's
+# docstring), so blocking those would break real extraction, not just speed.
+_BLOCKED_RESOURCE_TYPES = frozenset({"image", "font", "media"})
+
+
+def _route_blocking_heavy_assets(route) -> None:
+    if route.request.resource_type in _BLOCKED_RESOURCE_TYPES:
+        route.abort()
+    else:
+        route.continue_()
+
+
+def _fetch_page(
+    browser, url: str, source_type: str, timeout_seconds: int,
+    proxy, start: float, browser_launch_ms: int | None, close_browser: bool,
+) -> FetchResult:
+    """Navigate one page in ``browser`` and classify the result.
+
+    Shared by the per-call launch path (``close_browser=True``, the browser
+    this function was handed is closed when done) and the shared
+    ``BrowserSession`` path (``close_browser=False`` — the session owns the
+    browser's lifetime across the whole sync run, so only the context this
+    one page used is closed here).
+    """
+    context = None
+    goto_ms: int | None = None
+    try:
+        try:
+            # No automation-detectable properties are overridden. Chromium
+            # is a real browser session; only the runtime leaks Patchright
+            # exists to fix are addressed by the driver itself.
+            context = browser.new_context(locale="en-AU", proxy=proxy)
+            page = context.new_page()
+            page.route("**/*", _route_blocking_heavy_assets)
+        except Exception as e:
+            return _browser_failure(
+                url, start, "browser_context_failed",
+                f"Browser context creation failed: {e}",
+                browser_launch_ms=browser_launch_ms,
+            )
+
+        try:
+            page.set_default_timeout(
+                min(timeout_seconds * 1000, BROWSER_NAVIGATION_TIMEOUT_MS)
+            )
+            goto_start = time.monotonic()
+            response = page.goto(url, wait_until="domcontentloaded")
+            goto_ms = int((time.monotonic() - goto_start) * 1000)
+        except Exception as e:
+            return _browser_failure(
+                url, start, _classify_browser_exception(e),
+                f"Browser navigation failed: {e}",
+                browser_launch_ms=browser_launch_ms,
+                goto_ms=int((time.monotonic() - goto_start) * 1000),
+            )
+
+        status_code = response.status if response is not None else None
+        content_type = (
+            response.headers.get("content-type", "text/html")
+            if response is not None else "text/html"
+        )
+
+        selector_wait_ms = None
+        selector_timed_out = None
+        # Item 3: an HTTP >= 400 response (a block/error page) is never going
+        # to grow the CONTENT_READY_SELECTOR's structural content through
+        # client-side JS - waiting the full CONTENT_READY_TIMEOUT_MS here
+        # just burns time on a page we are going to classify as a failure
+        # anyway.
+        if status_code is None or status_code < 400:
+            selector_start = time.monotonic()
+            selector_timed_out = False
+            try:
+                page.wait_for_selector(
+                    CONTENT_READY_SELECTOR, timeout=CONTENT_READY_TIMEOUT_MS
+                )
+            except Exception:
+                # Times out for pages that never render structural content
+                # (e.g. a genuinely contentless search-interface SPA) —
+                # that is real, honest information, not an error: capture
+                # whatever is there now, same as before this wait existed.
+                selector_timed_out = True
+            selector_wait_ms = int((time.monotonic() - selector_start) * 1000)
+
+        body_text = page.content()
+        body_bytes = body_text.encode("utf-8")
+    finally:
+        # Always close the context, even on the failure paths above — a
+        # leaked context would otherwise accumulate per source. The browser
+        # itself is only closed here in per-call mode; a BrowserSession owns
+        # closing its own browser once, at the end of the whole sync run.
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        if close_browser and browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    result = _classify_browser_result(
+        url=url,
+        status_code=status_code,
+        body_bytes=body_bytes,
+        content_type=content_type,
+        source_type=source_type,
+        challenge_body=body_text,
+        duration_ms=duration_ms,
+    )
+    result.browser_launch_ms = browser_launch_ms
+    result.goto_ms = goto_ms
+    result.selector_wait_ms = selector_wait_ms
+    result.selector_timed_out = selector_timed_out
+    return result
+
+
+def _patchright_fetch(
+    url: str, source_type: str, timeout_seconds: int,
+    browser_session: "BrowserSession | None" = None,
+) -> FetchResult:
+    """Actual Patchright-backed implementation.
+
+    With no ``browser_session``, launches and tears down one browser per
+    call (the original behaviour). With one, reuses its already-running
+    browser (item 4) — only a fresh context is opened/closed per call.
+    """
     start = time.monotonic()
 
     # Resolve the optional static egress proxy before launching anything. A
@@ -170,6 +368,25 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
             status=FetchStatus.NETWORK_RESTRICTED,
         )
 
+    if browser_session is not None:
+        try:
+            browser, browser_launch_ms = browser_session.ensure_browser()
+        except Exception as e:
+            return _browser_failure(
+                url, start, "browser_launch_failed",
+                f"Browser launch failed: {e}",
+            )
+        try:
+            return _fetch_page(
+                browser, url, source_type, timeout_seconds, proxy, start,
+                browser_launch_ms, close_browser=False,
+            )
+        except Exception as e:
+            return _browser_failure(
+                url, start, _classify_browser_exception(e),
+                f"Browser fetch failed: {e}",
+            )
+
     try:
         from patchright.sync_api import sync_playwright
     except ImportError as e:
@@ -178,12 +395,6 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
             f"patchright not installed: {e}",
         )
 
-    browser = None
-    context = None
-    browser_launch_ms: int | None = None
-    goto_ms: int | None = None
-    selector_wait_ms: int | None = None
-    selector_timed_out: bool | None = None
     try:
         with sync_playwright() as p:
             launch_start = time.monotonic()
@@ -198,95 +409,10 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
                     f"Browser launch failed: {e}",
                 )
             browser_launch_ms = int((time.monotonic() - launch_start) * 1000)
-
-            try:
-                try:
-                    # No automation-detectable properties are overridden. Chromium
-                    # is a real browser session; only the runtime leaks Patchright
-                    # exists to fix are addressed by the driver itself.
-                    context = browser.new_context(locale="en-AU", proxy=proxy)
-                    page = context.new_page()
-                except Exception as e:
-                    return _browser_failure(
-                        url, start, "browser_context_failed",
-                        f"Browser context creation failed: {e}",
-                        browser_launch_ms=browser_launch_ms,
-                    )
-
-                try:
-                    page.set_default_timeout(
-                        min(timeout_seconds * 1000, BROWSER_NAVIGATION_TIMEOUT_MS)
-                    )
-                    goto_start = time.monotonic()
-                    response = page.goto(url, wait_until="domcontentloaded")
-                    goto_ms = int((time.monotonic() - goto_start) * 1000)
-                except Exception as e:
-                    return _browser_failure(
-                        url, start, _classify_browser_exception(e),
-                        f"Browser navigation failed: {e}",
-                        browser_launch_ms=browser_launch_ms,
-                        goto_ms=int((time.monotonic() - goto_start) * 1000),
-                    )
-
-                status_code = response.status if response is not None else None
-                content_type = (
-                    response.headers.get("content-type", "text/html")
-                    if response is not None else "text/html"
-                )
-
-                selector_wait_ms = None
-                selector_timed_out = None
-                # Item 3: an HTTP >= 400 response (a block/error page) is
-                # never going to grow the CONTENT_READY_SELECTOR's structural
-                # content through client-side JS - waiting the full
-                # CONTENT_READY_TIMEOUT_MS here just burns time on a page we
-                # are going to classify as a failure anyway.
-                if status_code is None or status_code < 400:
-                    selector_start = time.monotonic()
-                    selector_timed_out = False
-                    try:
-                        page.wait_for_selector(
-                            CONTENT_READY_SELECTOR, timeout=CONTENT_READY_TIMEOUT_MS
-                        )
-                    except Exception:
-                        # Times out for pages that never render structural content
-                        # (e.g. a genuinely contentless search-interface SPA) —
-                        # that is real, honest information, not an error: capture
-                        # whatever is there now, same as before this wait existed.
-                        selector_timed_out = True
-                    selector_wait_ms = int((time.monotonic() - selector_start) * 1000)
-
-                body_text = page.content()
-                body_bytes = body_text.encode("utf-8")
-            finally:
-                # Always tear the session down, even on the failure paths above —
-                # a leaked Chromium process would otherwise accumulate per sync.
-                if context is not None:
-                    try:
-                        context.close()
-                    except Exception:
-                        pass
-                if browser is not None:
-                    try:
-                        browser.close()
-                    except Exception:
-                        pass
-
-            duration_ms = int((time.monotonic() - start) * 1000)
-            result = _classify_browser_result(
-                url=url,
-                status_code=status_code,
-                body_bytes=body_bytes,
-                content_type=content_type,
-                source_type=source_type,
-                challenge_body=body_text,
-                duration_ms=duration_ms,
+            return _fetch_page(
+                browser, url, source_type, timeout_seconds, proxy, start,
+                browser_launch_ms, close_browser=True,
             )
-            result.browser_launch_ms = browser_launch_ms
-            result.goto_ms = goto_ms
-            result.selector_wait_ms = selector_wait_ms
-            result.selector_timed_out = selector_timed_out
-            return result
     except Exception as e:
         return _browser_failure(
             url, start, _classify_browser_exception(e),

@@ -44,6 +44,7 @@ from db.repositories import PipelineRunRepo
 from rules.requirement_to_rule import compile_approved_requirements
 from rules.rule_repository import EnhancedRuleRepo
 from logging_config import get_logger
+from fetch.browser_fetcher import BrowserSession
 from fetch.politeness import host_of
 from fetch.timing import SourceTiming, format_timing_table
 from orchestration.host_cooldown import blocked_until
@@ -375,8 +376,14 @@ def compute_change_detection(
 
 
 def sync_source(session: Session, source_id: str,
-                dry_run: bool = False, trigger_type: str = "ON_DEMAND") -> SyncResult:
+                dry_run: bool = False, trigger_type: str = "ON_DEMAND",
+                browser_session=None) -> SyncResult:
     """Run the full sync pipeline for one government source.
+
+    ``browser_session`` (item 4): an optional shared ``BrowserSession``,
+    passed through to ``fetch_document_and_store`` so a batch of sources in
+    one sync run can reuse a single already-running browser. The standalone/
+    single-source path (no session passed) is unaffected.
 
     Creates a PipelineRun to track execution. Non-dry-run:
         1. Capture previous_hash = source.last_hash (BEFORE the fetch)
@@ -453,7 +460,7 @@ def sync_source(session: Session, source_id: str,
         previous_hash = source.last_hash
         result.old_hash = previous_hash
 
-        outcome = fetch_document_and_store(session, source)
+        outcome = fetch_document_and_store(session, source, browser_session=browser_session)
         fresh_hash = outcome.content_hash
         run.old_hash = previous_hash
         run.new_hash = fresh_hash
@@ -663,6 +670,11 @@ def sync_all_sources(session: Session, dry_run: bool = False,
     Scheduled syncs (trigger_type="SCHEDULED", non-dry-run) skip ACTIVE sources
     that were checked more recently than their ``crawl_frequency``. Manual and
     on-demand syncs always re-fetch, so an admin can force a refresh.
+
+    Item 4: every source in this run shares one ``BrowserSession`` instead of
+    each escalated source launching its own browser. It is lazy (nothing
+    launches until the first source actually escalates) and always closed at
+    the end of the run, success or failure.
     """
     now = datetime.now(timezone.utc)
     sources = (
@@ -670,6 +682,27 @@ def sync_all_sources(session: Session, dry_run: bool = False,
         .filter(GovernmentSource.status == "ACTIVE")
         .all()
     )
+    results = []
+    browser_session = BrowserSession() if not dry_run else None
+    try:
+        results = _sync_sources(session, sources, dry_run, trigger_type, now, browser_session)
+    finally:
+        if browser_session is not None:
+            browser_session.close()
+
+    timings = [r.timing for r in results if r.timing is not None]
+    if timings:
+        logger.info(
+            "Sync timing summary\n%s", format_timing_table(timings),
+            extra={"sources_timed": len(timings)},
+        )
+    return results
+
+
+def _sync_sources(
+    session: Session, sources: list[GovernmentSource], dry_run: bool,
+    trigger_type: str, now: datetime, browser_session,
+) -> list[SyncResult]:
     results = []
     for src in sources:
         if not dry_run:
@@ -699,7 +732,7 @@ def sync_all_sources(session: Session, dry_run: bool = False,
             continue
         try:
             result = sync_source(session, src.source_id, dry_run=dry_run,
-                                 trigger_type=trigger_type)
+                                 trigger_type=trigger_type, browser_session=browser_session)
         except Exception as e:  # very last line of defence — never poison the batch
             # A failed source must not terminate the sync: roll back its partial
             # writes, record a FAILED PipelineRun on the fresh transaction, and
@@ -723,13 +756,6 @@ def sync_all_sources(session: Session, dry_run: bool = False,
             result = SyncResult(source_id=src.source_id, status="error",
                                 errors=[str(e)])
         results.append(result)
-
-    timings = [r.timing for r in results if r.timing is not None]
-    if timings:
-        logger.info(
-            "Sync timing summary\n%s", format_timing_table(timings),
-            extra={"sources_timed": len(timings)},
-        )
     return results
 
 
