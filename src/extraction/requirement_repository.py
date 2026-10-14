@@ -174,14 +174,15 @@ def persist_requirement(conn, *, program_id: str, country_id: str, requirement: 
             """
             INSERT INTO requirements
                 (requirement_id, semantic_key, program_id, country_id, category, name, description,
-                 field, operator, value_json, unit, mandatory, condition_json, exception_json,
+                 field, concept, operator, value_json, unit, mandatory, condition_json, exception_json,
                  applies_to, content_kind, confidence, criticality, status, current_version,
                  extraction_run_id, document_version_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?, ?, ?)
             """,
             (
                 requirement_id, sem_key, program_id, country_id, category, name,
-                requirement.get("description"), field, requirement["operator"],
+                requirement.get("description"), field, requirement.get("concept"),
+                requirement["operator"],
                 json.dumps(requirement.get("value")), requirement.get("unit"),
                 requirement.get("mandatory"),
                 json.dumps(requirement.get("condition")) if requirement.get("condition") else None,
@@ -224,14 +225,15 @@ def persist_requirement(conn, *, program_id: str, country_id: str, requirement: 
         """
         INSERT INTO requirements
             (requirement_id, semantic_key, program_id, country_id, category, name, description,
-             field, operator, value_json, unit, mandatory, condition_json, exception_json,
+             field, concept, operator, value_json, unit, mandatory, condition_json, exception_json,
              applies_to, content_kind, confidence, criticality, status, current_version,
              extraction_run_id, document_version_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONFLICT', 1, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONFLICT', 1, ?, ?, ?, ?)
         """,
         (
             requirement_id, sem_key, program_id, country_id, category, name,
-            requirement.get("description"), field, requirement["operator"],
+            requirement.get("description"), field, requirement.get("concept"),
+            requirement["operator"],
             json.dumps(requirement.get("value")), requirement.get("unit"),
             requirement.get("mandatory"),
             json.dumps(requirement.get("condition")) if requirement.get("condition") else None,

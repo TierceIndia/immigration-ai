@@ -120,7 +120,8 @@ def test_unknown_value_preserved_not_guessed():
     resp = json.dumps({
         "requirements": [{
             "category": "NOMINATION", "name": "Nomination requirement", "content_kind": "REQUIREMENT",
-            "field": "nomination.required", "operator": "UNKNOWN", "value": None, "unit": None,
+            "field": "NOT_MODELED", "concept": "nomination_required",
+            "operator": "UNKNOWN", "value": None, "unit": None,
             "mandatory": None, "condition": {"field": "applicant.stream", "operator": "EQ",
                                               "value": "regional", "description": "regional stream"},
             "exception": {"description": "unless an exemption applies", "condition": None},

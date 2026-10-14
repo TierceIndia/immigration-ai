@@ -98,6 +98,54 @@ def test_logic_no_evidence_rejected():
     print("PASS: requirement with zero evidence entries rejected by logic validator")
 
 
+def test_field_enum_accepts_not_modeled_with_concept():
+    req = dict(VALID_REQUIREMENT)
+    req["field"] = "NOT_MODELED"
+    req["concept"] = "visa_history_bridging_count"
+    payload = {"requirements": [req]}
+    result = validate_schema(payload)
+    assert result.ok, result.errors
+    print("PASS: field=NOT_MODELED with a concept passes schema validation")
+
+
+def test_field_enum_rejects_an_invented_dotted_name():
+    req = dict(VALID_REQUIREMENT)
+    req["field"] = "applicant.visa_history"  # not in the closed vocabulary - must use NOT_MODELED
+    payload = {"requirements": [req]}
+    result = validate_schema(payload)
+    assert not result.ok
+    print("PASS: an invented dotted field name outside the closed vocabulary is rejected by schema")
+
+
+def test_field_enum_accepts_null():
+    req = dict(VALID_REQUIREMENT)
+    req["field"] = None
+    req["operator"] = "UNKNOWN"
+    payload = {"requirements": [req]}
+    result = validate_schema(payload)
+    assert result.ok, result.errors
+    print("PASS: a null field (non-REQUIREMENT content with no applicant fact) passes schema validation")
+
+
+def test_logic_not_modeled_without_concept_warns():
+    bad = dict(VALID_REQUIREMENT)
+    bad["field"] = "NOT_MODELED"
+    result = validate_logic(bad)
+    assert result.ok  # missing concept is a warning, not a hard error - never drop the row
+    assert any("concept" in w for w in result.warnings)
+    print("PASS: field=NOT_MODELED with no concept warns (routes to review) rather than silently accepted")
+
+
+def test_logic_not_modeled_with_concept_is_clean():
+    ok = dict(VALID_REQUIREMENT)
+    ok["field"] = "NOT_MODELED"
+    ok["concept"] = "visa_history_bridging_count"
+    result = validate_logic(ok)
+    assert result.ok
+    assert not any("concept" in w for w in result.warnings)
+    print("PASS: field=NOT_MODELED with a real concept produces no concept-related warning")
+
+
 def test_parse_llm_output_handles_markdown_fences():
     raw = '```json\n{"requirements": []}\n```'
     parsed, errors = parse_llm_output(raw)

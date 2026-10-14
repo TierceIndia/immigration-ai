@@ -80,6 +80,13 @@ def validate_logic(requirement: dict) -> ValidationResult:
     if content_kind == "REQUIREMENT" and field is None and operator not in ("REQUIRED", "NOT_REQUIRED", "UNKNOWN"):
         warnings.append("content_kind=REQUIREMENT with a comparison operator but no 'field' set")
 
+    # Closed field vocabulary (v3): NOT_MODELED without a concept label would
+    # lose the real legal/policy intent entirely - never silently accept that.
+    # A warning (not a hard error) because the requirement itself is otherwise
+    # sound; this routes it to NEEDS_REVIEW rather than discarding it.
+    if field == "NOT_MODELED" and not (requirement.get("concept") or "").strip():
+        warnings.append("field=NOT_MODELED but 'concept' is missing or empty - needs a human label")
+
     mandatory = requirement.get("mandatory")
     if mandatory is not None and not isinstance(mandatory, bool):
         errors.append(f"'mandatory' must be boolean or null, got {mandatory!r}")

@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS requirements (
     name                  TEXT NOT NULL,
     description            TEXT,
     field                 TEXT,                       -- e.g. 'applicant.age'  (nullable: informational content has no field)
+    concept               TEXT,                       -- free-text label for the real concept when field='NOT_MODELED'
     operator               TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK (operator IN
                      ('EQ','NEQ','LT','LTE','GT','GTE','IN','NOT_IN','BETWEEN',
                       'REQUIRED','NOT_REQUIRED','UNKNOWN')),

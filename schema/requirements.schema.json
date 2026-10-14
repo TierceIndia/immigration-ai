@@ -37,6 +37,17 @@
       "type": "string",
       "enum": ["CRITICAL", "IMPORTANT", "NORMAL", "INFORMATIONAL"]
     },
+    "field": {
+      "description": "Closed vocabulary (v3): the dotted applicant fact this requirement evaluates, matching ApplicantProfile.to_rule_data()/_FIELD_ALIASES exactly - or NOT_MODELED when the source states a real eligibility concept that has no modeled applicant fact yet. Never invent a new dotted name outside this list; use NOT_MODELED + concept instead. Null only for non-REQUIREMENT content_kind rows that have no field at all.",
+      "type": ["string", "null"],
+      "enum": [
+        "applicant.age", "applicant.english_level", "applicant.points_score",
+        "applicant.required_points", "applicant.occupation", "applicant.skills_assessment",
+        "applicant.health_check", "applicant.character_check",
+        "applicant.has_regional_nomination", "applicant.visa_subclass",
+        "NOT_MODELED", null
+      ]
+    },
     "value": {
       "description": "The threshold/value for the field. Use null/UNKNOWN operator when the source does not establish a concrete value - never guess.",
       "type": ["number", "string", "boolean", "array", "null"]
@@ -104,8 +115,9 @@
         "name": { "type": "string", "minLength": 3 },
         "description": { "type": "string" },
         "content_kind": { "$ref": "#/definitions/content_kind" },
-        "field": {
-          "description": "Dotted fact identifier this requirement evaluates, e.g. 'applicant.age'. Null for non-REQUIREMENT content_kind.",
+        "field": { "$ref": "#/definitions/field" },
+        "concept": {
+          "description": "Free-text label for the underlying legal/policy concept, e.g. 'visa_history_bridging_count'. Required (non-empty) when field=NOT_MODELED; omit or null otherwise.",
           "type": ["string", "null"]
         },
         "operator": { "$ref": "#/definitions/operator" },

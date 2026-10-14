@@ -383,6 +383,10 @@ class Requirement(Base, TimestampMixin):
     name = Column(String(256), nullable=False)
     description = Column(Text)
     field = Column(String(128))
+    # Closed field vocabulary (v3): free-text label for the real legal/policy
+    # concept when field="NOT_MODELED" - preserves the extractor's intent
+    # instead of dropping it. Null when field is a real evaluable name.
+    concept = Column(String(256))
     operator = Column(String(16), nullable=False, default="UNKNOWN")
     value_json = Column(Text)
     unit = Column(String(32))

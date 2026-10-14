@@ -56,7 +56,7 @@ logger = get_logger(__name__)
 if not os.environ.get("TESTING"):
     dotenv.load_dotenv()  # load OPENAI_API_KEY from .env if present (prod/dev only)
 
-PROMPT_VERSION = "requirement_extraction_v2"
+PROMPT_VERSION = "requirement_extraction_v3"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 OPENAI_PROVIDER = "openai"
 GEMINI_PROVIDER = "gemini"
@@ -128,10 +128,31 @@ class MockLLMClient(LLMClient):
 
     model_name = "mock-llm-v1"
 
+    # Mirrors requirement_normalizer._EVALUABLE_FIELDS (the v3 closed vocabulary):
+    # a compliant extractor - mock or real - only ever emits one of these, or
+    # NOT_MODELED. Kept as a literal copy rather than an import so this mock has
+    # no dependency on the real normalizer's internals - it simulates what a
+    # compliant LLM sends, not what the pipeline does with it afterward.
+    _EVALUABLE_FIELDS = {
+        "applicant.age", "applicant.english_level", "applicant.points_score",
+        "applicant.required_points", "applicant.occupation", "applicant.skills_assessment",
+        "applicant.health_check", "applicant.character_check",
+        "applicant.has_regional_nomination", "applicant.visa_subclass",
+    }
+
     def __init__(self, model: str | None = None, visa_category: str | None = None,
                  governance=None):
         self.visa_category = visa_category
         self._system_prompt = ""
+
+    @classmethod
+    def _resolve_field(cls, field_name: str | None) -> tuple[str | None, str | None]:
+        """Demote a non-evaluable field name to NOT_MODELED + a concept label -
+        exactly what a v3-compliant extractor must do for a concept outside the
+        closed vocabulary, per prompts/requirement_extraction_v3.md."""
+        if field_name is None or field_name in cls._EVALUABLE_FIELDS:
+            return field_name, None
+        return "NOT_MODELED", field_name
 
     def get_system_prompt(self, visa_category: str | None = None) -> str:
         return ""
@@ -235,7 +256,8 @@ class MockLLMClient(LLMClient):
         if self._ENGLISH_EXEMPT.search(text):
             requirements.append({
                 "category": "ENGLISH_LANGUAGE", "name": "English language exemption",
-                "description": text, "content_kind": "EXCEPTION", "field": "applicant.english_test_result",
+                "description": text, "content_kind": "EXCEPTION", "field": "NOT_MODELED",
+                "concept": "english_test_result",
                 "operator": "NOT_REQUIRED", "value": None, "unit": None, "mandatory": False,
                 "condition": None, "exception": None, "applies_to": None, "criticality": "IMPORTANT",
                 "confidence": 0.85,
@@ -308,7 +330,8 @@ class MockLLMClient(LLMClient):
             if value is not None:
                 requirements.append({
                     "category": "VISA_STATUS", "name": "Visa travel validity", "description": text,
-                    "content_kind": "INFORMATIONAL", "field": "visa.travel_validity_years",
+                    "content_kind": "INFORMATIONAL", "field": "NOT_MODELED",
+                    "concept": "visa_travel_validity_years",
                     "operator": "EQ", "value": value, "unit": "years", "mandatory": None,
                     "condition": None, "exception": None, "applies_to": None, "criticality": "NORMAL",
                     "confidence": 0.8,
@@ -319,7 +342,8 @@ class MockLLMClient(LLMClient):
         if self._FEE.search(text):
             requirements.append({
                 "category": "FINANCIAL", "name": "Application fee", "description": text,
-                "content_kind": "REQUIREMENT", "field": "application.fee", "operator": "UNKNOWN",
+                "content_kind": "REQUIREMENT", "field": "NOT_MODELED", "concept": "application_fee",
+                "operator": "UNKNOWN",
                 "value": None, "unit": "AUD", "mandatory": True, "condition": None, "exception": None,
                 "applies_to": None, "criticality": "NORMAL", "confidence": 0.6,
                 "evidence": [{"chunk_id": chunk_id, "evidence_text": text, "evidence_type": "DIRECT_TEXT"}],
@@ -397,7 +421,8 @@ class MockLLMClient(LLMClient):
                 "name": "Required documents",
                 "description": "List of documents applicants must provide.",
                 "content_kind": "REQUIREMENT",
-                "field": "applicant.documents",
+                "field": "NOT_MODELED",
+                "concept": "required_documents",
                 "operator": "REQUIRED",
                 "value": None,
                 "unit": None,
@@ -413,36 +438,40 @@ class MockLLMClient(LLMClient):
 
         return json.dumps({"requirements": requirements})
 
-    @staticmethod
-    def _simple(category, name, full_text, chunk_id, operator, value, unit, mandatory, criticality, field_name):
+    @classmethod
+    def _simple(cls, category, name, full_text, chunk_id, operator, value, unit, mandatory, criticality, field_name):
         sentence = full_text.strip()
+        field, concept = cls._resolve_field(field_name)
         return {
             "category": category, "name": name, "description": sentence, "content_kind": "REQUIREMENT",
-            "field": field_name, "operator": operator, "value": value, "unit": unit,
+            "field": field, "concept": concept, "operator": operator, "value": value, "unit": unit,
             "mandatory": mandatory, "condition": None, "exception": None, "applies_to": None,
             "criticality": criticality, "confidence": 0.85,
             "evidence": [{"chunk_id": chunk_id, "evidence_text": sentence, "evidence_type": "DIRECT_TEXT"}],
             "references": [],
         }
 
-    @staticmethod
-    def _req(category, name, full_text, chunk_id, operator, value, unit, mandatory, criticality,
+    @classmethod
+    def _req(cls, category, name, full_text, chunk_id, operator, value, unit, mandatory, criticality,
               evidence_type="DIRECT_TEXT"):
         # Evidence text must be an exact substring of the source - use the matched sentence only
         # (first sentence containing the match, trimmed) rather than the whole chunk, to mimic a
         # precise real extractor.
         sentence = full_text.strip()
+        raw_field = {
+            "AGE": "applicant.age",
+            "WORK_EXPERIENCE": "applicant.work_experience_years",
+            "POINTS": "applicant.points_score",
+            "ENGLISH_LANGUAGE": "applicant.english_test_result",
+        }.get(category)
+        field, concept = cls._resolve_field(raw_field)
         return {
             "category": category,
             "name": name,
             "description": sentence,
             "content_kind": "REQUIREMENT",
-            "field": {
-                "AGE": "applicant.age",
-                "WORK_EXPERIENCE": "applicant.work_experience_years",
-                "POINTS": "applicant.points_score",
-                "ENGLISH_LANGUAGE": "applicant.english_test_result",
-            }.get(category),
+            "field": field,
+            "concept": concept,
             "operator": operator,
             "value": value,
             "unit": unit,

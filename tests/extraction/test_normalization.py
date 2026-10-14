@@ -6,7 +6,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "src" / "extraction"))
 
-from requirement_normalizer import normalize_category, normalize_operator, normalize_requirement, normalize_unit  # noqa: E402
+from requirement_normalizer import (  # noqa: E402
+    normalize_category, normalize_field, normalize_operator, normalize_requirement, normalize_unit,
+)
 
 
 def test_operator_alias_normalized():
@@ -54,6 +56,52 @@ def test_unrecognized_category_defaults_to_other():
     assert cat == "OTHER"
     assert note is not None
     print("PASS: unrecognized category defaults to OTHER with a warning, not silently accepted")
+
+
+def test_evaluable_field_untouched():
+    field, concept, note = normalize_field("applicant.age", "REQUIREMENT")
+    assert field == "applicant.age"
+    assert concept is None
+    assert note is None
+    print("PASS: an already-evaluable field passes through unchanged, no spurious note")
+
+
+def test_already_not_modeled_untouched():
+    field, concept, note = normalize_field("NOT_MODELED", "REQUIREMENT", "visa_history")
+    assert field == "NOT_MODELED"
+    assert concept == "visa_history"
+    assert note is None
+    print("PASS: an explicit NOT_MODELED+concept passes through unchanged")
+
+
+def test_non_evaluable_field_demoted_to_not_modeled():
+    field, concept, note = normalize_field("applicant.visa_history", "REQUIREMENT")
+    assert field == "NOT_MODELED"
+    assert concept == "applicant.visa_history"
+    assert note is not None and "NOT_MODELED" in note
+    print("PASS: a non-evaluable field is demoted to NOT_MODELED, original preserved as concept")
+
+
+def test_non_evaluable_field_keeps_a_separately_supplied_concept():
+    field, concept, note = normalize_field("applicant.visa_history", "REQUIREMENT", "visa_history_bridging_count")
+    assert field == "NOT_MODELED"
+    assert concept == "visa_history_bridging_count"
+    print("PASS: a model-supplied concept is kept rather than overwritten by the raw field string")
+
+
+def test_field_vocabulary_only_applies_to_requirement_rows():
+    field, concept, note = normalize_field("some.random.field", "INFORMATIONAL")
+    assert field == "some.random.field"
+    assert concept is None
+    assert note is None
+    print("PASS: field vocabulary enforcement is scoped to content_kind=REQUIREMENT")
+
+
+def test_null_field_untouched():
+    field, concept, note = normalize_field(None, "REQUIREMENT")
+    assert field is None
+    assert note is None
+    print("PASS: a legitimately absent field is never demoted")
 
 
 def test_normalize_requirement_end_to_end():

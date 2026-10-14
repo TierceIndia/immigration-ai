@@ -133,7 +133,7 @@ def extract_from_document(
                 continue
             seen_semantics[semantic_key] = normalized
 
-            if norm_result.warnings:
+            if norm_result.warnings or logic_result.warnings:
                 outcome.needs_review_requirements.append({
                     "requirement": normalized, "reasons": norm_result.warnings + logic_result.warnings,
                 })
