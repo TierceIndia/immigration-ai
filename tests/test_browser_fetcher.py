@@ -419,6 +419,35 @@ def test_genuinely_contentless_page_is_still_captured_after_wait_times_out(monke
     assert b"Course Search" in res.raw_bytes
 
 
+def test_block_page_skips_the_content_ready_wait(monkeypatch):
+    """Item 3: goto returning HTTP >= 400 is a block/error page that client-side
+    JS is never going to grow CONTENT_READY_SELECTOR's structural content into
+    — waiting the full CONTENT_READY_TIMEOUT_MS (8s) there was pure waste
+    before classifying it as a failure anyway."""
+    block_body = "<html><body>Access Denied</body></html>"
+    _install_fake_patchright(
+        monkeypatch, body=block_body, body_before_render=block_body,
+        response=_FakeResponse(status=403),
+        wait_for_selector_exc=AssertionError("wait_for_selector must not be called"),
+    )
+    res = _patchright_fetch("https://example.gov/blocked", "HTML", 20)
+    assert res.status == FetchStatus.ACCESS_BLOCKED
+    assert res.selector_wait_ms is None
+    assert res.selector_timed_out is None
+
+
+def test_ok_page_still_waits_for_content_ready(monkeypatch):
+    """The skip is specific to >= 400 — a normal 200 still gets the wait."""
+    _install_fake_patchright(
+        monkeypatch, body=_POST_RENDER_BODY, body_before_render=_PRE_RENDER_BODY,
+        response=_FakeResponse(status=200),
+    )
+    res = _patchright_fetch("https://immi.homeaffairs.gov.au/visas/visitor-600", "HTML", 20)
+    assert res.status == FetchStatus.OK
+    assert res.selector_wait_ms is not None
+    assert res.selector_timed_out is False
+
+
 def test_browser_navigation_timeout_is_classified(monkeypatch):
     """A navigation timeout is reported as browser_timeout so operators can tell
     a slow site apart from a blocked one."""

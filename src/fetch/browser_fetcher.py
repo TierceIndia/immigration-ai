@@ -228,27 +228,36 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
                         goto_ms=int((time.monotonic() - goto_start) * 1000),
                     )
 
-                selector_start = time.monotonic()
-                selector_timed_out = False
-                try:
-                    page.wait_for_selector(
-                        CONTENT_READY_SELECTOR, timeout=CONTENT_READY_TIMEOUT_MS
-                    )
-                except Exception:
-                    # Times out for pages that never render structural content
-                    # (e.g. a genuinely contentless search-interface SPA) —
-                    # that is real, honest information, not an error: capture
-                    # whatever is there now, same as before this wait existed.
-                    selector_timed_out = True
-                selector_wait_ms = int((time.monotonic() - selector_start) * 1000)
-
-                body_text = page.content()
-                body_bytes = body_text.encode("utf-8")
                 status_code = response.status if response is not None else None
                 content_type = (
                     response.headers.get("content-type", "text/html")
                     if response is not None else "text/html"
                 )
+
+                selector_wait_ms = None
+                selector_timed_out = None
+                # Item 3: an HTTP >= 400 response (a block/error page) is
+                # never going to grow the CONTENT_READY_SELECTOR's structural
+                # content through client-side JS - waiting the full
+                # CONTENT_READY_TIMEOUT_MS here just burns time on a page we
+                # are going to classify as a failure anyway.
+                if status_code is None or status_code < 400:
+                    selector_start = time.monotonic()
+                    selector_timed_out = False
+                    try:
+                        page.wait_for_selector(
+                            CONTENT_READY_SELECTOR, timeout=CONTENT_READY_TIMEOUT_MS
+                        )
+                    except Exception:
+                        # Times out for pages that never render structural content
+                        # (e.g. a genuinely contentless search-interface SPA) —
+                        # that is real, honest information, not an error: capture
+                        # whatever is there now, same as before this wait existed.
+                        selector_timed_out = True
+                    selector_wait_ms = int((time.monotonic() - selector_start) * 1000)
+
+                body_text = page.content()
+                body_bytes = body_text.encode("utf-8")
             finally:
                 # Always tear the session down, even on the failure paths above —
                 # a leaked Chromium process would otherwise accumulate per sync.
