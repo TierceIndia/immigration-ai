@@ -25,6 +25,7 @@ from sqlalchemy import text
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from db.models import (
     ApiUser, ApplicantProfile, VisaSelection, Country, ImmigrationProgram,
@@ -51,8 +52,15 @@ E2E_URL = os.environ.get(
     # Driver named explicitly - see test_db_driver_pinning.py: a bare
     # postgresql:// re-inherits SQLAlchemy's version-dependent default
     # dialect (psycopg v3 on 2.1+, not a project dependency).
-    "postgresql+psycopg2://immigration:immigration_dev@localhost:5432/immigration",
+    # Dedicated e2e-only database - see tests/e2e/conftest.py's docstring:
+    # this test disables audit-immutability triggers and must never run
+    # against the shared main "immigration" database.
+    "postgresql+psycopg2://immigration:immigration_dev@localhost:5432/immigration_e2e",
 )
+
+from conftest import refuse_if_main_database  # noqa: E402
+
+refuse_if_main_database(E2E_URL)
 
 PROGRAM_ID = "SKILLED_189"
 SOURCE_ID = "SRC-A2E-ASSESS-189"
@@ -173,7 +181,7 @@ def _ok_fetch(payload: bytes):
 
 def _seed_program(session):
     if session.get(Country, "AU") is None:
-        session.add(Country(country_id="AU", name="Australia", iso_code="AUS", status="ACTIVE"))
+        session.add(Country(country_id="AU", name="Australia", iso_code="AUS"))
     if session.get(ImmigrationProgram, PROGRAM_ID) is None:
         session.add(ImmigrationProgram(
             program_id=PROGRAM_ID, country_id="AU", visa_category="SKILLED",

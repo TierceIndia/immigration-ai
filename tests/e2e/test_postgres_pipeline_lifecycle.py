@@ -34,6 +34,7 @@ from sqlalchemy import text
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from db.models import (
     Country, ImmigrationProgram, GovernmentSource, GovernmentDocument,
@@ -61,8 +62,15 @@ E2E_URL = os.environ.get(
     # Driver named explicitly - see test_db_driver_pinning.py: a bare
     # postgresql:// re-inherits SQLAlchemy's version-dependent default
     # dialect (psycopg v3 on 2.1+, not a project dependency).
-    "postgresql+psycopg2://immigration:immigration_dev@localhost:5432/immigration",
+    # Dedicated e2e-only database - see tests/e2e/conftest.py's docstring:
+    # this test disables audit-immutability triggers and must never run
+    # against the shared main "immigration" database.
+    "postgresql+psycopg2://immigration:immigration_dev@localhost:5432/immigration_e2e",
 )
+
+from conftest import refuse_if_main_database  # noqa: E402
+
+refuse_if_main_database(E2E_URL)
 
 SOURCE_ID = "SRC-AU-E2E-189"
 DOCUMENT_ID = "DOC-AU-E2E-189"
@@ -190,7 +198,7 @@ def _sandbox_fetch(payload: bytes):
 def _seed_program(session) -> None:
     if session.get(Country, "AU") is None:
         session.add(Country(
-            country_id="AU", name="Australia", iso_code="AUS", status="ACTIVE",
+            country_id="AU", name="Australia", iso_code="AUS",
         ))
     prog = session.get(ImmigrationProgram, PROGRAM_ID)
     if prog is None:
