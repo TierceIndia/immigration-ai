@@ -40,6 +40,7 @@ from db.connection import get_engine, get_session
 from db.models import (
     Country, DocumentChunk, DocumentVersion, ExtractionRun, GovernmentDocument,
     GovernmentSource, ImmigrationProgram, Requirement, RequirementEvidence,
+    RequirementReference, RequirementReview, RequirementVersion, Rule, RuleVersion,
 )
 from logging_config import get_logger
 
@@ -82,11 +83,17 @@ def _anchor_document_version(session):
         doc = session.get(GovernmentDocument, existing.document_id)
         return existing, doc.program_id, doc.country_id, False
 
+    # Same no-relationship()/no-auto-ordering caveat as remove() below: these
+    # four each depend on the previous one (country <- program <- source <-
+    # document), so each needs its own flush rather than trusting unit-of-work
+    # ordering across unrelated mappers.
     session.merge(Country(country_id=DEMO_COUNTRY_ID, name="Australia", iso_code="AUS"))
+    session.flush()
     session.merge(ImmigrationProgram(
         program_id=DEMO_PROGRAM_ID, country_id=DEMO_COUNTRY_ID, visa_category="SKILLED",
         subclass_code="189", name="Skilled Independent", status="ACTIVE",
     ))
+    session.flush()
     session.merge(GovernmentSource(
         source_id=DEMO_SOURCE_ID, country_id=DEMO_COUNTRY_ID, program_id=DEMO_PROGRAM_ID,
         visa_category="SKILLED", authority="Department of Home Affairs",
@@ -95,6 +102,7 @@ def _anchor_document_version(session):
         crawl_frequency="DAILY", status="DISABLED",
         notes="[DEMO] created by scripts/seed_review_demo.py - excluded from sync (DISABLED).",
     ))
+    session.flush()
     session.merge(GovernmentDocument(
         document_id=DEMO_DOCUMENT_ID, source_id=DEMO_SOURCE_ID, country_id=DEMO_COUNTRY_ID,
         program_id=DEMO_PROGRAM_ID, visa_category="SKILLED", document_type="GENERAL",
@@ -241,20 +249,56 @@ def remove(engine) -> None:
         reqs = session.execute(
             select(Requirement).where(Requirement.requirement_id.in_(DEMO_REQUIREMENT_IDS))
         ).scalars().all()
-        removed_ids = []
-        for req in reqs:
-            evidence_rows = session.execute(
-                select(RequirementEvidence).where(
-                    RequirementEvidence.requirement_id == req.requirement_id
-                )
-            ).scalars().all()
-            for e in evidence_rows:
-                session.delete(e)
-            session.delete(req)
-            removed_ids.append(req.requirement_id)
+        removed_ids = [r.requirement_id for r in reqs]
 
-        # The [DEMO]-tagged chunks this script created (see
+        # None of these FKs are declared via ORM relationship() (see db/models.py),
+        # so SQLAlchemy's flush has no dependency graph to order DELETEs across
+        # tables - it batches per-table in whatever order it likes. SQLite with
+        # default settings silently tolerates the wrong order; Postgres (and
+        # SQLite with PRAGMA foreign_keys=ON) enforces it and raises a
+        # ForeignKeyViolation. Every layer below is therefore its own flush, in
+        # strict dependent-row-first order, so each DELETE lands as its own
+        # round trip rather than trusting unit-of-work ordering.
+
+        # Layer 0: a reviewer may have exercised the real Review screen against
+        # a [DEMO] requirement (that's the script's whole purpose) and compiled
+        # it into a rule - rule_versions must go before rules.
+        rule_ids = [
+            row.rule_id for row in session.execute(
+                select(Rule).where(Rule.requirement_id.in_(DEMO_REQUIREMENT_IDS))
+            ).scalars().all()
+        ]
+        if rule_ids:
+            for rv in session.execute(
+                select(RuleVersion).where(RuleVersion.rule_id.in_(rule_ids))
+            ).scalars().all():
+                session.delete(rv)
+            session.flush()
+            for rule in session.execute(
+                select(Rule).where(Rule.rule_id.in_(rule_ids))
+            ).scalars().all():
+                session.delete(rule)
+            session.flush()
+
+        # Layer 1: every other row that can reference a [DEMO] requirement -
+        # review-screen audit trail (versions/reviews), unresolved legal
+        # cross-references, and the evidence rows themselves.
+        for model in (RequirementVersion, RequirementReview, RequirementReference, RequirementEvidence):
+            for row in session.execute(
+                select(model).where(model.requirement_id.in_(DEMO_REQUIREMENT_IDS))
+            ).scalars().all():
+                session.delete(row)
+        session.flush()
+
+        # Layer 2: the requirements themselves, now that nothing references them.
+        for req in reqs:
+            session.delete(req)
+        session.flush()
+
+        # Layer 3: the [DEMO]-tagged chunks this script created (see
         # _make_requirement_with_evidence) - precise by tag, not a guess.
+        # requirement_evidence (layer 1) already pointed at these, so they
+        # must be gone before a chunk can be dropped.
         demo_chunks = session.execute(
             select(DocumentChunk).where(DocumentChunk.heading_path == DEMO_CHUNK_HEADING)
         ).scalars().all()
@@ -262,10 +306,10 @@ def remove(engine) -> None:
             session.delete(chunk)
 
         # This session factory runs with autoflush=False (db/connection.py),
-        # so the requirement deletes above are only pending, not yet visible
-        # to a plain SELECT - without this flush, the "still referenced?"
-        # check below would always see the (about-to-be-deleted) rows and
-        # wrongly conclude the fallback anchor chain is still in use.
+        # so the deletes above are only pending, not yet visible to a plain
+        # SELECT - without this flush, the "still referenced?" check below
+        # would always see the (about-to-be-deleted) rows and wrongly
+        # conclude the fallback anchor chain is still in use.
         session.flush()
 
         # The fallback anchor chain, only if THIS script created it (fixed,
@@ -275,14 +319,19 @@ def remove(engine) -> None:
             select(Requirement).where(Requirement.extraction_run_id == DEMO_RUN_ID)
         ).scalars().all()
         if run is not None and not still_referenced:
+            # Same no-relationship()/no-auto-ordering caveat as above: each
+            # step is its own flush, child-to-parent (run -> version -> doc -> source).
             session.delete(run)
+            session.flush()
             for v in session.execute(
                 select(DocumentVersion).filter_by(document_id=DEMO_DOCUMENT_ID)
             ).scalars().all():
                 session.delete(v)
+            session.flush()
             doc = session.get(GovernmentDocument, DEMO_DOCUMENT_ID)
             if doc is not None:
                 session.delete(doc)
+                session.flush()
             source = session.get(GovernmentSource, DEMO_SOURCE_ID)
             if source is not None:
                 session.delete(source)

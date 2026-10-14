@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -28,18 +28,37 @@ def engine():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+
+    # SQLite does not enforce foreign keys unless told to, per-connection -
+    # without this, a wrong DELETE order here would pass silently under
+    # SQLite and only blow up as a real ForeignKeyViolation on Postgres.
+    @event.listens_for(eng, "connect")
+    def _enable_fk(dbapi_conn, _):
+        dbapi_conn.execute("PRAGMA foreign_keys=ON")
+
     Base.metadata.create_all(bind=eng)
     return eng
 
 
 def _seed_real_document(engine):
-    """A real (non-DEMO) document/version, so the anchor-reuse path is exercised."""
+    """A real (non-DEMO) document/version, so the anchor-reuse path is exercised.
+
+    Same no-relationship()/no-auto-ordering caveat as scripts/seed_review_demo.py
+    itself (see its own comments): each of these depends on the previous one
+    (country <- program <- source <- document <- version), so each needs its
+    own flush rather than trusting unit-of-work ordering across unrelated
+    mappers. Without this, PRAGMA foreign_keys=ON (the `engine` fixture above)
+    raises a real IntegrityError on INSERT, exactly as Postgres would.
+    """
+    from datetime import datetime, timezone
     with get_session_factory(engine)() as s:
         s.merge(Country(country_id="AU", name="Australia", iso_code="AUS"))
+        s.flush()
         s.merge(ImmigrationProgram(
             program_id="SKILLED_189", country_id="AU", visa_category="SKILLED",
             subclass_code="189", name="Skilled Independent", status="ACTIVE",
         ))
+        s.flush()
         s.merge(GovernmentSource(
             source_id="SRC-AU-189", country_id="AU", program_id="SKILLED_189",
             visa_category="SKILLED", authority="Home Affairs",
@@ -47,7 +66,7 @@ def _seed_real_document(engine):
             priority="PRIMARY", monitoring_method="WEB", crawl_frequency="DAILY",
             status="ACTIVE",
         ))
-        from datetime import datetime, timezone
+        s.flush()
         s.merge(GovernmentDocument(
             document_id="DOC-AU-189", source_id="SRC-AU-189", country_id="AU",
             program_id="SKILLED_189", visa_category="SKILLED", document_type="GENERAL",
@@ -188,3 +207,31 @@ class TestSeedAndRemove:
         demo.remove(engine)
         captured = capsys.readouterr()
         assert "nothing to remove" in captured.out.lower()
+
+    def test_seed_remove_seed_remove_round_trip_with_fk_enforcement(self, engine):
+        """Reproduces the production bug: document_chunks was deleted while
+        requirement_evidence still pointed at it (requirement_evidence_chunk_id_fkey).
+        SQLite silently allowed the wrong order by default; with the
+        PRAGMA foreign_keys=ON connection in the `engine` fixture above, this
+        round-trip raises the same IntegrityError Postgres did unless the
+        delete order in seed_review_demo.remove() is actually FK-safe."""
+        _seed_real_document(engine)
+
+        demo.seed(engine)
+        demo.remove(engine)
+        demo.seed(engine)
+        demo.remove(engine)
+
+        with get_session_factory(engine)() as s:
+            reqs = s.execute(
+                select(Requirement).where(Requirement.requirement_id.in_(demo.DEMO_REQUIREMENT_IDS))
+            ).scalars().all()
+            assert reqs == []
+            demo_chunks = s.execute(
+                select(DocumentChunk).where(DocumentChunk.heading_path == demo.DEMO_CHUNK_HEADING)
+            ).scalars().all()
+            assert demo_chunks == []
+            # The real document/source from the fixture must still survive
+            # two full round trips untouched.
+            assert s.get(GovernmentDocument, "DOC-AU-189") is not None
+            assert s.get(GovernmentSource, "SRC-AU-189") is not None
