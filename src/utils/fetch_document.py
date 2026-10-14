@@ -837,7 +837,7 @@ def fetch_document_and_store(
     requirements_extracted = 0
     llm_calls = 0
     llm_wait_ms = 0
-    if change_type != "UNCHANGED" and chunk_rows:
+    if change_type != "UNCHANGED" and chunk_rows and source.extract_requirements:
         report = run_requirement_extraction(session, source, document_id, version_number)
         requirements_extracted = report.get("requirements_extracted", 0)
         llm_calls = report.get("llm_calls", 0)
@@ -850,6 +850,20 @@ def fetch_document_and_store(
                 "version": version_number,
                 "requirements_extracted": requirements_extracted,
                 "run_id": report.get("run_id"),
+            },
+        )
+    elif change_type != "UNCHANGED" and chunk_rows and not source.extract_requirements:
+        # Item 3: a reference-only source (e.g. SRC-AU-MIGRATION-REGS-1994 -
+        # the whole Migration Regulations, mostly out of product scope) is
+        # still fetched, hashed, diffed and stored as evidence above; only the
+        # LLM extraction step - the expensive, scope-specific one - is
+        # skipped. No rows are deleted; the document/version/chunks persist
+        # exactly as they would for an extracting source.
+        logger.info(
+            "Fetch complete; requirement extraction skipped (extract_requirements=false)",
+            extra={
+                "source_id": source.source_id, "document_id": document_id,
+                "version": version_number,
             },
         )
 

@@ -35,6 +35,13 @@ class SourceCreateRequest(BaseModel):
     monitoring_method: str = Field("WEB", description="Monitoring method")
     crawl_frequency: str = Field("DAILY", description="Crawl frequency (DAILY/WEEKLY/MONTHLY)")
     notes: str | None = None
+    extract_requirements: bool = Field(
+        True,
+        description="Whether a sync of this source runs requirement extraction. False keeps "
+                     "the source fetched/hashed/diffed/stored as evidence (document, version, "
+                     "chunks) without ever calling the LLM - for a reference-only source whose "
+                     "content is out of product scope.",
+    )
 
 
 # Statuses an admin may explicitly set via PATCH. Other government_sources.status
@@ -55,6 +62,10 @@ class SourceUpdateRequest(BaseModel):
     crawl_frequency: str | None = None
     notes: str | None = None
     url: str | None = None
+    extract_requirements: bool | None = Field(
+        None,
+        description="Toggle requirement extraction for this source. See SourceCreateRequest.",
+    )
 
     @field_validator("status")
     @classmethod
@@ -79,6 +90,7 @@ class SourceResponse(BaseModel):
     monitoring_method: str
     crawl_frequency: str
     status: str
+    extract_requirements: bool
     last_checked_at: str | None = None
     last_successful_fetch_at: str | None = None
     last_hash: str | None = None
@@ -111,6 +123,7 @@ def _source_to_response(
         monitoring_method=obj.monitoring_method,
         crawl_frequency=obj.crawl_frequency,
         status=obj.status,
+        extract_requirements=obj.extract_requirements,
         last_checked_at=obj.last_checked_at.isoformat() if obj.last_checked_at else None,
         last_successful_fetch_at=obj.last_successful_fetch_at.isoformat() if obj.last_successful_fetch_at else None,
         last_hash=obj.last_hash,
@@ -368,6 +381,7 @@ def create_source(
             crawl_frequency=body.crawl_frequency,
             status="ACTIVE",
             notes=body.notes,
+            extract_requirements=body.extract_requirements,
         )
         session.commit()
         return _source_to_response(obj, blocked_until(session, obj.url))
@@ -434,7 +448,8 @@ def update_source(
     request: Request,
     current_user: dict = Depends(require_admin),
 ):
-    """Update a government source (status, priority, crawl_frequency, notes, url)."""
+    """Update a government source (status, priority, crawl_frequency, notes, url,
+    extract_requirements)."""
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = SourceRepo(session)

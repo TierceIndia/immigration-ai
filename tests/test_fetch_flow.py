@@ -233,6 +233,73 @@ class TestFetchDocumentAndStorePlainOK:
         assert logs[-1].changed == 0
 
 
+class TestExtractRequirementsScopeFlag:
+    """Item 3: a reference-only source (extract_requirements=False) is still
+    fetched/hashed/diffed/stored as evidence - only the LLM extraction step
+    is skipped. No rows are deleted; this only gates one step."""
+
+    def test_scoped_out_source_stores_document_but_skips_extraction(self, session, monkeypatch):
+        _seed_source(session)
+        source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+        source.extract_requirements = False
+        session.commit()
+        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _ok_result(url))
+
+        outcome = fetch_document_and_store(session, source)
+        session.commit()
+
+        assert outcome.status == "OK"
+        assert outcome.document_id == "DOC-AU-189"
+        assert outcome.requirements_extracted == 0
+
+        # Fetched, hashed, diffed, and stored as evidence exactly as a normal source.
+        doc = session.get(GovernmentDocument, "DOC-AU-189")
+        assert doc is not None
+        assert session.query(DocumentVersion).filter_by(document_id="DOC-AU-189").count() == 1
+        assert session.query(DocumentChunk).filter_by(document_id="DOC-AU-189").count() >= 1
+
+        # But no extraction ever ran.
+        assert session.query(ExtractionRun).count() == 0
+        assert session.query(Requirement).count() == 0
+
+    def test_default_true_still_extracts(self, session, monkeypatch):
+        """The flag defaults true - every existing source keeps today's behavior."""
+        _seed_source(session)
+        source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+        assert source.extract_requirements is True
+        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _ok_result(url))
+
+        outcome = fetch_document_and_store(session, source)
+        session.commit()
+
+        assert outcome.requirements_extracted >= 1
+        assert session.query(ExtractionRun).count() == 1
+
+    def test_scoped_out_source_still_detects_changes_on_resync(self, session, monkeypatch):
+        """Reference-only does not mean frozen - a real content change still
+        creates a new immutable version, just never gets extracted."""
+        _seed_source(session)
+        source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+        source.extract_requirements = False
+        session.commit()
+        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _ok_result(url))
+        fetch_document_and_store(session, source)
+        session.commit()
+
+        changed_html = HTML_OK.replace(b"under 45", b"under 50")
+        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: fetcher.FetchResult(
+            url=url, status=fetcher.FetchStatus.OK, http_status=200,
+            content_type="text/html", raw_bytes=changed_html, duration_ms=50, error=None,
+        ))
+        outcome2 = fetch_document_and_store(session, source)
+        session.commit()
+
+        assert outcome2.status == "OK"
+        assert outcome2.document_version == 2
+        assert session.query(DocumentVersion).filter_by(document_id="DOC-AU-189").count() == 2
+        assert session.query(ExtractionRun).count() == 0
+
+
 class TestConditionalGetOrchestration:
     """Item 5: fetch_document_and_store persists validators from a real
     fetch and short-circuits cleanly on a 304 (no re-store, no re-extraction)."""

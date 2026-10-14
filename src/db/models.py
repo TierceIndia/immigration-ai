@@ -104,6 +104,16 @@ class GovernmentSource(Base, TimestampMixin):
     status = Column(String(32), nullable=False, default="ACTIVE")
     notes = Column(Text)
 
+    # Scope flag: a source can be fetched/hashed/diffed and used as evidence
+    # (document_versions/document_chunks) without ever running requirement
+    # extraction against it - for a reference-only source whose content is
+    # out of product scope (e.g. the whole Migration Regulations covering
+    # subclasses nothing here supports yet). Deleting no rows: this only
+    # gates the extraction step in fetch_document_and_store, never the fetch/
+    # store step itself. Defaults true (opt-out) so every existing/new source
+    # keeps today's behavior unless explicitly scoped out.
+    extract_requirements = Column(Boolean, nullable=False, default=True)
+
     # Conditional GET (item 5): the validators the origin sent with the last
     # successful fetch, so the next request can ask "has this changed since
     # then?" instead of always re-downloading the full body.
