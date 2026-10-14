@@ -249,7 +249,51 @@ def remove(engine) -> None:
         reqs = session.execute(
             select(Requirement).where(Requirement.requirement_id.in_(DEMO_REQUIREMENT_IDS))
         ).scalars().all()
-        removed_ids = [r.requirement_id for r in reqs]
+
+        # Postgres enforces several tables as unconditionally append-only via
+        # a BEFORE DELETE/UPDATE trigger (fn_block_mutation): rule_versions,
+        # requirement_versions, document_versions, assessments,
+        # assessment_rule_results, rulesets, ruleset_rules. This is real
+        # audit-trail immutability by design, not a bug - SQLite has no such
+        # trigger (PL/pgSQL), so it is invisible to this file's own tests
+        # even with PRAGMA foreign_keys=ON; only a real Postgres run surfaces
+        # it. A [DEMO] requirement that a reviewer has actually validated/
+        # approved/activated through the real Review screen (the script's
+        # whole purpose) now has a real RuleVersion row - and once that
+        # exists, neither the version row nor its parent Rule (blocked by the
+        # plain rule_versions_rule_id_fkey, independent of the trigger) can
+        # ever be deleted. Removal for that one requirement_id is therefore
+        # permanently impossible; skip it (and everything that only it uses)
+        # rather than crash, and say so.
+        locked_ids: set[str] = set()
+        rules_by_req = {
+            row.requirement_id: row for row in session.execute(
+                select(Rule).where(Rule.requirement_id.in_(DEMO_REQUIREMENT_IDS))
+            ).scalars().all()
+        }
+        removable_rule_ids = []
+        for requirement_id, rule in rules_by_req.items():
+            has_history = session.execute(
+                select(RuleVersion).where(RuleVersion.rule_id == rule.rule_id).limit(1)
+            ).scalar_one_or_none()
+            if has_history is not None:
+                locked_ids.add(requirement_id)
+            else:
+                removable_rule_ids.append(rule.rule_id)
+
+        # Same append-only check for requirement_versions directly (a plain
+        # edit can write one without ever going through rule compilation).
+        version_locked_ids = {
+            row.requirement_id for row in session.execute(
+                select(RequirementVersion.requirement_id)
+                .where(RequirementVersion.requirement_id.in_(DEMO_REQUIREMENT_IDS))
+            ).all()
+        }
+        locked_ids |= version_locked_ids
+
+        reqs = [r for r in reqs if r.requirement_id not in locked_ids]
+        removable_ids = [r.requirement_id for r in reqs]
+        removed_ids = list(removable_ids)
 
         # None of these FKs are declared via ORM relationship() (see db/models.py),
         # so SQLAlchemy's flush has no dependency graph to order DELETEs across
@@ -260,37 +304,31 @@ def remove(engine) -> None:
         # strict dependent-row-first order, so each DELETE lands as its own
         # round trip rather than trusting unit-of-work ordering.
 
-        # Layer 0: a reviewer may have exercised the real Review screen against
-        # a [DEMO] requirement (that's the script's whole purpose) and compiled
-        # it into a rule - rule_versions must go before rules.
-        rule_ids = [
-            row.rule_id for row in session.execute(
-                select(Rule).where(Rule.requirement_id.in_(DEMO_REQUIREMENT_IDS))
-            ).scalars().all()
-        ]
-        if rule_ids:
-            for rv in session.execute(
-                select(RuleVersion).where(RuleVersion.rule_id.in_(rule_ids))
-            ).scalars().all():
-                session.delete(rv)
-            session.flush()
+        # Layer 0: a DRAFT rule (no RuleVersion row yet) compiled from a
+        # removable [DEMO] requirement can be deleted outright - it is not
+        # itself append-only and nothing references it.
+        if removable_rule_ids:
             for rule in session.execute(
-                select(Rule).where(Rule.rule_id.in_(rule_ids))
+                select(Rule).where(Rule.rule_id.in_(removable_rule_ids))
             ).scalars().all():
                 session.delete(rule)
             session.flush()
 
-        # Layer 1: every other row that can reference a [DEMO] requirement -
-        # review-screen audit trail (versions/reviews), unresolved legal
-        # cross-references, and the evidence rows themselves.
-        for model in (RequirementVersion, RequirementReview, RequirementReference, RequirementEvidence):
+        # Layer 1: every other row that can reference a removable [DEMO]
+        # requirement - review-screen audit trail (reviews), unresolved
+        # legal cross-references, and the evidence rows themselves.
+        # requirement_versions is never touched here: it is append-only on
+        # Postgres exactly like rule_versions (see above) - already excluded
+        # from removable_ids by the version_locked_ids check.
+        for model in (RequirementReview, RequirementReference, RequirementEvidence):
             for row in session.execute(
-                select(model).where(model.requirement_id.in_(DEMO_REQUIREMENT_IDS))
+                select(model).where(model.requirement_id.in_(removable_ids))
             ).scalars().all():
                 session.delete(row)
         session.flush()
 
-        # Layer 2: the requirements themselves, now that nothing references them.
+        # Layer 2: the requirements themselves, now that nothing removable
+        # references them.
         for req in reqs:
             session.delete(req)
         session.flush()
@@ -298,12 +336,21 @@ def remove(engine) -> None:
         # Layer 3: the [DEMO]-tagged chunks this script created (see
         # _make_requirement_with_evidence) - precise by tag, not a guess.
         # requirement_evidence (layer 1) already pointed at these, so they
-        # must be gone before a chunk can be dropped.
+        # must be gone before a chunk can be dropped - except a chunk still
+        # held by a locked requirement's (surviving) evidence row, which
+        # must stay too.
+        still_held_chunk_ids = {
+            row.chunk_id for row in session.execute(
+                select(RequirementEvidence.chunk_id)
+                .where(RequirementEvidence.requirement_id.in_(locked_ids))
+            ).all()
+        } if locked_ids else set()
         demo_chunks = session.execute(
             select(DocumentChunk).where(DocumentChunk.heading_path == DEMO_CHUNK_HEADING)
         ).scalars().all()
         for chunk in demo_chunks:
-            session.delete(chunk)
+            if chunk.chunk_id not in still_held_chunk_ids:
+                session.delete(chunk)
 
         # This session factory runs with autoflush=False (db/connection.py),
         # so the deletes above are only pending, not yet visible to a plain
@@ -312,29 +359,22 @@ def remove(engine) -> None:
         # conclude the fallback anchor chain is still in use.
         session.flush()
 
-        # The fallback anchor chain, only if THIS script created it (fixed,
-        # known ids) and nothing else still references it.
+        # The fallback anchor chain's ExtractionRun, only if THIS script
+        # created it (fixed, known id) and nothing removable still
+        # references it. document_versions is append-only on Postgres (see
+        # above) and government_documents/government_sources are then
+        # permanently FK-held by that version row regardless (plain RESTRICT,
+        # independent of the trigger) - so once this fallback chain has ever
+        # been created, it is a permanent part of the historical record, the
+        # same as any real document version. Only the run itself (not
+        # append-only, not referenced by anything once its requirements are
+        # gone) is ever removed.
         run = session.get(ExtractionRun, DEMO_RUN_ID)
         still_referenced = session.execute(
             select(Requirement).where(Requirement.extraction_run_id == DEMO_RUN_ID)
         ).scalars().all()
         if run is not None and not still_referenced:
-            # Same no-relationship()/no-auto-ordering caveat as above: each
-            # step is its own flush, child-to-parent (run -> version -> doc -> source).
             session.delete(run)
-            session.flush()
-            for v in session.execute(
-                select(DocumentVersion).filter_by(document_id=DEMO_DOCUMENT_ID)
-            ).scalars().all():
-                session.delete(v)
-            session.flush()
-            doc = session.get(GovernmentDocument, DEMO_DOCUMENT_ID)
-            if doc is not None:
-                session.delete(doc)
-                session.flush()
-            source = session.get(GovernmentSource, DEMO_SOURCE_ID)
-            if source is not None:
-                session.delete(source)
 
         session.commit()
 
@@ -342,6 +382,12 @@ def remove(engine) -> None:
         print(f"Removed {len(removed_ids)} [DEMO] requirements: {', '.join(removed_ids)}")
     else:
         print("No [DEMO] requirements found - nothing to remove.")
+    if locked_ids:
+        print(
+            f"Left {len(locked_ids)} [DEMO] requirement(s) in place - they (or their "
+            f"compiled rule) have real, immutable audit history on Postgres and can "
+            f"never be deleted: {', '.join(sorted(locked_ids))}"
+        )
 
 
 def main() -> None:

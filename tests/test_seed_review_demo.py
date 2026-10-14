@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from db.models import (
     Base, Country, DocumentChunk, DocumentVersion, ExtractionRun,
     GovernmentDocument, GovernmentSource, ImmigrationProgram, Requirement,
-    RequirementEvidence,
+    RequirementEvidence, RequirementVersion, Rule, RuleVersion,
 )
 from db.connection import get_session_factory
 
@@ -194,13 +194,72 @@ class TestSeedAndRemove:
             assert s.get(GovernmentDocument, "DOC-AU-189") is not None
             assert s.get(GovernmentSource, "SRC-AU-189") is not None
 
-    def test_remove_cleans_up_the_fallback_anchor_chain_it_created(self, engine):
+    def test_remove_skips_a_requirement_with_real_rule_version_history(self, engine, capsys):
+        """The real finding from a live Postgres run: once a reviewer has
+        actually validated/approved a [DEMO] requirement through the real
+        Review screen, its compiled rule gets a RuleVersion row - and
+        rule_versions is unconditionally append-only on Postgres. That one
+        requirement can never be removed again; remove() must skip exactly
+        it (and the chunk/evidence only it uses), remove the other three,
+        and say so - not crash."""
+        _seed_real_document(engine)
+        demo.seed(engine)
+
+        with get_session_factory(engine)() as s:
+            req = s.get(Requirement, "REQ-DEMO-NEW")
+            rule = Rule(
+                rule_id="RULE-REQ-DEMO-NEW", requirement_id=req.requirement_id,
+                program_id=req.program_id, category=req.category, field=req.field,
+                operator=req.operator, value_json=req.value_json, mandatory=True,
+                critical=False, message="demo rule", status="DRAFT", current_version=1,
+            )
+            s.add(rule)
+            s.flush()
+            s.add(RuleVersion(
+                rule_id=rule.rule_id, version_number=1,
+                snapshot_json={"field": req.field}, change_type="CREATED",
+            ))
+            s.commit()
+
+        demo.remove(engine)
+        captured = capsys.readouterr()
+        assert "REQ-DEMO-NEW" in captured.out
+        assert "immutable" in captured.out.lower()
+
+        with get_session_factory(engine)() as s:
+            # The locked requirement, its rule, and its rule's version all survive.
+            assert s.get(Requirement, "REQ-DEMO-NEW") is not None
+            assert s.get(Rule, "RULE-REQ-DEMO-NEW") is not None
+            assert s.execute(
+                select(RuleVersion).where(RuleVersion.rule_id == "RULE-REQ-DEMO-NEW")
+            ).scalar_one_or_none() is not None
+            # Its evidence/chunk survive too (still referenced).
+            assert s.execute(
+                select(RequirementEvidence).where(RequirementEvidence.requirement_id == "REQ-DEMO-NEW")
+            ).scalar_one_or_none() is not None
+
+            # The other three removable demo requirements are gone.
+            remaining = {
+                r.requirement_id for r in s.execute(
+                    select(Requirement).where(Requirement.requirement_id.in_(demo.DEMO_REQUIREMENT_IDS))
+                ).scalars().all()
+            }
+            assert remaining == {"REQ-DEMO-NEW"}
+
+    def test_remove_cleans_up_the_run_but_keeps_the_fallback_anchor_chain(self, engine):
+        """document_versions is unconditionally append-only on real Postgres
+        (a BEFORE DELETE/UPDATE trigger, invisible to SQLite) and
+        government_documents/government_sources are then permanently FK-held
+        by that version row regardless - so once this fallback chain is
+        created, it is a permanent part of the historical record, same as
+        any real document version. Only the ExtractionRun (not append-only)
+        is ever removed."""
         demo.seed(engine)  # no real document -> creates its own anchor
         demo.remove(engine)
 
         with get_session_factory(engine)() as s:
-            assert s.get(GovernmentDocument, demo.DEMO_DOCUMENT_ID) is None
-            assert s.get(GovernmentSource, demo.DEMO_SOURCE_ID) is None
+            assert s.get(GovernmentDocument, demo.DEMO_DOCUMENT_ID) is not None
+            assert s.get(GovernmentSource, demo.DEMO_SOURCE_ID) is not None
             assert s.get(ExtractionRun, demo.DEMO_RUN_ID) is None
 
     def test_remove_when_nothing_was_seeded_is_a_safe_no_op(self, engine, capsys):
