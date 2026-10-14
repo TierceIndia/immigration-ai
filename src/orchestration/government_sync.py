@@ -45,6 +45,7 @@ from rules.requirement_to_rule import compile_approved_requirements
 from rules.rule_repository import EnhancedRuleRepo
 from logging_config import get_logger
 from fetch.politeness import host_of
+from fetch.timing import SourceTiming, format_timing_table
 from orchestration.host_cooldown import blocked_until
 from utils.fetch_document import fetch_document_and_store
 
@@ -75,6 +76,7 @@ class SyncResult:
     rules_activated: int = 0
     rules_drafted: int = 0
     errors: list[str] = field(default_factory=list)
+    timing: SourceTiming | None = None
 
 
 def detect_change(session: Session, source_id: str) -> tuple[bool, str | None, str | None]:
@@ -456,6 +458,7 @@ def sync_source(session: Session, source_id: str,
         run.old_hash = previous_hash
         run.new_hash = fresh_hash
         result.new_hash = fresh_hash
+        result.timing = outcome.timing
 
         if outcome.document_id is None:
             # Fetch failed; diagnostics/demotion already handled by the fetcher.
@@ -720,6 +723,13 @@ def sync_all_sources(session: Session, dry_run: bool = False,
             result = SyncResult(source_id=src.source_id, status="error",
                                 errors=[str(e)])
         results.append(result)
+
+    timings = [r.timing for r in results if r.timing is not None]
+    if timings:
+        logger.info(
+            "Sync timing summary\n%s", format_timing_table(timings),
+            extra={"sources_timed": len(timings)},
+        )
     return results
 
 

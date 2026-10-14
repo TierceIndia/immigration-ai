@@ -61,6 +61,16 @@ class FetchResult:
     duration_ms: int
     error: str | None
     error_type: str | None = None  # machine-readable failure class, e.g. "dns_resolution_failure"
+    # Stage timings for fetch/timing.py's per-source log line. None when this
+    # FetchResult was built in a test/legacy path without timing, or when the
+    # stage never ran (e.g. browser_launch_ms on a plain-HTTP result) — never
+    # defaulted to 0, which would falsely claim the stage ran instantly.
+    limiter_wait_ms: int | None = None
+    http_ms: int | None = None
+    browser_launch_ms: int | None = None
+    goto_ms: int | None = None
+    selector_wait_ms: int | None = None
+    selector_timed_out: bool | None = None
 
     @property
     def ok(self) -> bool:
@@ -244,8 +254,9 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
 
     _honour_robots_crawl_delay(url, limiter, timeout, proxies)
     last_error: str | None = None
+    limiter_wait_ms = 0
     for attempt in range(1, max_retries + 1):
-        limiter.wait(url)
+        limiter_wait_ms += int(limiter.wait(url) * 1000)
         start = time.monotonic()
         try:
             resp = requests.get(
@@ -260,7 +271,7 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
 
             if resp.status_code >= 500 and attempt < max_retries:
                 last_error = f"HTTP {resp.status_code} on attempt {attempt}"
-                limiter.backoff(BACKOFF_BASE_SECONDS * attempt)
+                limiter_wait_ms += int(limiter.backoff(BACKOFF_BASE_SECONDS * attempt) * 1000)
                 continue
 
             status = _classify_response(resp, source_type)
@@ -278,18 +289,22 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
                 raw_bytes=resp.content,
                 duration_ms=duration_ms,
                 error=error,
+                limiter_wait_ms=limiter_wait_ms,
+                http_ms=duration_ms,
             )
         except requests.RequestException as e:
             duration_ms = int((time.monotonic() - start) * 1000)
             last_error = str(e)
             if attempt < max_retries:
-                limiter.backoff(BACKOFF_BASE_SECONDS * attempt)
+                limiter_wait_ms += int(limiter.backoff(BACKOFF_BASE_SECONDS * attempt) * 1000)
                 continue
             return FetchResult(
                 url=url, status=FetchStatus.FETCH_FAILED, http_status=None,
                 content_type=None, raw_bytes=None, duration_ms=duration_ms,
                 error=last_error, error_type=_classify_exception(e),
+                limiter_wait_ms=limiter_wait_ms, http_ms=duration_ms,
             )
     return FetchResult(url=url, status=FetchStatus.FETCH_FAILED, http_status=None,
                         content_type=None, raw_bytes=None, duration_ms=0,
-                        error=last_error or "unknown error", error_type="unknown")
+                        error=last_error or "unknown error", error_type="unknown",
+                        limiter_wait_ms=limiter_wait_ms, http_ms=0)

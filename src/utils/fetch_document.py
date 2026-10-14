@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ from typing import Any
 
 import dotenv
 import fetch.fetcher as fetcher
+from fetch.timing import SourceTiming
 
 # In TESTS, dotenv loading is suppressed so a developer's .env cannot leak
 # keys into the hermetic suite (confest strips them at module load).
@@ -244,6 +246,7 @@ class FetchStoreOutcome:
     # the caller (government_sync.sync_source) turns this into a visible
     # PARTIAL PipelineRun warning rather than a silent COMPLETED.
     empty_content: bool = False
+    timing: SourceTiming | None = None
 
 
 def _resolve_session(session_or_engine) -> Session:
@@ -280,8 +283,35 @@ def _load_chunk_dicts(
     ]
 
 
+def _build_timing(
+    source_id: str, acquisition: str, fetch_result, total_start: float,
+    extract_ms: int | None = None, llm_calls: int = 0, llm_wait_ms: int = 0,
+) -> SourceTiming:
+    """Assemble one source's timing row from whatever the fetch path measured.
+
+    ``fetch_result``'s stage fields are None for a stage that never ran (e.g.
+    browser_launch_ms on a plain-HTTP result); those pass through as None here
+    too rather than being coerced to 0.
+    """
+    return SourceTiming(
+        source_id=source_id,
+        method=acquisition,
+        limiter_wait_ms=getattr(fetch_result, "limiter_wait_ms", None) or 0,
+        http_ms=getattr(fetch_result, "http_ms", None),
+        browser_launch_ms=getattr(fetch_result, "browser_launch_ms", None),
+        goto_ms=getattr(fetch_result, "goto_ms", None),
+        selector_wait_ms=getattr(fetch_result, "selector_wait_ms", None),
+        selector_timed_out=getattr(fetch_result, "selector_timed_out", None),
+        extract_ms=extract_ms,
+        llm_calls=llm_calls,
+        llm_wait_ms=llm_wait_ms,
+        total_ms=int((time.monotonic() - total_start) * 1000),
+    )
+
+
 def _record_fetch_failure(
-    session: Session, source: GovernmentSource, fetch_result, now: datetime
+    session: Session, source: GovernmentSource, fetch_result, now: datetime,
+    timing: SourceTiming | None = None,
 ) -> FetchStoreOutcome:
     """Record a failed retrieval without touching the source's registry status.
 
@@ -341,12 +371,15 @@ def _record_fetch_failure(
             "error": fetch_result.error,
         },
     )
+    if timing is not None:
+        logger.info("Source fetch timing", extra=timing.as_log_fields())
     return FetchStoreOutcome(
         source_id=source.source_id,
         status=fetch_result.status.value,
         error=fetch_result.error,
         error_type=fetch_result.error_type,
         demoted=demoted,
+        timing=timing,
     )
 
 
@@ -464,6 +497,12 @@ def run_requirement_extraction(
         "schema_failures": 0,
         "deferred_chunks": 0,
     }
+    # Wall-clock spent per candidate between one on_outcome callback and the
+    # next (each candidate is persisted as it completes - see _stream below -
+    # so the gap between callbacks is dominated by that candidate's own LLM
+    # call). Approximate, not instrumented inside the LLM client itself, but
+    # honest: it is real elapsed time, not a guess.
+    llm_timing = {"wait_ms": 0, "marker": time.monotonic()}
     persisted: list[dict[str, Any]] = []
 
     def persist_outcome(outcome) -> None:
@@ -527,6 +566,9 @@ def run_requirement_extraction(
     # provider failure part-way through a long document keeps everything already
     # extracted instead of discarding the whole run.
     def _stream(outcome) -> None:
+        now = time.monotonic()
+        llm_timing["wait_ms"] += int((now - llm_timing["marker"]) * 1000)
+        llm_timing["marker"] = now
         persist_outcome(outcome)
 
     try:
@@ -557,6 +599,7 @@ def run_requirement_extraction(
     # model looked at every candidate chunk and found nothing.
     final_status = "PARTIAL" if counters["deferred_chunks"] else "COMPLETED"
     complete_extraction_run(conn, run_id, counters, status=final_status)
+    counters["llm_wait_ms"] = llm_timing["wait_ms"]
     return {
         "run_id": run_id,
         "document_id": document_id,
@@ -578,6 +621,7 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
     session = _resolve_session(session_or_engine)
     now = datetime.now(timezone.utc)
     source_type = (source.source_type or "HTML").upper()
+    total_start = time.monotonic()
 
     fetch_result = fetcher.fetch(source.url, source_type=source_type)
     acquisition = "http"
@@ -591,7 +635,8 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
         )
         acquisition = "browser"
     if not fetch_result.ok:
-        return _record_fetch_failure(session, source, fetch_result, now)
+        timing = _build_timing(source.source_id, acquisition, fetch_result, total_start)
+        return _record_fetch_failure(session, source, fetch_result, now, timing=timing)
 
     # A real response proves the host is reachable again, so drop any pause it
     # (or a sibling source on the same host) left behind. Self-healing: a pause
@@ -603,6 +648,7 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
     content_hash = sha256_bytes(raw_bytes)
 
     needs_ocr = False
+    extract_start = time.monotonic()
     if source_type == "PDF":
         parsed = _extract_pdf(raw_bytes)
         chunk_rows = parsed.chunks
@@ -612,6 +658,7 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
         parsed = _extract_html(raw_bytes, source.url)
         chunk_rows = parsed.chunks
         title = parsed.title or source.url
+    extract_ms = int((time.monotonic() - extract_start) * 1000)
 
     document_id = f"DOC-{source.source_id.replace('SRC-', '')}"
     existing = session.get(GovernmentDocument, document_id)
@@ -721,9 +768,13 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
     session.flush()
 
     requirements_extracted = 0
+    llm_calls = 0
+    llm_wait_ms = 0
     if change_type != "UNCHANGED" and chunk_rows:
         report = run_requirement_extraction(session, source, document_id, version_number)
         requirements_extracted = report.get("requirements_extracted", 0)
+        llm_calls = report.get("llm_calls", 0)
+        llm_wait_ms = report.get("llm_wait_ms", 0)
         logger.info(
             "Fetch + extraction complete",
             extra={
@@ -735,6 +786,12 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
             },
         )
 
+    timing = _build_timing(
+        source.source_id, acquisition, fetch_result, total_start,
+        extract_ms=extract_ms, llm_calls=llm_calls, llm_wait_ms=llm_wait_ms,
+    )
+    logger.info("Source fetch timing", extra=timing.as_log_fields())
+
     return FetchStoreOutcome(
         source_id=source.source_id,
         status="OK" if change_type != "UNCHANGED" else "UNCHANGED",
@@ -743,4 +800,5 @@ def fetch_document_and_store(session_or_engine, source: GovernmentSource) -> Fet
         content_hash=content_hash,
         requirements_extracted=requirements_extracted,
         empty_content=(change_type != "UNCHANGED" and not chunk_rows),
+        timing=timing,
     )

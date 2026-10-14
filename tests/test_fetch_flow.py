@@ -140,6 +140,14 @@ class TestFetchDocumentAndStorePlainOK:
         assert outcome.error is None
         assert outcome.demoted is None
 
+        assert outcome.timing is not None
+        assert outcome.timing.source_id == "SRC-AU-189"
+        assert outcome.timing.method == "http"
+        assert outcome.timing.total_ms >= 0
+        assert outcome.timing.extract_ms is not None
+        # Browser never ran on a clean plain-HTTP fetch.
+        assert outcome.timing.browser_launch_ms is None
+
         doc = session.get(GovernmentDocument, "DOC-AU-189")
         assert doc is not None
         assert doc.current_version == 1
@@ -169,6 +177,30 @@ class TestFetchDocumentAndStorePlainOK:
         assert source.status == "ACTIVE"
         assert source.last_hash is not None
         assert source.consecutive_failures == 0
+
+    def test_failed_fetch_still_produces_a_timing_row(self, session, monkeypatch):
+        """Item 1: one structured timing line per source, success or not."""
+        _seed_source(session)
+        source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+
+        def failing_fetch(url, **kw):
+            return fetcher.FetchResult(
+                url=url, status=fetcher.FetchStatus.FETCH_FAILED, http_status=504,
+                content_type=None, raw_bytes=None, duration_ms=5000, error="timeout",
+                limiter_wait_ms=30, http_ms=5000,
+            )
+
+        monkeypatch.setattr(fetcher, "fetch", failing_fetch)
+        outcome = fetch_document_and_store(session, source)
+        session.commit()
+
+        assert outcome.document_id is None
+        assert outcome.timing is not None
+        assert outcome.timing.method == "http"
+        assert outcome.timing.limiter_wait_ms == 30
+        assert outcome.timing.http_ms == 5000
+        # A failed fetch never stores a document.
+        assert session.get(GovernmentDocument, "DOC-AU-189") is None
 
     def test_second_sync_unchanged_returns_unchanged(self, session, monkeypatch):
         _seed_source(session)

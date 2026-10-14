@@ -113,21 +113,30 @@ def fetch_with_browser(
 
     if limiter is None:
         limiter = get_limiter()
-    limiter.wait(url)
+    limiter_wait_ms = int(limiter.wait(url) * 1000)
     if launch_fn is None:
         launch_fn = _patchright_fetch
-    return launch_fn(url, source_type, timeout_seconds)
+    result = launch_fn(url, source_type, timeout_seconds)
+    # launch_fn is a test seam and may return a bare sentinel rather than a
+    # real FetchResult (e.g. to prove call plumbing) - only stamp the timing
+    # when there is somewhere real to put it.
+    if hasattr(result, "limiter_wait_ms"):
+        result.limiter_wait_ms = limiter_wait_ms
+    return result
 
 
 def _browser_failure(
     url: str, start: float, error_type: str, error: str,
     status: FetchStatus = FetchStatus.FETCH_FAILED,
+    browser_launch_ms: int | None = None,
+    goto_ms: int | None = None,
 ) -> FetchResult:
     """Build a machine-classified browser failure result."""
     return FetchResult(
         url=url, status=status, http_status=None, content_type=None,
         raw_bytes=None, duration_ms=int((time.monotonic() - start) * 1000),
         error=error, error_type=error_type,
+        browser_launch_ms=browser_launch_ms, goto_ms=goto_ms,
     )
 
 
@@ -171,8 +180,13 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
 
     browser = None
     context = None
+    browser_launch_ms: int | None = None
+    goto_ms: int | None = None
+    selector_wait_ms: int | None = None
+    selector_timed_out: bool | None = None
     try:
         with sync_playwright() as p:
+            launch_start = time.monotonic()
             try:
                 browser = p.chromium.launch(
                     headless=_is_headless(),
@@ -183,6 +197,7 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
                     url, start, "browser_launch_failed",
                     f"Browser launch failed: {e}",
                 )
+            browser_launch_ms = int((time.monotonic() - launch_start) * 1000)
 
             try:
                 try:
@@ -195,19 +210,26 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
                     return _browser_failure(
                         url, start, "browser_context_failed",
                         f"Browser context creation failed: {e}",
+                        browser_launch_ms=browser_launch_ms,
                     )
 
                 try:
                     page.set_default_timeout(
                         min(timeout_seconds * 1000, BROWSER_NAVIGATION_TIMEOUT_MS)
                     )
+                    goto_start = time.monotonic()
                     response = page.goto(url, wait_until="domcontentloaded")
+                    goto_ms = int((time.monotonic() - goto_start) * 1000)
                 except Exception as e:
                     return _browser_failure(
                         url, start, _classify_browser_exception(e),
                         f"Browser navigation failed: {e}",
+                        browser_launch_ms=browser_launch_ms,
+                        goto_ms=int((time.monotonic() - goto_start) * 1000),
                     )
 
+                selector_start = time.monotonic()
+                selector_timed_out = False
                 try:
                     page.wait_for_selector(
                         CONTENT_READY_SELECTOR, timeout=CONTENT_READY_TIMEOUT_MS
@@ -217,7 +239,8 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
                     # (e.g. a genuinely contentless search-interface SPA) —
                     # that is real, honest information, not an error: capture
                     # whatever is there now, same as before this wait existed.
-                    pass
+                    selector_timed_out = True
+                selector_wait_ms = int((time.monotonic() - selector_start) * 1000)
 
                 body_text = page.content()
                 body_bytes = body_text.encode("utf-8")
@@ -241,7 +264,7 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
                         pass
 
             duration_ms = int((time.monotonic() - start) * 1000)
-            return _classify_browser_result(
+            result = _classify_browser_result(
                 url=url,
                 status_code=status_code,
                 body_bytes=body_bytes,
@@ -250,6 +273,11 @@ def _patchright_fetch(url: str, source_type: str, timeout_seconds: int) -> Fetch
                 challenge_body=body_text,
                 duration_ms=duration_ms,
             )
+            result.browser_launch_ms = browser_launch_ms
+            result.goto_ms = goto_ms
+            result.selector_wait_ms = selector_wait_ms
+            result.selector_timed_out = selector_timed_out
+            return result
     except Exception as e:
         return _browser_failure(
             url, start, _classify_browser_exception(e),

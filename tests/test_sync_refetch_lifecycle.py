@@ -641,3 +641,57 @@ class TestPartialExtractionIsDurable:
         }
         assert statuses["RUN-STALE000000000001"] == "FAILED"
         assert "COMPLETED" in statuses.values()
+
+
+class TestSyncTimingSummary:
+    """Item 1: a structured per-source timing line plus one summary table
+    logged at the end of a sync. Fake-driven — no network, no browser."""
+
+    def test_sync_all_sources_logs_a_timing_summary_table(self, session, monkeypatch, caplog):
+        session.merge(Country(country_id="AU", name="Australia", iso_code="AUS"))
+        session.merge(ImmigrationProgram(
+            program_id="SKILLED_189", country_id="AU", visa_category="SKILLED",
+            subclass_code="189", name="Skilled Independent", status="ACTIVE",
+        ))
+        for source_id, path in (("SRC-AU-A", "a"), ("SRC-AU-B", "b")):
+            session.add(GovernmentSource(
+                source_id=source_id, country_id="AU", program_id="SKILLED_189",
+                visa_category="SKILLED", authority="Home Affairs",
+                url=f"https://immi.homeaffairs.gov.au/{path}", source_type="HTML",
+                priority="PRIMARY", monitoring_method="WEB", crawl_frequency="DAILY",
+                status="ACTIVE",
+            ))
+        session.commit()
+        _patch_fetch(monkeypatch, HTML_V1)
+
+        import logging
+        with caplog.at_level(logging.INFO, logger="orchestration.government_sync"):
+            results = sync_all_sources(session, trigger_type="MANUAL")
+        session.commit()
+
+        assert len(results) == 2
+        assert all(r.timing is not None for r in results)
+
+        summary_records = [r for r in caplog.records if "Sync timing summary" in r.getMessage()]
+        assert len(summary_records) == 1
+        table = summary_records[0].getMessage()
+        assert "SRC-AU-A" in table
+        assert "SRC-AU-B" in table
+        assert "TOTAL" in table
+
+    def test_timing_row_has_the_fields_item_1_asks_for(self, session, monkeypatch):
+        _seed_source(session, "SRC-AU-189")
+        _patch_fetch(monkeypatch, HTML_V1)
+
+        results = sync_all_sources(session, trigger_type="MANUAL")
+        session.commit()
+
+        timing = results[0].timing
+        assert timing.source_id == "SRC-AU-189"
+        assert timing.method == "http"
+        assert timing.total_ms >= 0
+        assert timing.limiter_wait_ms >= 0
+        assert timing.extract_ms is not None
+        # llm_calls/llm_wait_ms are present even when 0 (no LLM key configured in tests).
+        assert timing.llm_calls >= 0
+        assert timing.llm_wait_ms >= 0
