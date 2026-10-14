@@ -242,7 +242,10 @@ class FetchStoreOutcome:
     document_id: str | None = None
     document_version: int | None = None
     content_hash: str | None = None
+    # requirements_extracted counts attempts, not stored rows (item 6) - use
+    # stored_new for "how much new knowledge did this fetch add".
     requirements_extracted: int = 0
+    stored_new: int = 0
     error: str | None = None
     error_type: str | None = None  # machine-readable failure class
     demoted: str | None = None  # GovernmentSource.status set when the source was demoted
@@ -496,7 +499,15 @@ def run_requirement_extraction(
         "chunks_seen": len(chunks),
         "candidate_chunks": 0,
         "llm_calls": 0,
+        # requirements_extracted counts ATTEMPTS (every accepted/needs-review
+        # candidate persist_requirement() was called for) - not stored rows.
+        # stored_new/merged_into_existing (item 6) split that into what
+        # actually happened: a brand new requirements row, or evidence merged
+        # into one that already existed. Use stored_new for "how much new
+        # knowledge did this run add", never requirements_extracted.
         "requirements_extracted": 0,
+        "stored_new": 0,
+        "merged_into_existing": 0,
         "validated": 0,
         "needs_review": 0,
         "rejected": 0,
@@ -504,6 +515,8 @@ def run_requirement_extraction(
         "schema_failures": 0,
         "deferred_chunks": 0,
     }
+    _NEW_ROW_ACTIONS = {"CREATED", "CONFLICT_RECORDED"}
+    _MERGED_ACTIONS = {"EVIDENCE_ADDED", "COMPLEMENTARY_EVIDENCE_ADDED"}
     # Wall-clock spent per candidate between one on_outcome callback and the
     # next (each candidate is persisted as it completes - see _stream below -
     # so the gap between callbacks is dominated by that candidate's own LLM
@@ -542,6 +555,10 @@ def run_requirement_extraction(
                 extraction_run_id=run_id,
                 dry_run=False,
             )
+            if result.get("action") in _NEW_ROW_ACTIONS:
+                counters["stored_new"] += 1
+            elif result.get("action") in _MERGED_ACTIONS:
+                counters["merged_into_existing"] += 1
             persisted.append(result)
         for item in outcome.needs_review_requirements:
             counters["requirements_extracted"] += 1
@@ -563,6 +580,10 @@ def run_requirement_extraction(
                     (result["requirement_id"],),
                 )
                 conn.commit()
+            if result.get("action") in _NEW_ROW_ACTIONS:
+                counters["stored_new"] += 1
+            elif result.get("action") in _MERGED_ACTIONS:
+                counters["merged_into_existing"] += 1
             persisted.append({**result, "reasons": item["reasons"]})
         for item in outcome.rejected_requirements:
             counters["rejected"] += 1
@@ -841,11 +862,13 @@ def fetch_document_and_store(
     session.flush()
 
     requirements_extracted = 0
+    stored_new = 0
     llm_calls = 0
     llm_wait_ms = 0
     if change_type != "UNCHANGED" and chunk_rows and source.extract_requirements:
         report = run_requirement_extraction(session, source, document_id, version_number)
         requirements_extracted = report.get("requirements_extracted", 0)
+        stored_new = report.get("stored_new", 0)
         llm_calls = report.get("llm_calls", 0)
         llm_wait_ms = report.get("llm_wait_ms", 0)
         logger.info(
@@ -886,6 +909,7 @@ def fetch_document_and_store(
         document_version=version_number,
         content_hash=content_hash,
         requirements_extracted=requirements_extracted,
+        stored_new=stored_new,
         empty_content=(change_type != "UNCHANGED" and not chunk_rows),
         timing=timing,
     )

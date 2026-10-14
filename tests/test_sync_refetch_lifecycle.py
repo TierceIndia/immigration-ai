@@ -187,6 +187,12 @@ class TestRefetchLifecycle:
         assert session.query(ExtractionRun).count() >= 1
         assert session.query(Requirement).count() >= 1
         assert result.requirements_extracted >= 1
+        # Item 6: on a first-ever sync, every attempt is a brand new row -
+        # stored_new == requirements_extracted, nothing merged.
+        assert result.stored_new == result.requirements_extracted
+        run_row = session.query(ExtractionRun).first()
+        assert run_row.stored_new == result.stored_new
+        assert run_row.merged_into_existing == 0
 
     def test_second_sync_unchanged_refetches_no_new_version(self, session, monkeypatch):
         _seed_source_with_doc(session, content_hash=HASH_V1, last_hash=HASH_V1)
@@ -814,3 +820,36 @@ class TestSharedBrowserAcrossASyncRun:
         session.commit()
 
         assert sink == [], "a plain-HTTP-only run must never launch a browser"
+
+
+class TestStoredNewVsAttempts:
+    """Item 6: requirements_extracted counts attempts, not stored rows -
+    stored_new/merged_into_existing split that apart."""
+
+    def test_two_chunks_with_the_same_semantic_requirement_merge_not_duplicate(
+        self, session, monkeypatch,
+    ):
+        _seed_source(session)
+        html = (
+            b"<html><head><title>Skilled 189</title></head><body>"
+            b"<h1>Eligibility</h1>"
+            b"<p>Applicants must be under 45 years of age.</p>"
+            b"<h2>Age restated</h2>"
+            b"<p>Applicants must be under 45 years of age.</p>"
+            b"</body></html>"
+        )
+        _patch_fetch(monkeypatch, html)
+
+        result = sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
+        session.commit()
+
+        # Two chunks both extract the identical (category, field, operator,
+        # value, unit, mandatory) age requirement - two attempts, one stored row.
+        assert result.requirements_extracted == 2
+        assert result.stored_new == 1
+        assert session.query(Requirement).filter_by(category="AGE").count() == 1
+
+        run = session.query(ExtractionRun).first()
+        assert run.requirements_extracted == 2
+        assert run.stored_new == 1
+        assert run.merged_into_existing == 1

@@ -50,7 +50,11 @@ def _run_to_dict(run, session=None) -> dict[str, Any]:
         "duration_ms": run.duration_ms,
         "old_hash": run.old_hash,
         "new_hash": run.new_hash,
+        # requirements_extracted counts attempts, not stored rows (item 6) -
+        # stored_new is the real "new knowledge" figure; the UI should show
+        # that, not requirements_extracted, as the headline count.
         "requirements_extracted": run.requirements_extracted,
+        "stored_new": run.stored_new,
         "requirements_approved": run.requirements_approved,
         "rules_created": run.rules_created,
         "errors": run.errors or [],

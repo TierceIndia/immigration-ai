@@ -69,7 +69,10 @@ class SyncResult:
     document_version: int | None = None
     old_hash: str | None = None
     new_hash: str | None = None
+    # requirements_extracted counts attempts, not stored rows (item 6) - use
+    # stored_new for "how much new knowledge did this sync add".
     requirements_extracted: int = 0
+    stored_new: int = 0
     requirements_approved: int = 0
     rules_created: int = 0
     rules_validated: int = 0
@@ -501,6 +504,7 @@ def sync_source(session: Session, source_id: str,
 
         result.status = "changed"
         result.requirements_extracted = outcome.requirements_extracted
+        result.stored_new = outcome.stored_new
         empty_content_warning = (
             "Fetch succeeded and content changed, but extraction produced zero "
             "document chunks (e.g. a JS-rendered page with no static content) — "
@@ -511,6 +515,7 @@ def sync_source(session: Session, source_id: str,
             session, run_repo, rule_repo, run, result,
             source_id, previous_hash, fresh_hash,
             dry_run=False, requirements_extracted=outcome.requirements_extracted,
+            stored_new=outcome.stored_new,
             empty_content_warning=empty_content_warning,
         )
 
@@ -540,6 +545,7 @@ def _finalize_change(
     new_hash: str | None,
     dry_run: bool,
     requirements_extracted: int = 0,
+    stored_new: int = 0,
     empty_content_warning: str | None = None,
 ) -> SyncResult:
     """Run the shared changed-path body: change detection → compile → run record.
@@ -547,13 +553,15 @@ def _finalize_change(
     Used by both the dry-run preview and the real always-fetch path. The real
     path passes the number of requirements extracted by the fetch step so the
     PipelineRun audit metrics reflect bootstrap/extraction (as the legacy
-    zero-document path did).
+    zero-document path did). ``requirements_extracted`` counts attempts, not
+    stored rows (item 6) - ``stored_new`` is the real "new knowledge" figure.
 
     ``empty_content_warning`` (real path only): the fetch succeeded and content
     genuinely changed, but extraction found zero document chunks. Seeded into
     the run's errors so it lands as a visible PARTIAL, never a silent COMPLETED.
     """
     result.requirements_extracted = requirements_extracted
+    result.stored_new = stored_new
 
     doc = _latest_document(session, source_id)
     if not doc:
@@ -629,6 +637,7 @@ def _finalize_change(
     #    fetch_document_and_store after the fresh fetch (real path only).
     run_kwargs = dict(
         requirements_extracted=result.requirements_extracted,
+        stored_new=result.stored_new,
         requirements_approved=result.requirements_approved,
         rules_created=result.rules_created,
         rules_validated=result.rules_validated,

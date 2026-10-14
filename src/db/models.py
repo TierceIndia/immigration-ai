@@ -341,7 +341,15 @@ class ExtractionRun(Base, TimestampMixin):
     chunks_seen = Column(Integer, nullable=False, default=0)
     candidate_chunks = Column(Integer, nullable=False, default=0)
     llm_calls = Column(Integer, nullable=False, default=0)
+    # Item 6: requirements_extracted counts ATTEMPTS (every accepted/needs-
+    # review candidate persist_requirement() was called for), not stored
+    # rows - a dedup/conflict/evidence-merge can turn several attempts into
+    # zero new rows. stored_new/merged_into_existing split that apart; use
+    # stored_new, never requirements_extracted, for "how much new knowledge
+    # did this run add".
     requirements_extracted = Column(Integer, nullable=False, default=0)
+    stored_new = Column(Integer, nullable=False, default=0)
+    merged_into_existing = Column(Integer, nullable=False, default=0)
     validated = Column(Integer, nullable=False, default=0)
     needs_review = Column(Integer, nullable=False, default=0)
     rejected = Column(Integer, nullable=False, default=0)
@@ -806,7 +814,11 @@ class PipelineRun(Base, TimestampMixin):
     duration_ms = Column(Integer)
     old_hash = Column(String(64))
     new_hash = Column(String(64))
+    # Item 6: requirements_extracted counts attempts, not stored rows - see
+    # the identical comment on ExtractionRun. stored_new is the "how much new
+    # knowledge did this run add" figure admin summaries/UI should surface.
     requirements_extracted = Column(Integer, nullable=False, default=0)
+    stored_new = Column(Integer, nullable=False, default=0)
     requirements_approved = Column(Integer, nullable=False, default=0)
     rules_created = Column(Integer, nullable=False, default=0)
     rules_validated = Column(Integer, nullable=False, default=0)

@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS extraction_runs (
     chunks_seen            INTEGER NOT NULL DEFAULT 0,
     candidate_chunks       INTEGER NOT NULL DEFAULT 0,
     llm_calls              INTEGER NOT NULL DEFAULT 0,
-    requirements_extracted INTEGER NOT NULL DEFAULT 0,
+    requirements_extracted INTEGER NOT NULL DEFAULT 0,  -- attempts, not stored rows - see stored_new
+    stored_new              INTEGER NOT NULL DEFAULT 0,
+    merged_into_existing     INTEGER NOT NULL DEFAULT 0,
     validated               INTEGER NOT NULL DEFAULT 0,
     needs_review            INTEGER NOT NULL DEFAULT 0,
     rejected                INTEGER NOT NULL DEFAULT 0,

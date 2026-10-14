@@ -104,13 +104,15 @@ def complete_extraction_run(conn, run_id: str, counters: dict, status: str = "CO
         """
         UPDATE extraction_runs SET
             completed_at = ?, chunks_seen = ?, candidate_chunks = ?, llm_calls = ?,
-            requirements_extracted = ?, validated = ?, needs_review = ?, rejected = ?,
+            requirements_extracted = ?, stored_new = ?, merged_into_existing = ?,
+            validated = ?, needs_review = ?, rejected = ?,
             evidence_failures = ?, schema_failures = ?, deferred_chunks = ?, status = ?, error = ?
         WHERE run_id = ?
         """,
         (
             _now_iso(), counters.get("chunks_seen", 0), counters.get("candidate_chunks", 0),
             counters.get("llm_calls", 0), counters.get("requirements_extracted", 0),
+            counters.get("stored_new", 0), counters.get("merged_into_existing", 0),
             counters.get("validated", 0), counters.get("needs_review", 0),
             counters.get("rejected", 0), counters.get("evidence_failures", 0),
             counters.get("schema_failures", 0), counters.get("deferred_chunks", 0),
