@@ -104,6 +104,12 @@ class GovernmentSource(Base, TimestampMixin):
     status = Column(String(32), nullable=False, default="ACTIVE")
     notes = Column(Text)
 
+    # Conditional GET (item 5): the validators the origin sent with the last
+    # successful fetch, so the next request can ask "has this changed since
+    # then?" instead of always re-downloading the full body.
+    etag = Column(String(256), nullable=True)
+    last_modified = Column(String(64), nullable=True)
+
     # Fallback strategy fields
     fallback_source_id = Column(String(32), ForeignKey("government_sources.source_id"), nullable=True)
     fetch_status = Column(String(32), nullable=True)

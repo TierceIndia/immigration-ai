@@ -233,6 +233,120 @@ class TestFetchDocumentAndStorePlainOK:
         assert logs[-1].changed == 0
 
 
+class TestConditionalGetOrchestration:
+    """Item 5: fetch_document_and_store persists validators from a real
+    fetch and short-circuits cleanly on a 304 (no re-store, no re-extraction)."""
+
+    def test_successful_http_fetch_persists_etag_and_last_modified(self, session, monkeypatch):
+        def ok_with_validators(url, **kw):
+            res = _ok_result(url)
+            res.etag = '"abc123"'
+            res.last_modified = "Wed, 01 Jan 2026 00:00:00 GMT"
+            return res
+
+        _seed_source(session)
+        source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+        monkeypatch.setattr(fetcher, "fetch", ok_with_validators)
+
+        fetch_document_and_store(session, source)
+        session.commit()
+
+        assert source.etag == '"abc123"'
+        assert source.last_modified == "Wed, 01 Jan 2026 00:00:00 GMT"
+
+    def test_not_modified_fetch_sends_the_stored_validators(self, session, monkeypatch):
+        _seed_source(session)
+        source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+        source.etag = '"abc123"'
+        source.last_modified = "Wed, 01 Jan 2026 00:00:00 GMT"
+        session.commit()
+
+        seen = {}
+
+        def capture_fetch(url, etag=None, last_modified=None, **kw):
+            seen["etag"] = etag
+            seen["last_modified"] = last_modified
+            return fetcher.FetchResult(
+                url=url, status=fetcher.FetchStatus.OK, http_status=304,
+                content_type=None, raw_bytes=None, duration_ms=10, error=None,
+                not_modified=True, etag=etag, last_modified=last_modified,
+            )
+
+        monkeypatch.setattr(fetcher, "fetch", capture_fetch)
+        outcome = fetch_document_and_store(session, source)
+        session.commit()
+
+        assert seen["etag"] == '"abc123"'
+        assert seen["last_modified"] == "Wed, 01 Jan 2026 00:00:00 GMT"
+        assert outcome.status == "UNCHANGED"
+
+    def test_not_modified_never_stores_a_document_or_extracts(self, session, monkeypatch):
+        """304 = unchanged with no body, no browser, no extraction (item 5)."""
+        _seed_source(session)
+        source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+
+        def not_modified_fetch(url, **kw):
+            return fetcher.FetchResult(
+                url=url, status=fetcher.FetchStatus.OK, http_status=304,
+                content_type=None, raw_bytes=None, duration_ms=10, error=None,
+                not_modified=True,
+            )
+
+        browser_called = {"called": False}
+
+        def fake_browser(url, **kw):
+            browser_called["called"] = True
+            return _ok_result(url)
+
+        monkeypatch.setattr(fetcher, "fetch", not_modified_fetch)
+        monkeypatch.setattr(browser_fetcher, "fetch_with_browser", fake_browser)
+
+        outcome = fetch_document_and_store(session, source)
+        session.commit()
+
+        assert outcome.status == "UNCHANGED"
+        assert outcome.document_id is None
+        assert outcome.requirements_extracted == 0
+        assert browser_called["called"] is False
+        assert session.query(GovernmentDocument).count() == 0
+        assert session.query(DocumentVersion).count() == 0
+        assert session.query(ExtractionRun).count() == 0
+
+        # Diagnostics still refresh - a 304 is a real, successful contact.
+        assert source.status == "ACTIVE"
+        assert source.fetch_status == "OK"
+        assert source.consecutive_failures == 0
+
+        logs = session.query(FetchLog).filter_by(source_id="SRC-AU-189").all()
+        assert len(logs) == 1
+        assert logs[0].status == "OK"
+        assert logs[0].changed == 0
+        assert logs[0].http_status == 304
+
+    def test_not_modified_preserves_an_existing_document_version(self, session, monkeypatch):
+        _seed_source_with_doc(session)
+        source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+        source.etag = '"abc123"'
+        session.commit()
+
+        def not_modified_fetch(url, **kw):
+            return fetcher.FetchResult(
+                url=url, status=fetcher.FetchStatus.OK, http_status=304,
+                content_type=None, raw_bytes=None, duration_ms=10, error=None,
+                not_modified=True,
+            )
+
+        monkeypatch.setattr(fetcher, "fetch", not_modified_fetch)
+        outcome = fetch_document_and_store(session, source)
+        session.commit()
+
+        assert outcome.status == "UNCHANGED"
+        assert outcome.document_id == "DOC-AU-189"
+        assert outcome.document_version == 1
+        # The existing version row is untouched - no new row, no re-extraction.
+        assert session.query(DocumentVersion).filter_by(document_id="DOC-AU-189").count() == 1
+
+
 class TestFetchDocumentAndStoreBrowserEscalation:
     def test_access_blocked_does_not_escalate_to_browser(self, session, monkeypatch):
         """Item 2 / B4: a real 401/403/429 refusal is the origin telling us

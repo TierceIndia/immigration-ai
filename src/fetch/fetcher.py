@@ -71,6 +71,16 @@ class FetchResult:
     goto_ms: int | None = None
     selector_wait_ms: int | None = None
     selector_timed_out: bool | None = None
+    # Conditional GET (item 5). ``etag``/``last_modified`` are the origin's
+    # current validators (from the response that produced this result, or
+    # echoed back from the request when a 304 confirms the caller's own
+    # validators are still current) — the caller persists them for next time.
+    # ``not_modified`` is True only for a real 304: status stays OK (a 304 is
+    # a success, just one with no body), but raw_bytes is None and nothing
+    # downstream should re-store or re-extract.
+    etag: str | None = None
+    last_modified: str | None = None
+    not_modified: bool = False
 
     @property
     def ok(self) -> bool:
@@ -236,8 +246,15 @@ def _honour_retry_after(resp: requests.Response, url: str, limiter: HostLimiter)
 
 
 def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SECONDS,
-          max_retries: int = MAX_RETRIES, limiter: HostLimiter | None = None) -> FetchResult:
-    """Plain HTTP GET, spaced and jittered per host via the shared HostLimiter."""
+          max_retries: int = MAX_RETRIES, limiter: HostLimiter | None = None,
+          etag: str | None = None, last_modified: str | None = None) -> FetchResult:
+    """Plain HTTP GET, spaced and jittered per host via the shared HostLimiter.
+
+    ``etag``/``last_modified`` (item 5): when the caller has validators from a
+    previous fetch of this exact URL, they are sent as ``If-None-Match`` /
+    ``If-Modified-Since`` so an unchanged origin can answer 304 with no body
+    at all, instead of us re-downloading content we already have.
+    """
     limiter = limiter if limiter is not None else get_limiter()
 
     # Resolve the optional static egress proxy *before* touching the network.
@@ -252,6 +269,12 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
             error=str(exc), error_type="proxy_config_error",
         )
 
+    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/pdf,*/*"}
+    if etag:
+        headers["If-None-Match"] = etag
+    if last_modified:
+        headers["If-Modified-Since"] = last_modified
+
     _honour_robots_crawl_delay(url, limiter, timeout, proxies)
     last_error: str | None = None
     limiter_wait_ms = 0
@@ -261,13 +284,27 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
         try:
             resp = requests.get(
                 url,
-                headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/pdf,*/*"},
+                headers=headers,
                 timeout=timeout,
                 proxies=proxies,
             )
             duration_ms = int((time.monotonic() - start) * 1000)
 
             _honour_retry_after(resp, url, limiter)
+
+            if resp.status_code == 304:
+                # The origin confirms our validators are still current: no
+                # body at all, no browser, no extraction - this is a success
+                # (status stays OK), just one with nothing new to store.
+                return FetchResult(
+                    url=url, status=FetchStatus.OK, http_status=304,
+                    content_type=resp.headers.get("Content-Type"),
+                    raw_bytes=None, duration_ms=duration_ms, error=None,
+                    limiter_wait_ms=limiter_wait_ms, http_ms=duration_ms,
+                    not_modified=True,
+                    etag=resp.headers.get("ETag") or etag,
+                    last_modified=resp.headers.get("Last-Modified") or last_modified,
+                )
 
             if resp.status_code >= 500 and attempt < max_retries:
                 last_error = f"HTTP {resp.status_code} on attempt {attempt}"
@@ -291,6 +328,8 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
                 error=error,
                 limiter_wait_ms=limiter_wait_ms,
                 http_ms=duration_ms,
+                etag=resp.headers.get("ETag"),
+                last_modified=resp.headers.get("Last-Modified"),
             )
         except requests.RequestException as e:
             duration_ms = int((time.monotonic() - start) * 1000)

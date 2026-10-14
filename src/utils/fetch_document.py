@@ -637,7 +637,10 @@ def fetch_document_and_store(
     source_type = (source.source_type or "HTML").upper()
     total_start = time.monotonic()
 
-    fetch_result = fetcher.fetch(source.url, source_type=source_type)
+    fetch_result = fetcher.fetch(
+        source.url, source_type=source_type,
+        etag=source.etag, last_modified=source.last_modified,
+    )
     acquisition = "http"
     if fetch_result.status in _BROWSER_ESCALATION_STATUSES:
         logger.info(
@@ -657,6 +660,49 @@ def fetch_document_and_store(
     # that has already expired is removed rather than left to linger until some
     # later success happens to touch the same host.
     clear_cooldown(session, source.url)
+
+    if fetch_result.not_modified:
+        # Item 5: the origin's 304 already told us nothing changed - no body
+        # was ever downloaded, so there is nothing to hash, re-store or
+        # re-extract. Only diagnostics and the validators refresh.
+        source.last_checked_at = now
+        source.last_successful_fetch_at = now
+        source.status = "ACTIVE"
+        source.fetch_status = "OK"
+        source.http_status = fetch_result.http_status
+        source.last_error = None
+        source.last_error_type = None
+        source.consecutive_failures = 0
+        if fetch_result.etag:
+            source.etag = fetch_result.etag
+        if fetch_result.last_modified:
+            source.last_modified = fetch_result.last_modified
+
+        existing_doc = (
+            session.query(GovernmentDocument)
+            .filter(GovernmentDocument.source_id == source.source_id)
+            .order_by(GovernmentDocument.retrieved_at.desc())
+            .first()
+        )
+        session.add(
+            FetchLog(
+                source_id=source.source_id, fetched_at=now,
+                http_status=fetch_result.http_status, status=fetcher.FetchStatus.OK.value,
+                content_hash=source.last_hash, changed=0,
+                duration_ms=fetch_result.duration_ms, error=None,
+            )
+        )
+        session.flush()
+        timing = _build_timing(source.source_id, acquisition, fetch_result, total_start)
+        logger.info("Source fetch timing", extra=timing.as_log_fields())
+        return FetchStoreOutcome(
+            source_id=source.source_id,
+            status="UNCHANGED",
+            document_id=existing_doc.document_id if existing_doc else None,
+            document_version=existing_doc.current_version if existing_doc else None,
+            content_hash=source.last_hash,
+            timing=timing,
+        )
 
     raw_bytes = fetch_result.raw_bytes
     content_hash = sha256_bytes(raw_bytes)
@@ -741,6 +787,13 @@ def fetch_document_and_store(
     source.last_error = None
     source.last_error_type = None
     source.consecutive_failures = 0
+    # Item 5: store this fetch's validators so the next one can ask for a
+    # conditional GET. A browser-escalated fetch never sets these (browsers
+    # don't send conditional headers here - see fetch_with_browser), which
+    # correctly means the next sync tries plain HTTP fresh rather than
+    # replaying stale validators from a different acquisition path.
+    source.etag = fetch_result.etag if acquisition == "http" else None
+    source.last_modified = fetch_result.last_modified if acquisition == "http" else None
 
     if change_type != "UNCHANGED":
         session.flush()  # ensure the document row is visible before the version FK is checked
