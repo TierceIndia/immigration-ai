@@ -225,7 +225,7 @@ def _extraction_model() -> str:
 _EXTRACTION_DIR = Path(__file__).resolve().parent.parent / "extraction"
 if str(_EXTRACTION_DIR) not in sys.path:
     sys.path.insert(0, str(_EXTRACTION_DIR))
-from llm_client import PROMPT_VERSION, get_client  # noqa: E402
+from llm_client import CachingLLMClient, PROMPT_VERSION, get_client  # noqa: E402
 from llm_governance import get_shared_governance  # noqa: E402
 from requirement_extractor import extract_from_document  # noqa: E402
 from requirement_repository import (  # noqa: E402
@@ -583,6 +583,12 @@ def run_requirement_extraction(
             model_name, visa_category=source.visa_category,
             governance=get_shared_governance(),
         )
+        # Item 5: a persistent, chunk-content-hash-keyed cache - an unchanged
+        # chunk in a changed document never reaches the LLM again. Keyed by
+        # (chunk_hash, prompt_version, model), never by chunk_id (a new
+        # DocumentVersion always gets fresh chunk rows, even for
+        # byte-identical text).
+        client = CachingLLMClient(client, session, PROMPT_VERSION)
         extract_from_document(
             source=source_ctx,
             document=document_ctx,

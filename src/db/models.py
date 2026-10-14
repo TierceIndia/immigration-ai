@@ -375,6 +375,28 @@ class ExtractionRun(Base, TimestampMixin):
     )
 
 
+class ExtractionCache(Base, TimestampMixin):
+    """Persistent chunk-level LLM extraction cache (item 5).
+
+    Keyed by (chunk content hash, prompt_version, model): a chunk whose exact
+    text was already sent through this exact prompt/model combination never
+    reaches the LLM again, even across document versions and sync runs -
+    every new DocumentVersion gets fresh DocumentChunk rows even for
+    byte-identical text (see fetch_document_and_store), so the chunk_id alone
+    can never be the cache key. A new prompt_version is a different primary
+    key entirely, so it naturally never reuses a stale cache entry.
+    """
+    __tablename__ = "extraction_cache"
+    chunk_content_hash = Column(String(64), primary_key=True)
+    prompt_version = Column(String(64), primary_key=True)
+    model = Column(String(64), primary_key=True)
+    # The chunk_id that produced this cached response - evidence[].chunk_id
+    # references in raw_output are rewritten to the requesting call's own
+    # chunk_id on every cache hit (see llm_client.CachingLLMClient).
+    source_chunk_id = Column(Integer, nullable=False)
+    raw_output = Column(Text, nullable=False)
+
+
 class Requirement(Base, TimestampMixin):
     __tablename__ = "requirements"
     # 96, not 48: "REQ-{program_id}-{sem_key}-{uuid6}" (the CONFLICT-path format)

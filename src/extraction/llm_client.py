@@ -116,6 +116,71 @@ class LLMClient(ABC):
         return self._system_prompt
 
 
+def _remap_cached_chunk_id(raw_output: str, old_chunk_id: int, new_chunk_id: int) -> str:
+    """Rewrite evidence[].chunk_id references in a cached raw response from
+    the chunk that originally produced it to the chunk now asking for it.
+
+    Best-effort: if the cached string isn't valid JSON (shouldn't happen -
+    it was only ever written here after a real extract() call), it is
+    returned unchanged; parse_llm_output's own error handling takes over
+    exactly as it would for any other malformed response.
+    """
+    if old_chunk_id == new_chunk_id:
+        return raw_output
+    try:
+        parsed = json.loads(raw_output)
+    except (TypeError, ValueError):
+        return raw_output
+    for req in parsed.get("requirements", []) or []:
+        for ev in req.get("evidence", []) or []:
+            if ev.get("chunk_id") == old_chunk_id:
+                ev["chunk_id"] = new_chunk_id
+    return json.dumps(parsed)
+
+
+class CachingLLMClient(LLMClient):
+    """Wraps a real LLMClient with a persistent, chunk-content-hash-keyed
+    cache (item 5): an unchanged chunk in a changed document never reaches
+    the LLM again, as long as prompt_version and model are also unchanged -
+    either changing is a different cache key, so it is never served stale.
+
+    The cache lives in extraction_cache (db.models.ExtractionCache), keyed by
+    (chunk_content_hash, prompt_version, model) - never by chunk_id, which is
+    never reused across document versions even for byte-identical text (see
+    fetch_document_and_store). A cache hit rewrites the cached response's
+    evidence chunk_id references to the chunk now requesting it.
+    """
+
+    def __init__(self, inner: LLMClient, session, prompt_version: str):
+        self._inner = inner
+        self._session = session
+        self._prompt_version = prompt_version
+        self.model_name = getattr(inner, "model_name", "unknown")
+
+    def get_system_prompt(self, visa_category: str | None = None) -> str:
+        return self._inner.get_system_prompt(visa_category)
+
+    def extract(self, input_context: dict) -> str:
+        from change_detection.hashing import sha256_text
+        from db.models import ExtractionCache
+
+        primary = input_context["primary_chunk"]
+        chunk_hash = sha256_text(primary["raw_text"])
+        key = (chunk_hash, self._prompt_version, self.model_name)
+
+        cached = self._session.get(ExtractionCache, key)
+        if cached is not None:
+            return _remap_cached_chunk_id(cached.raw_output, cached.source_chunk_id, primary["chunk_id"])
+
+        raw_output = self._inner.extract(input_context)
+        self._session.merge(ExtractionCache(
+            chunk_content_hash=chunk_hash, prompt_version=self._prompt_version,
+            model=self.model_name, source_chunk_id=primary["chunk_id"], raw_output=raw_output,
+        ))
+        self._session.flush()
+        return raw_output
+
+
 class MockLLMClient(LLMClient):
     """Deterministic rule-based stand-in for the LLM. Never invents a value it can't find a
     textual match for; returns UNKNOWN/None fields otherwise - same discipline the real prompt
