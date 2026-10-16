@@ -26,6 +26,34 @@ from logging_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
+# Item 4 (review triage): the product's current real scope. A requirement
+# whose program isn't here can still be reviewed (the toggle reaches it) but
+# never sorts ahead of one that is - LEGISLATION_MIGRATION_REGS (the whole
+# Migration Regulations, mostly out of scope - see item 3's extract_requirements
+# flag) is deliberately absent.
+_IN_SCOPE_PROGRAMS = {
+    "SKILLED_189", "SKILLED_190", "SKILLED_491", "WORK_482", "STUDENT_500", "VISITOR_600",
+}
+_CRITICALITY_ORDER = {"CRITICAL": 0, "IMPORTANT": 1, "NORMAL": 2, "INFORMATIONAL": 3}
+
+
+def _is_evaluable(field: str | None) -> bool:
+    """Whether a requirement's field can ever resolve to PASS/FAIL - i.e. it
+    is a real ApplicantProfile fact, not NOT_MODELED and not blank. Mirrors
+    requirement_normalizer._EVALUABLE_FIELDS (item 1's closed vocabulary).
+
+    Lazy import: requirement_normalizer lives under the flat src/extraction/
+    sys.path root, not this module's regular src/ package root.
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+    _extraction_dir = str(_Path(__file__).resolve().parent.parent.parent / "extraction")
+    if _extraction_dir not in _sys.path:
+        _sys.path.insert(0, _extraction_dir)
+    from requirement_normalizer import _EVALUABLE_FIELDS, NOT_MODELED
+
+    return field is not None and field != NOT_MODELED and field in _EVALUABLE_FIELDS
+
 
 def _reviewer_from(current_user: dict) -> str:
     """The audit-trail reviewer identity for a requirement review action:
@@ -46,6 +74,8 @@ class RequirementSummary(BaseModel):
     category: str
     name: str
     field: str | None = None
+    concept: str | None = None
+    evaluable: bool = False
     operator: str | None = None
     value: Any = None
     unit: str | None = None
@@ -73,6 +103,8 @@ def _req_to_summary(req: Requirement) -> dict:
         "category": req.category,
         "name": req.name,
         "field": req.field,
+        "concept": req.concept,
+        "evaluable": _is_evaluable(req.field),
         "operator": req.operator,
         "value": json.loads(req.value_json) if req.value_json else None,
         "unit": req.unit,
@@ -153,20 +185,43 @@ def review_queue(
     request: Request,
     status: str = "NEEDS_REVIEW",
     program_id: str | None = None,
+    evaluable_only: bool = True,
     current_user: dict = Depends(require_admin),
 ):
     """List requirements awaiting human review, with full review-feed detail
     (description, evidence, source document/version, and the conflicting
     previous value when applicable) - everything Part 1d's review screen
-    needs without a second request per item."""
+    needs without a second request per item.
+
+    Item 4 (review triage): ``evaluable_only`` defaults true - a requirement
+    whose field is NOT_MODELED (or blank) can never resolve to PASS/FAIL no
+    matter what a reviewer decides, so it is hidden by default to keep
+    reviewer time on requirements a decision can actually act on. Set
+    ``evaluable_only=false`` to reach the hidden ones (they are never
+    deleted, just filtered out of the default view).
+
+    Sorted in-scope programs first (see _IN_SCOPE_PROGRAMS - the whole
+    Migration Regulations source is mostly out of scope), then mandatory
+    requirements before optional ones, then by criticality.
+    """
     engine = get_db_engine(request)
     with get_session(engine) as session:
         stmt = select(Requirement).filter(Requirement.status == status)
         if program_id:
             stmt = stmt.where(Requirement.program_id == program_id)
         reqs = list(session.execute(stmt).scalars())
+        if evaluable_only:
+            reqs = [r for r in reqs if _is_evaluable(r.field)]
+        reqs.sort(key=lambda r: (
+            0 if r.program_id in _IN_SCOPE_PROGRAMS else 1,
+            0 if r.mandatory else 1,
+            _CRITICALITY_ORDER.get(r.criticality, 99),
+        ))
         result = [_req_to_review_item(session, r) for r in reqs]
-        return {"requirements": result, "status": status, "program_id": program_id, "count": len(result)}
+        return {
+            "requirements": result, "status": status, "program_id": program_id,
+            "evaluable_only": evaluable_only, "count": len(result),
+        }
 
 
 @router.post("/review/{requirement_id}/approve", response_model=RequirementSummary)

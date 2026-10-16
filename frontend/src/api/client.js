@@ -140,9 +140,9 @@ export function getRun(runId) {
 // ---------------------------------------------------------------------------
 // Requirements / review queue
 // ---------------------------------------------------------------------------
-export function getReviewQueue({ status = "NEEDS_REVIEW", programId } = {}) {
+export function getReviewQueue({ status = "NEEDS_REVIEW", programId, evaluableOnly = true } = {}) {
   return request("/api/v1/admin/requirements/review-queue", {
-    query: { status, program_id: programId },
+    query: { status, program_id: programId, evaluable_only: evaluableOnly },
   });
 }
 

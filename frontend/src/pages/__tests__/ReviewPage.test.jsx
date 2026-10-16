@@ -13,6 +13,8 @@ const SAMPLE_REQUIREMENT = {
   name: "Age requirement",
   description: "Applicants must be under 45.",
   field: "applicant.age",
+  concept: null,
+  evaluable: true,
   operator: "LT",
   value: 45,
   unit: "years",
@@ -73,5 +75,61 @@ describe("ReviewPage approve flow", () => {
     await user.click(screen.getByRole("button", { name: /approve selected/i }));
 
     expect(await screen.findByText(/approve 1 requirement/i)).toBeInTheDocument();
+  });
+
+  it("shows an Evaluable badge for a requirement with a real field", async () => {
+    renderPage();
+    await screen.findByText("Age requirement");
+    expect(screen.getByText("Evaluable")).toBeInTheDocument();
+  });
+
+  it("labels confidence as model-reported, low signal", async () => {
+    renderPage();
+    await screen.findByText("Age requirement");
+    expect(screen.getByText(/model-reported, low signal/i)).toBeInTheDocument();
+  });
+
+  it("defaults to evaluable_only=true on the initial load", async () => {
+    renderPage();
+    await screen.findByText("Age requirement");
+    expect(api.getReviewQueue).toHaveBeenCalledWith(
+      expect.objectContaining({ evaluableOnly: true })
+    );
+  });
+});
+
+describe("ReviewPage evaluable-only toggle", () => {
+  const NOT_MODELED_REQUIREMENT = {
+    ...SAMPLE_REQUIREMENT,
+    requirement_id: "REQ-VISA-HISTORY-1",
+    name: "Bridging visa grant limit",
+    field: "NOT_MODELED",
+    concept: "visa_history_bridging_count",
+    evaluable: false,
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("hides a not-modeled requirement by default, reveals it when toggled off", async () => {
+    const user = userEvent.setup();
+    api.getReviewQueue.mockImplementation(({ evaluableOnly } = {}) =>
+      Promise.resolve({
+        requirements: evaluableOnly ? [] : [NOT_MODELED_REQUIREMENT],
+        status: "NEEDS_REVIEW",
+        program_id: null,
+        evaluable_only: evaluableOnly,
+        count: evaluableOnly ? 0 : 1,
+      })
+    );
+
+    renderPage();
+    expect(await screen.findByText(/queue is clear/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: /evaluable only/i }));
+
+    expect(await screen.findByText("Bridging visa grant limit")).toBeInTheDocument();
+    expect(screen.getByText(/not modeled: visa_history_bridging_count/i)).toBeInTheDocument();
   });
 });

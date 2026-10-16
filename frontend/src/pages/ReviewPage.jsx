@@ -55,10 +55,25 @@ function RequirementItem({ item, selected, onToggleSelect, onAction }) {
           <strong>{item.name}</strong>
           <StatusBadge value={item.status} />
           {item.mandatory && <span className="badge badge-neutral">Mandatory</span>}
+          {item.evaluable ? (
+            <span className="badge badge-ok" title="This requirement's field maps to a real applicant fact and can resolve to pass/fail.">
+              Evaluable
+            </span>
+          ) : (
+            <span
+              className="badge badge-warn"
+              title="This requirement's underlying concept isn't wired into applicant data yet, so it can never resolve to pass/fail - only Unknown."
+            >
+              Not modeled{item.concept ? `: ${item.concept}` : ""}
+            </span>
+          )}
         </label>
-        <span className="muted">
+        <span
+          className="muted"
+          title="Model-reported, low signal - the extraction model's own confidence estimate, not a measure of whether this requirement is correct or evaluable."
+        >
           {item.confidence !== null && item.confidence !== undefined
-            ? `${Math.round(item.confidence * 100)}% confidence`
+            ? `${Math.round(item.confidence * 100)}% confidence (model-reported, low signal)`
             : ""}
         </span>
       </div>
@@ -120,11 +135,19 @@ function RequirementItem({ item, selected, onToggleSelect, onAction }) {
 
 export default function ReviewPage() {
   const [status, setStatus] = useState("NEEDS_REVIEW");
+  // Item 4: on by default - a requirement whose field is NOT_MODELED (or
+  // blank) can never resolve to pass/fail, so reviewer time defaults to the
+  // requirements a decision can actually act on. The toggle still reaches
+  // the hidden ones; nothing is ever deleted.
+  const [evaluableOnly, setEvaluableOnly] = useState(true);
   const [selected, setSelected] = useState(() => new Set());
   const [confirmAction, setConfirmAction] = useState(null);
   const { showToast } = useToast();
 
-  const queueState = useApi(() => api.getReviewQueue({ status }), [status]);
+  const queueState = useApi(
+    () => api.getReviewQueue({ status, evaluableOnly }),
+    [status, evaluableOnly]
+  );
 
   const groups = useMemo(
     () => (queueState.data ? groupBySource(queueState.data.requirements) : []),
@@ -177,14 +200,27 @@ export default function ReviewPage() {
     <div>
       <div className="flex-between">
         <h1>Review</h1>
-        <div className="field" style={{ marginBottom: 0, minWidth: 180 }}>
-          <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Filter by status">
-            {STATUS_OPTIONS.map((s) => (
-              <option key={s} value={s}>
-                {s.replace(/_/g, " ")}
-              </option>
-            ))}
-          </select>
+        <div className="flex" style={{ gap: "var(--space-3)" }}>
+          <label
+            className="flex"
+            title="Hide requirements whose field can never resolve to pass/fail (NOT_MODELED, or no field). Nothing is deleted - this only filters the view."
+          >
+            <input
+              type="checkbox"
+              checked={evaluableOnly}
+              onChange={(e) => setEvaluableOnly(e.target.checked)}
+            />
+            Evaluable only
+          </label>
+          <div className="field" style={{ marginBottom: 0, minWidth: 180 }}>
+            <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Filter by status">
+              {STATUS_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {s.replace(/_/g, " ")}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
