@@ -57,3 +57,6 @@ docker-compose.override.yml
 # OS
 .DS_Store
 Thumbs.db
+
+# Local dev DB backups (Phase 0 safety dumps) - never committed
+backups/
