@@ -59,6 +59,17 @@ NOISE_SELECTORS = [
 
 HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 
+# document_chunks.heading_path is VARCHAR(512). A real legislation page can
+# nest long headings deep enough to exceed that, and Postgres rejects the
+# insert where SQLite silently accepts it - so the path is bounded here, at
+# the one place that builds it. The *deepest* headings are kept because they
+# carry the specific context ("... > Age" beats "Eligibility > ..." when
+# something has to go), with a leading marker so a truncated path is never
+# mistaken for a complete one.
+MAX_HEADING_PATH_CHARS = 512
+HEADING_PATH_SEPARATOR = " > "
+TRUNCATION_MARKER = "..."
+
 
 @dataclass
 class Chunk:
@@ -118,6 +129,28 @@ def _list_to_text(list_tag) -> str:
     return "\n".join(f"- {i}" for i in items if i)
 
 
+def _heading_path(heading_stack: list[str]) -> str:
+    """Join a heading stack into "h1 > h2 > h3", bounded to the column width."""
+    path = HEADING_PATH_SEPARATOR.join(heading_stack)
+    if len(path) <= MAX_HEADING_PATH_CHARS:
+        return path
+
+    # Keep as many of the deepest headings as fit, then mark the cut.
+    kept: list[str] = []
+    budget = MAX_HEADING_PATH_CHARS - len(TRUNCATION_MARKER) - len(HEADING_PATH_SEPARATOR)
+    for heading in reversed(heading_stack):
+        cost = len(heading) + (len(HEADING_PATH_SEPARATOR) if kept else 0)
+        if cost > budget:
+            break
+        kept.insert(0, heading)
+        budget -= cost
+    if not kept:
+        # One heading alone is longer than the whole budget: hard-cut it.
+        only = heading_stack[-1][: MAX_HEADING_PATH_CHARS - len(TRUNCATION_MARKER)]
+        return f"{TRUNCATION_MARKER}{only}"
+    return HEADING_PATH_SEPARATOR.join([TRUNCATION_MARKER] + kept)
+
+
 def _walk_blocks(container, heading_stack: list[str], order_index: int):
     """Walk block-level elements in document order within `container`, starting
     from the given heading_stack/order_index (so callers can continue a single
@@ -139,7 +172,7 @@ def _walk_blocks(container, heading_stack: list[str], order_index: int):
             # Trim heading_stack to this level, then push
             heading_stack = heading_stack[: level - 1]
             heading_stack.append(text)
-            heading_path = " > ".join(heading_stack)
+            heading_path = _heading_path(heading_stack)
             order_index += 1
             chunks.append(Chunk("HEADING", heading_path, order_index, text))
             text_parts.append(text)
@@ -147,7 +180,7 @@ def _walk_blocks(container, heading_stack: list[str], order_index: int):
             text = el.get_text(strip=True)
             if not text or len(text) < 2:
                 continue
-            heading_path = " > ".join(heading_stack)
+            heading_path = _heading_path(heading_stack)
             order_index += 1
             chunks.append(Chunk("PARAGRAPH", heading_path, order_index, text))
             text_parts.append(text)
@@ -155,7 +188,7 @@ def _walk_blocks(container, heading_stack: list[str], order_index: int):
             text = _table_to_text(el)
             if not text:
                 continue
-            heading_path = " > ".join(heading_stack)
+            heading_path = _heading_path(heading_stack)
             order_index += 1
             chunks.append(Chunk("TABLE", heading_path, order_index, text))
             text_parts.append(text)
@@ -165,7 +198,7 @@ def _walk_blocks(container, heading_stack: list[str], order_index: int):
             text = _list_to_text(el)
             if not text:
                 continue
-            heading_path = " > ".join(heading_stack)
+            heading_path = _heading_path(heading_stack)
             order_index += 1
             chunks.append(Chunk("LIST", heading_path, order_index, text))
             text_parts.append(text)
