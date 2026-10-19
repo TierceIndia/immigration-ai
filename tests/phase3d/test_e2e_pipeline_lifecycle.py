@@ -66,7 +66,7 @@ def _mock_ok_fetch(monkeypatch):
             duration_ms=5, error=None,
         )
 
-    monkeypatch.setattr("fetch.fetcher.fetch", fetch)
+    monkeypatch.setattr("fetch.backend.fetch", fetch)
 
 
 @pytest.fixture()

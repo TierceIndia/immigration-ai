@@ -44,7 +44,7 @@ from db.repositories import PipelineRunRepo
 from rules.requirement_to_rule import compile_approved_requirements
 from rules.rule_repository import EnhancedRuleRepo
 from logging_config import get_logger
-from fetch.browser_fetcher import BrowserSession
+from fetch.backend import new_session as new_fetch_session
 from fetch.politeness import host_of
 from fetch.timing import SourceTiming, format_timing_table
 from orchestration.host_cooldown import blocked_until
@@ -383,7 +383,7 @@ def sync_source(session: Session, source_id: str,
                 browser_session=None) -> SyncResult:
     """Run the full sync pipeline for one government source.
 
-    ``browser_session`` (item 4): an optional shared ``BrowserSession``,
+    ``browser_session``: an optional shared retrieval session,
     passed through to ``fetch_document_and_store`` so a batch of sources in
     one sync run can reuse a single already-running browser. The standalone/
     single-source path (no session passed) is unaffected.
@@ -680,10 +680,10 @@ def sync_all_sources(session: Session, dry_run: bool = False,
     that were checked more recently than their ``crawl_frequency``. Manual and
     on-demand syncs always re-fetch, so an admin can force a refresh.
 
-    Item 4: every source in this run shares one ``BrowserSession`` instead of
-    each escalated source launching its own browser. It is lazy (nothing
-    launches until the first source actually escalates) and always closed at
-    the end of the run, success or failure.
+    Every source in this run shares ONE browser (fetch.backend.new_session()),
+    with a fresh context per source so cookies and storage never leak between
+    sources. It is lazy - nothing launches until the first actual fetch - and
+    always closed at the end of the run, success or failure.
     """
     now = datetime.now(timezone.utc)
     sources = (
@@ -692,7 +692,7 @@ def sync_all_sources(session: Session, dry_run: bool = False,
         .all()
     )
     results = []
-    browser_session = BrowserSession() if not dry_run else None
+    browser_session = new_fetch_session() if not dry_run else None
     try:
         results = _sync_sources(session, sources, dry_run, trigger_type, now, browser_session)
     finally:

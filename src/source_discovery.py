@@ -35,7 +35,11 @@ import dotenv
 from bs4 import BeautifulSoup
 
 from db.repositories import DiscoveredSourceRepo, SourceRepo
-from fetch.fetcher import FetchResult, fetch as _default_fetch
+# Discovery retrieves through the same single backend as the sync path
+# (Playwright), so it obeys the same User-Agent, politeness, robots and proxy
+# rules. Still injectable: tests pass their own fetch_fn.
+from fetch.backend import fetch as _default_fetch
+from fetch.fetcher import FetchResult
 
 # In TESTS, dotenv loading is suppressed so a developer's .env cannot leak
 # keys into the hermetic suite (conftest strips them at module load).

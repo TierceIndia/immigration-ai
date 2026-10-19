@@ -235,7 +235,7 @@ class TestFullKnowledgeToAssessment:
         session.commit()
 
         # --- Step 1: Sync government source → extract → compile → activate rules ---
-        monkeypatch.setattr("fetch.fetcher.fetch", _ok_fetch(FIXTURE_AU_189))
+        monkeypatch.setattr("fetch.backend.fetch", _ok_fetch(FIXTURE_AU_189))
         result = sync_source(session, SOURCE_ID, trigger_type="ON_DEMAND")
         assert result.status == "changed"
         session.commit()

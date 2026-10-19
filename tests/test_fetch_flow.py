@@ -112,6 +112,7 @@ def _ok_result(url):
     return fetcher.FetchResult(
         url=url, status=fetcher.FetchStatus.OK, http_status=200,
         content_type="text/html", raw_bytes=HTML_OK, duration_ms=50, error=None,
+        acquisition="playwright_page",
     )
 
 
@@ -119,6 +120,7 @@ def _blocked_result(url):
     return fetcher.FetchResult(
         url=url, status=fetcher.FetchStatus.ACCESS_BLOCKED, http_status=403,
         content_type=None, raw_bytes=None, duration_ms=100, error="403 Forbidden",
+        acquisition="playwright_page",
     )
 
 
@@ -126,7 +128,7 @@ def _requires_browser_result(url):
     return fetcher.FetchResult(
         url=url, status=fetcher.FetchStatus.REQUIRES_BROWSER, http_status=403,
         content_type="text/html", raw_bytes=None, duration_ms=100,
-        error="Challenge page detected",
+        error="Challenge page detected", acquisition="playwright_page",
     )
 
 
@@ -137,7 +139,7 @@ class TestFetchDocumentAndStorePlainOK:
     def test_first_sync_stores_everything(self, session, monkeypatch):
         _seed_source(session)
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _ok_result(url))
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: _ok_result(url))
 
         outcome = fetch_document_and_store(session, source)
         session.commit()
@@ -150,7 +152,7 @@ class TestFetchDocumentAndStorePlainOK:
 
         assert outcome.timing is not None
         assert outcome.timing.source_id == "SRC-AU-189"
-        assert outcome.timing.method == "http"
+        assert outcome.timing.method == "playwright_page"
         assert outcome.timing.total_ms >= 0
         assert outcome.timing.extract_ms is not None
         # Browser never ran on a clean plain-HTTP fetch.
@@ -195,16 +197,16 @@ class TestFetchDocumentAndStorePlainOK:
             return fetcher.FetchResult(
                 url=url, status=fetcher.FetchStatus.FETCH_FAILED, http_status=504,
                 content_type=None, raw_bytes=None, duration_ms=5000, error="timeout",
-                limiter_wait_ms=30, http_ms=5000,
+                limiter_wait_ms=30, http_ms=5000, acquisition="playwright_page",
             )
 
-        monkeypatch.setattr(fetcher, "fetch", failing_fetch)
+        monkeypatch.setattr("fetch.backend.fetch", failing_fetch)
         outcome = fetch_document_and_store(session, source)
         session.commit()
 
         assert outcome.document_id is None
         assert outcome.timing is not None
-        assert outcome.timing.method == "http"
+        assert outcome.timing.method == "playwright_page"
         assert outcome.timing.limiter_wait_ms == 30
         assert outcome.timing.http_ms == 5000
         # A failed fetch never stores a document.
@@ -213,7 +215,7 @@ class TestFetchDocumentAndStorePlainOK:
     def test_second_sync_unchanged_returns_unchanged(self, session, monkeypatch):
         _seed_source(session)
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _ok_result(url))
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: _ok_result(url))
 
         outcome1 = fetch_document_and_store(session, source)
         session.commit()
@@ -243,7 +245,7 @@ class TestExtractRequirementsScopeFlag:
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
         source.extract_requirements = False
         session.commit()
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _ok_result(url))
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: _ok_result(url))
 
         outcome = fetch_document_and_store(session, source)
         session.commit()
@@ -267,7 +269,7 @@ class TestExtractRequirementsScopeFlag:
         _seed_source(session)
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
         assert source.extract_requirements is True
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _ok_result(url))
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: _ok_result(url))
 
         outcome = fetch_document_and_store(session, source)
         session.commit()
@@ -282,12 +284,12 @@ class TestExtractRequirementsScopeFlag:
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
         source.extract_requirements = False
         session.commit()
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _ok_result(url))
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: _ok_result(url))
         fetch_document_and_store(session, source)
         session.commit()
 
         changed_html = HTML_OK.replace(b"under 45", b"under 50")
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: fetcher.FetchResult(
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: fetcher.FetchResult(
             url=url, status=fetcher.FetchStatus.OK, http_status=200,
             content_type="text/html", raw_bytes=changed_html, duration_ms=50, error=None,
         ))
@@ -313,7 +315,7 @@ class TestConditionalGetOrchestration:
 
         _seed_source(session)
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
-        monkeypatch.setattr(fetcher, "fetch", ok_with_validators)
+        monkeypatch.setattr("fetch.backend.fetch", ok_with_validators)
 
         fetch_document_and_store(session, source)
         session.commit()
@@ -339,7 +341,7 @@ class TestConditionalGetOrchestration:
                 not_modified=True, etag=etag, last_modified=last_modified,
             )
 
-        monkeypatch.setattr(fetcher, "fetch", capture_fetch)
+        monkeypatch.setattr("fetch.backend.fetch", capture_fetch)
         outcome = fetch_document_and_store(session, source)
         session.commit()
 
@@ -365,7 +367,7 @@ class TestConditionalGetOrchestration:
             browser_called["called"] = True
             return _ok_result(url)
 
-        monkeypatch.setattr(fetcher, "fetch", not_modified_fetch)
+        monkeypatch.setattr("fetch.backend.fetch", not_modified_fetch)
         monkeypatch.setattr(browser_fetcher, "fetch_with_browser", fake_browser)
 
         outcome = fetch_document_and_store(session, source)
@@ -403,7 +405,7 @@ class TestConditionalGetOrchestration:
                 not_modified=True,
             )
 
-        monkeypatch.setattr(fetcher, "fetch", not_modified_fetch)
+        monkeypatch.setattr("fetch.backend.fetch", not_modified_fetch)
         outcome = fetch_document_and_store(session, source)
         session.commit()
 
@@ -414,60 +416,90 @@ class TestConditionalGetOrchestration:
         assert session.query(DocumentVersion).filter_by(document_id="DOC-AU-189").count() == 1
 
 
-class TestFetchDocumentAndStoreBrowserEscalation:
-    def test_access_blocked_does_not_escalate_to_browser(self, session, monkeypatch):
-        """Item 2 / B4: a real 401/403/429 refusal is the origin telling us
-        "no", not "render me properly" - a browser hitting the same URL
-        cannot change that answer, so it must never even be tried. Only
-        REQUIRES_BROWSER (a rendering problem a browser can plausibly fix)
-        escalates."""
+class TestThereIsNoEscalation:
+    """Retrieval is Playwright-only, so there is exactly one attempt per
+    source and nothing to escalate to. These tests pin that: whatever the
+    single fetch returns is what gets recorded, and the retired
+    browser-escalation entry point is never called for any status.
+    """
+
+    def _trap_legacy_browser(self, monkeypatch):
+        called = {"count": 0}
+
+        def trap(url, source_type="HTML", **kw):
+            called["count"] += 1
+            return _ok_result(url)
+
+        monkeypatch.setattr(browser_fetcher, "fetch_with_browser", trap)
+        return called
+
+    def test_access_blocked_makes_no_second_attempt(self, session, monkeypatch):
+        """A real 401/403/429 is the origin telling us "no". It records the
+        host cooldown and stops; nothing about how we fetch changes."""
         _seed_source(session)
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
 
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _blocked_result(url))
-        browser_called = {"called": False}
+        calls = {"count": 0}
 
-        def fake_browser(url, source_type="HTML", **kw):
-            browser_called["called"] = True
-            return _ok_result(url)
+        def one_fetch(url, **kw):
+            calls["count"] += 1
+            return _blocked_result(url)
 
-        monkeypatch.setattr(browser_fetcher, "fetch_with_browser", fake_browser)
+        monkeypatch.setattr("fetch.backend.fetch", one_fetch)
+        legacy = self._trap_legacy_browser(monkeypatch)
 
         outcome = fetch_document_and_store(session, source)
         session.commit()
 
-        assert browser_called["called"] is False, "ACCESS_BLOCKED must make zero browser calls"
+        assert calls["count"] == 1, "exactly one retrieval attempt per source"
+        assert legacy["count"] == 0, "the retired escalation path must never run"
         assert outcome.status == "ACCESS_BLOCKED"
         assert outcome.document_id is None
-
+        # Still ACTIVE and still in the sync set - a refusal adds no knowledge
+        # and removes none.
         assert source.status == "ACTIVE"
         assert source.fetch_status == "ACCESS_BLOCKED"
 
-    def test_requires_browser_does_escalate(self, session, monkeypatch):
-        """A genuine rendering problem (JS/anti-bot challenge, empty SPA
-        shell) is exactly what browser escalation exists for."""
+    def test_challenge_page_is_reported_not_retried(self, session, monkeypatch):
+        """REQUIRES_BROWSER now means "a real browser was already used and was
+        still served a challenge page" - unrecoverable by automation, reported
+        honestly rather than retried."""
         _seed_source(session)
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
 
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _requires_browser_result(url))
-        browser_called = {"called": False}
+        calls = {"count": 0}
 
-        def fake_browser(url, source_type="HTML", **kw):
-            browser_called["called"] = True
-            return _ok_result(url)
+        def one_fetch(url, **kw):
+            calls["count"] += 1
+            return _requires_browser_result(url)
 
-        monkeypatch.setattr(browser_fetcher, "fetch_with_browser", fake_browser)
+        monkeypatch.setattr("fetch.backend.fetch", one_fetch)
+        legacy = self._trap_legacy_browser(monkeypatch)
 
         outcome = fetch_document_and_store(session, source)
         session.commit()
 
-        assert browser_called["called"] is True
-        assert outcome.status == "OK"
-        assert outcome.document_id is not None
-        assert outcome.demoted is None
-
+        assert calls["count"] == 1
+        assert legacy["count"] == 0
+        assert outcome.status == "REQUIRES_BROWSER"
+        assert outcome.document_id is None
+        assert source.fetch_status == "REQUIRES_BROWSER"
         assert source.status == "ACTIVE"
-        assert source.fetch_status == "OK"
+
+    def test_a_successful_fetch_is_a_single_playwright_page_acquisition(
+        self, session, monkeypatch,
+    ):
+        _seed_source(session)
+        source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: _ok_result(url))
+        legacy = self._trap_legacy_browser(monkeypatch)
+
+        outcome = fetch_document_and_store(session, source)
+        session.commit()
+
+        assert legacy["count"] == 0
+        assert outcome.status == "OK"
+        assert outcome.timing.method == "playwright_page"
 
 
 class TestFetchDocumentAndStoreFailure:
@@ -481,7 +513,7 @@ class TestFetchDocumentAndStoreFailure:
                 content_type=None, raw_bytes=None, duration_ms=5000, error="timeout",
             )
 
-        monkeypatch.setattr(fetcher, "fetch", failing_fetch)
+        monkeypatch.setattr("fetch.backend.fetch", failing_fetch)
         monkeypatch.setattr(browser_fetcher, "fetch_with_browser",
                             lambda url, **kw: _blocked_result(url))
 
@@ -513,7 +545,7 @@ class TestFetchDocumentAndStoreFailure:
             browser_called["called"] = True
             return _blocked_result(url)
 
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _blocked_result(url))
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: _blocked_result(url))
         monkeypatch.setattr(browser_fetcher, "fetch_with_browser", fake_browser)
 
         outcome = fetch_document_and_store(session, source)
@@ -545,7 +577,7 @@ class TestFetchDocumentAndStoreUnchanged:
         content_hash = sha256_bytes(HTML_OK)
         _seed_source_with_doc(session, content_hash=content_hash)
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _ok_result(url))
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: _ok_result(url))
 
         outcome = fetch_document_and_store(session, source)
         session.commit()
@@ -561,7 +593,7 @@ class TestFetchDocumentAndStoreNoChunks:
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").first()
 
         # Return empty HTML — extractor produces no chunks
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: fetcher.FetchResult(
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: fetcher.FetchResult(
             url=url, status=fetcher.FetchStatus.OK, http_status=200,
             content_type="text/html", raw_bytes=b"<html><body></body></html>",
             duration_ms=10, error=None,

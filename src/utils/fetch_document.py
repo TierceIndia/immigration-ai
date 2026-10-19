@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import dotenv
+import fetch.backend as fetch_backend
 import fetch.fetcher as fetcher
 from fetch.timing import SourceTiming
 
@@ -55,21 +56,19 @@ from logging_config import get_logger
 from orchestration.host_cooldown import clear_cooldown, is_refusal, start_cooldown
 from sqlalchemy.orm import Session
 
-import fetch.browser_fetcher as browser_fetcher
+# Retired retrieval path, reachable only via FETCH_BACKEND=legacy and deleted
+# in Phase 1d. Imported so the legacy switch keeps working until then; nothing
+# in the Playwright path touches it.
+import fetch.browser_fetcher as browser_fetcher  # noqa: F401
 
 logger = get_logger(__name__)
 
-# Browser escalation is for a rendering problem (a JS/anti-bot challenge
-# page, or an SPA shell with no static content) that a real browser session
-# can plausibly get past. ACCESS_BLOCKED (a real 401/403/429 refusal) is
-# deliberately excluded: that is the origin telling us "no", not "render me
-# properly", and a browser hitting the same URL cannot change that answer -
-# see orchestration/host_cooldown.py's own rule that a refusal is never
-# answered by changing *how* we fetch. Escalating anyway used to burn a full
-# Patchright launch + navigation on every blocked source for no benefit.
-_BROWSER_ESCALATION_STATUSES = {
-    fetcher.FetchStatus.REQUIRES_BROWSER,
-}
+# There is no escalation set any more. Retrieval is Playwright-only (see
+# fetch/backend.py and fetch/playwright_client.py): every source is fetched by
+# a real browser the first time, so there is no second mechanism to fall back
+# to and no way for a refusal to change how we fetch. The old set lived here
+# and once wrongly included ACCESS_BLOCKED, which burned a full browser launch
+# on every refused source for no possible benefit.
 
 
 # ---------------------------------------------------------------------------
@@ -654,30 +653,27 @@ def fetch_document_and_store(
     On fetch/parse failure the source diagnostics are updated and a ``FetchLog`` row records
     the outcome; blocked sources are demoted to ``NEEDS_MANUAL_CAPTURE``.
 
-    ``browser_session`` (item 4): an optional ``browser_fetcher.BrowserSession``
-    shared across a whole sync run, so escalating sources reuse one already-
-    running Chromium process instead of each launching and tearing down its
-    own. Standalone callers (no session) keep the original per-call behaviour.
+    ``browser_session``: an optional retrieval session shared across a whole
+    sync run (fetch.backend.new_session()), so one browser serves every source
+    instead of each launching and tearing down its own. Each source still gets
+    its own fresh context. Standalone callers (no session) get a private one
+    for the single fetch.
     """
     session = _resolve_session(session_or_engine)
     now = datetime.now(timezone.utc)
     source_type = (source.source_type or "HTML").upper()
     total_start = time.monotonic()
 
-    fetch_result = fetcher.fetch(
+    # One retrieval path (fetch/backend.py -> Playwright). There is no
+    # "escalate after a refusal" step any more: a 403/429 records the host
+    # cooldown and stops, and with a single mechanism there is structurally
+    # nothing to escalate to.
+    fetch_result = fetch_backend.fetch(
         source.url, source_type=source_type,
         etag=source.etag, last_modified=source.last_modified,
+        session=browser_session,
     )
-    acquisition = "http"
-    if fetch_result.status in _BROWSER_ESCALATION_STATUSES:
-        logger.info(
-            "Plain fetch blocked; escalating to genuine browser session",
-            extra={"source_id": source.source_id, "status": fetch_result.status.value},
-        )
-        fetch_result = browser_fetcher.fetch_with_browser(
-            source.url, source_type=source_type, browser_session=browser_session,
-        )
-        acquisition = "browser"
+    acquisition = fetch_result.acquisition or "unknown"
     if not fetch_result.ok:
         timing = _build_timing(source.source_id, acquisition, fetch_result, total_start)
         return _record_fetch_failure(session, source, fetch_result, now, timing=timing)
@@ -814,13 +810,15 @@ def fetch_document_and_store(
     source.last_error = None
     source.last_error_type = None
     source.consecutive_failures = 0
-    # Item 5: store this fetch's validators so the next one can ask for a
-    # conditional GET. A browser-escalated fetch never sets these (browsers
-    # don't send conditional headers here - see fetch_with_browser), which
-    # correctly means the next sync tries plain HTTP fresh rather than
-    # replaying stale validators from a different acquisition path.
-    source.etag = fetch_result.etag if acquisition == "http" else None
-    source.last_modified = fetch_result.last_modified if acquisition == "http" else None
+    # Store this fetch's validators so the next one can ask for a conditional
+    # GET. Both Playwright mechanisms carry them honestly - a page navigation
+    # reports the origin's ETag/Last-Modified, and the request API sends the
+    # conditional headers itself - so there is no acquisition path left that
+    # has to be excluded here. (This used to be gated on the retired plain-HTTP
+    # path, which silently disabled conditional GET once fetching became
+    # browser-only.)
+    source.etag = fetch_result.etag
+    source.last_modified = fetch_result.last_modified
 
     if change_type != "UNCHANGED":
         session.flush()  # ensure the document row is visible before the version FK is checked

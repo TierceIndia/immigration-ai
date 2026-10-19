@@ -16,6 +16,7 @@ All fetches are mocked so the suite stays hermetic and offline.
 from __future__ import annotations
 
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -136,10 +137,10 @@ def _patch_fetch(monkeypatch, raw_bytes):
         return fetcher.FetchResult(
             url=url, status=fetcher.FetchStatus.OK, http_status=200,
             content_type="text/html", raw_bytes=raw_bytes,
-            duration_ms=5, error=None,
+            duration_ms=5, error=None, acquisition="playwright_page",
         )
 
-    monkeypatch.setattr(fetcher, "fetch", fetch)
+    monkeypatch.setattr("fetch.backend.fetch", fetch)
     return calls
 
 
@@ -409,7 +410,7 @@ class TestFailedFetchDoesNotPoisonKnownGoodKnowledge:
         def _fetch_fails(url, source_type=None, **kw):
             raise RuntimeError("injected network failure")
 
-        monkeypatch.setattr(fetcher, "fetch", _fetch_fails)
+        monkeypatch.setattr("fetch.backend.fetch", _fetch_fails)
 
         result = sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
         session.commit()
@@ -447,7 +448,7 @@ class TestFailedFetchDoesNotPoisonKnownGoodKnowledge:
         def _fetch_fails(url, source_type=None, **kw):
             raise RuntimeError("injected outage on second sync")
 
-        monkeypatch.setattr(fetcher, "fetch", _fetch_fails)
+        monkeypatch.setattr("fetch.backend.fetch", _fetch_fails)
         sync_source(session, "SRC-AU-189", trigger_type="MANUAL")
         session.commit()
 
@@ -694,7 +695,7 @@ class TestSyncTimingSummary:
 
         timing = results[0].timing
         assert timing.source_id == "SRC-AU-189"
-        assert timing.method == "http"
+        assert timing.method == "playwright_page"
         assert timing.total_ms >= 0
         assert timing.limiter_wait_ms >= 0
         assert timing.extract_ms is not None
@@ -703,41 +704,65 @@ class TestSyncTimingSummary:
         assert timing.llm_wait_ms >= 0
 
 
-class TestSharedBrowserAcrossASyncRun:
-    """Item 4: sync_all_sources() shares one real browser across every
-    escalating source in the run, instead of each launching its own.
-    Drives the real BrowserSession/_patchright_fetch path through a fake
-    patchright.sync_api module - no real browser, no network."""
+class TestOneBrowserPerSyncRun:
+    """Item 4 / Phase 1b: sync_all_sources() launches ONE browser for the whole
+    run and gives every source its own fresh context. Retrieval is
+    Playwright-only, so this is no longer about "escalating" sources - it is
+    the normal path for every source.
+
+    Drives the real PlaywrightSession through its injectable launcher seam -
+    no real browser, no network.
+    """
+
+    class _FakeResponse:
+        def __init__(self, status=200, headers=None, body=b"", url=None):
+            self.status = status
+            self.headers = headers or {}
+            self._body = body
+            self.url = url
+
+        def body(self):
+            return self._body
 
     @staticmethod
-    def _install_fake_patchright(monkeypatch, status=200):
-        import sys
-        import types
+    def _install_fake_browser(monkeypatch, html=HTML_V1):
+        """Patch the sync run's session factory with a fake-launcher one.
 
-        sink = []
+        Returns the event sink: "launch" once per browser process,
+        "context.new" / "context.close" once per source.
+        """
+        from fetch.playwright_client import PlaywrightSession
 
-        class _FakeResponse:
-            def __init__(self):
-                self.status = status
-                self.headers = {"content-type": "text/html"}
+        sink: list[str] = []
+        outer = TestOneBrowserPerSyncRun
 
         class _FakePage:
             def set_default_timeout(self, ms):
                 pass
 
-            def route(self, pattern, handler):
-                pass
-
             def goto(self, url, wait_until=None):
-                return _FakeResponse()
+                return outer._FakeResponse(
+                    status=200, headers={"content-type": "text/html"}, url=url,
+                )
 
             def wait_for_selector(self, selector, timeout=None):
                 pass
 
             def content(self):
-                return "<html><body>" + ("blocked " * 10) + "</body></html>"
+                return html.decode("utf-8")
+
+            def close(self):
+                pass
+
+        class _FakeRequest:
+            def get(self, url, headers=None, timeout=None):
+                # robots.txt probe only - no robots file published.
+                return outer._FakeResponse(status=404, headers={}, body=b"", url=url)
 
         class _FakeContext:
+            def __init__(self):
+                self.request = _FakeRequest()
+
             def new_page(self):
                 return _FakePage()
 
@@ -746,6 +771,7 @@ class TestSharedBrowserAcrossASyncRun:
 
         class _FakeBrowser:
             def new_context(self, **kwargs):
+                sink.append("context.new")
                 return _FakeContext()
 
             def close(self):
@@ -756,25 +782,31 @@ class TestSharedBrowserAcrossASyncRun:
                 sink.append("launch")
                 return _FakeBrowser()
 
-        class _FakePatchright:
+        class _FakePlaywright:
             chromium = _FakeChromium()
 
-        class _FakeCM:
-            def __enter__(self):
-                return _FakePatchright()
+        @contextmanager
+        def _launcher():
+            yield _FakePlaywright()
 
-            def __exit__(self, *exc_info):
-                return False
-
-        sync_api = types.ModuleType("patchright.sync_api")
-        sync_api.sync_playwright = lambda: _FakeCM()
-        patchright_pkg = types.ModuleType("patchright")
-        patchright_pkg.sync_api = sync_api
-        monkeypatch.setitem(sys.modules, "patchright", patchright_pkg)
-        monkeypatch.setitem(sys.modules, "patchright.sync_api", sync_api)
+        monkeypatch.setattr(
+            "orchestration.government_sync.new_fetch_session",
+            lambda: PlaywrightSession(launcher=_launcher),
+        )
         return sink
 
-    def test_two_escalating_sources_share_one_browser_launch(self, session, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _fast_limiter(self):
+        """The real politeness limiter would sleep 8s between sources; these
+        tests exercise browser reuse, not the wait, so install a zero-wait one
+        and put the process-wide limiter back afterwards."""
+        from fetch.politeness import HostLimiter, reset_limiter, set_limiter
+
+        set_limiter(HostLimiter(min_interval=0, jitter=0, sleep=lambda _s: None))
+        yield
+        reset_limiter()
+
+    def test_two_sources_share_one_browser_launch(self, session, monkeypatch):
         session.merge(Country(country_id="AU", name="Australia", iso_code="AUS"))
         session.merge(ImmigrationProgram(
             program_id="SKILLED_189", country_id="AU", visa_category="SKILLED",
@@ -789,37 +821,42 @@ class TestSharedBrowserAcrossASyncRun:
                 status="ACTIVE",
             ))
         session.commit()
-
-        def requires_browser_fetch(url, source_type="HTML", **kw):
-            return fetcher.FetchResult(
-                url=url, status=fetcher.FetchStatus.REQUIRES_BROWSER, http_status=403,
-                content_type="text/html", raw_bytes=None, duration_ms=5, error="challenge",
-            )
-
-        monkeypatch.setattr(fetcher, "fetch", requires_browser_fetch)
-        # The browser's own response is a genuine 200 (not another block) -
-        # otherwise the first ACCESS_BLOCKED would pause the whole host and
-        # the second source would never even be attempted, which would not
-        # test browser reuse at all.
-        sink = self._install_fake_patchright(monkeypatch, status=200)
+        sink = self._install_fake_browser(monkeypatch)
 
         results = sync_all_sources(session, trigger_type="MANUAL")
         session.commit()
 
         assert len(results) == 2
+        # First sync of each source: the fake page body is new content.
+        assert all(r.status == "changed" for r in results), [r.status for r in results]
         assert sink.count("launch") == 1, f"expected exactly one browser launch, got: {sink}"
+        # Shared process, isolated contexts: cookies and storage never leak
+        # from one source to the next.
+        assert sink.count("context.new") == 2
         assert sink.count("context.close") == 2
         assert sink.count("browser.close") == 1
 
-    def test_browser_never_launched_when_no_source_escalates(self, session, monkeypatch):
+    def test_the_browser_is_never_launched_when_the_run_fetches_nothing(
+        self, session, monkeypatch,
+    ):
+        """The session is lazy: a dry run makes no request, so it must not pay
+        for a browser process at all."""
         _seed_source(session, "SRC-AU-189")
-        _patch_fetch(monkeypatch, HTML_V1)
-        sink = self._install_fake_patchright(monkeypatch)
+        sink = self._install_fake_browser(monkeypatch)
 
-        sync_all_sources(session, trigger_type="MANUAL")
+        sync_all_sources(session, trigger_type="MANUAL", dry_run=True)
         session.commit()
 
-        assert sink == [], "a plain-HTTP-only run must never launch a browser"
+        assert sink == [], "a run that fetches nothing must never launch a browser"
+
+    def test_every_source_is_acquired_by_the_page_mechanism(self, session, monkeypatch):
+        _seed_source(session, "SRC-AU-189")
+        self._install_fake_browser(monkeypatch)
+
+        results = sync_all_sources(session, trigger_type="MANUAL")
+        session.commit()
+
+        assert results[0].timing.method == "playwright_page"
 
 
 class TestStoredNewVsAttempts:

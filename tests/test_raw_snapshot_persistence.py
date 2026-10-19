@@ -129,7 +129,7 @@ def _ok_result(url, payload):
 
 
 def _fetch_html(session, source, payload, monkeypatch):
-    monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _ok_result(url, payload))
+    monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: _ok_result(url, payload))
     outcome = fetch_document_and_store(session, source)
     session.commit()
     return outcome

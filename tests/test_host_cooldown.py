@@ -294,19 +294,15 @@ class TestRecording:
                 return _blocked(url)
             return _fault(url)
 
-        import fetch.fetcher as fetcher_module
-        import fetch.browser_fetcher as browser_module
-        monkeypatch.setattr(fetcher_module, "fetch", fake_fetch)
-        monkeypatch.setattr(browser_module, "fetch_with_browser",
-                            lambda url, source_type="HTML", **kw: fake_fetch(url))
+        monkeypatch.setattr("fetch.backend.fetch", fake_fetch)
 
         sync_all_sources(session, trigger_type="MANUAL")
         session.commit()
 
-        # Set-based even though a 403 (ACCESS_BLOCKED) no longer escalates to
-        # the browser (item 2) and so never produces a second request for the
-        # same URL - the dedup still makes the point robustly: what matters is
-        # how many *sources* on that host were contacted at all.
+        # Set-based even though retrieval is single-path and so never produces
+        # a second request for the same URL - the dedup still makes the point
+        # robustly: what matters is how many *sources* on that host were
+        # contacted at all.
         refusing_asked = {u for u in asked_for if "refusing.example.invalid" in u}
         assert len(refusing_asked) == 1, (
             "the first 403 must stop the other two sources on that host "
@@ -345,7 +341,7 @@ class TestSuccessfulFetchClearsThePause:
         assert blocked_until(session, REFUSING) is not None
 
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").one()
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _ok(url))
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: _ok(url))
 
         outcome = fetch_document_and_store(session, source)
         session.commit()
@@ -367,7 +363,7 @@ class TestSuccessfulFetchClearsThePause:
         original = blocked_until(session, REFUSING)
 
         source = session.query(GovernmentSource).filter_by(source_id="SRC-AU-189").one()
-        monkeypatch.setattr(fetcher, "fetch", lambda url, **kw: _fault(url, 500))
+        monkeypatch.setattr("fetch.backend.fetch", lambda url, **kw: _fault(url, 500))
 
         outcome = fetch_document_and_store(session, source)
         session.commit()

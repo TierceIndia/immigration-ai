@@ -167,7 +167,7 @@ class TestFailureMetadataPersistence:
                 error="Failed to resolve", error_type=_classify_exception(exc),
             )
 
-        monkeypatch.setattr(fetcher, "fetch", fetch)
+        monkeypatch.setattr("fetch.backend.fetch", fetch)
         outcome = fetch_document_and_store(session, source)
         session.commit()
 
@@ -203,7 +203,7 @@ class TestFailureMetadataPersistence:
                 error=None, error_type=None,
             )
 
-        monkeypatch.setattr(fetcher, "fetch", fetch)
+        monkeypatch.setattr("fetch.backend.fetch", fetch)
         outcome = fetch_document_and_store(session, source)
         session.commit()
 

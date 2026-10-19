@@ -93,7 +93,7 @@ def _patch_fetch(monkeypatch, raw_bytes):
             url=url, status=fetcher.FetchStatus.OK, http_status=200,
             content_type="text/html", raw_bytes=raw_bytes, duration_ms=5, error=None,
         )
-    monkeypatch.setattr(fetcher, "fetch", fetch)
+    monkeypatch.setattr("fetch.backend.fetch", fetch)
 
 
 class _CountingMockLLMClient(MockLLMClient):

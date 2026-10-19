@@ -162,13 +162,13 @@ class TestVersionScopedExtraction:
         _seed(session)
         source = session.get(GovernmentSource, SOURCE_ID)
 
-        monkeypatch.setattr("fetch.fetcher.fetch", _ok_fetch(FIXTURE_V1))
+        monkeypatch.setattr("fetch.backend.fetch", _ok_fetch(FIXTURE_V1))
         out_v1 = fetch_document_and_store(session, source)
         assert out_v1.document_version == 1
         assert _evidence_consistent(session) == []
 
         # Change the content → version 2 → re-extraction over v2 chunks only.
-        monkeypatch.setattr("fetch.fetcher.fetch", _ok_fetch(FIXTURE_V2))
+        monkeypatch.setattr("fetch.backend.fetch", _ok_fetch(FIXTURE_V2))
         out_v2 = fetch_document_and_store(session, source)
         assert out_v2.document_version == 2
 

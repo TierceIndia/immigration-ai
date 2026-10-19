@@ -199,7 +199,7 @@ def _patch_fetch(monkeypatch, fail_urls=(), raw_bytes=HTML_V1):
             duration_ms=5, error=None,
         )
 
-    monkeypatch.setattr(fetcher, "fetch", fetch)
+    monkeypatch.setattr("fetch.backend.fetch", fetch)
     return calls
 
 

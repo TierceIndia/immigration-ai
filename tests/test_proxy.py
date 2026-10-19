@@ -150,15 +150,50 @@ class TestMalformedConfiguration:
         assert res.status == FetchStatus.NETWORK_RESTRICTED
         assert res.error_type == "proxy_config_error"
 
-    def test_a_misconfiguration_never_escalates_to_the_browser(self, monkeypatch):
-        # NETWORK_RESTRICTED is not an escalation trigger, so a broken proxy
-        # cannot quietly become a direct browser fetch.
-        from utils import fetch_document
+    def test_the_playwright_path_refuses_before_launching_a_browser(self, monkeypatch):
+        """Fail-closed on the only retrieval path there is: a broken
+        FETCH_PROXY_URL must not quietly become a direct fetch to a government
+        host. The launcher seam raises if anything tries to start a browser."""
+        from fetch import playwright_client
 
-        assert (
-            FetchStatus.NETWORK_RESTRICTED
-            not in fetch_document._BROWSER_ESCALATION_STATUSES
+        monkeypatch.setenv(ENV_VAR, "proxy.internal:3128")
+
+        def exploding_launcher():
+            raise AssertionError("a misconfigured proxy must launch nothing")
+
+        session = playwright_client.PlaywrightSession(launcher=exploding_launcher)
+        res = playwright_client.fetch(
+            "https://immi.homeaffairs.gov.au/189", session=session,
         )
+
+        assert res.status == FetchStatus.NETWORK_RESTRICTED
+        assert res.error_type == "proxy_config_error"
+        assert res.raw_bytes is None
+        assert session.browser is None
+
+    def test_a_misconfiguration_is_not_retried_by_another_mechanism(self, monkeypatch):
+        """There is no second mechanism: retrieval is Playwright-only, so a
+        NETWORK_RESTRICTED refusal is final rather than a cue to try something
+        else."""
+        import fetch.backend as backend
+
+        assert backend.active_backend() == backend.PLAYWRIGHT
+        calls: list[str] = []
+
+        def one_fetch(url, **kwargs):
+            calls.append(url)
+            return fetcher.FetchResult(
+                url=url, status=FetchStatus.NETWORK_RESTRICTED, http_status=None,
+                content_type=None, raw_bytes=None, duration_ms=1,
+                error="bad proxy", error_type="proxy_config_error",
+            )
+
+        monkeypatch.setattr("fetch.playwright_client.fetch", one_fetch)
+
+        res = backend.fetch("https://immi.homeaffairs.gov.au/189")
+
+        assert len(calls) == 1, calls
+        assert res.status == FetchStatus.NETWORK_RESTRICTED
 
 
 # ===========================================================================

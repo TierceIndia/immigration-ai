@@ -293,7 +293,7 @@ class TestPostgresPipelineLifecycle:
         run_repo = PipelineRunRepo(session)
 
         # ===================== STEP 1: government v1 =====================
-        monkeypatch.setattr("fetch.fetcher.fetch", _sandbox_fetch(FIXTURE_V1))
+        monkeypatch.setattr("fetch.backend.fetch", _sandbox_fetch(FIXTURE_V1))
         result_v1 = sync_source(session, SOURCE_ID, trigger_type="ON_DEMAND")
         session.expire_all()
         session.commit()
@@ -375,7 +375,7 @@ class TestPostgresPipelineLifecycle:
         assert active[0].value_json == "45"
 
         # ===================== STEP 3: government changes to v2 =====================
-        monkeypatch.setattr("fetch.fetcher.fetch", _sandbox_fetch(FIXTURE_V2))
+        monkeypatch.setattr("fetch.backend.fetch", _sandbox_fetch(FIXTURE_V2))
         result_v2 = sync_source(session, SOURCE_ID, trigger_type="ON_DEMAND")
         session.expire_all()
         session.commit()
