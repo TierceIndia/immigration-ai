@@ -114,6 +114,15 @@ class GovernmentSource(Base, TimestampMixin):
     # keeps today's behavior unless explicitly scoped out.
     extract_requirements = Column(Boolean, nullable=False, default=True)
 
+    # What kind of page this URL serves, which decides how it is chunked.
+    # PAGE (default): prose with headings - the ordinary block walk.
+    # NEWS_LIST: a dated "latest updates" listing - one chunk per
+    # announcement, each with its own date and link, so a change to one item
+    # is not indistinguishable from a change to the whole page. Kept separate
+    # from source_type (HTML/PDF, which decides how the bytes are fetched)
+    # because it is about structure, not transport.
+    content_kind = Column(String(16), nullable=False, default="PAGE")
+
     # Conditional GET (item 5): the validators the origin sent with the last
     # successful fetch, so the next request can ask "has this changed since
     # then?" instead of always re-downloading the full body.

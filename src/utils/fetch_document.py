@@ -50,6 +50,7 @@ from db.models import (
     GovernmentSource,
 )
 from fetch.extractor_html import extract_html as _extract_html
+from fetch.extractor_html import extract_news_list as _extract_news_list
 from fetch.extractor_pdf import extract_pdf as _extract_pdf
 from change_detection.hashing import sha256_bytes
 from logging_config import get_logger
@@ -736,6 +737,13 @@ def fetch_document_and_store(
         parsed = _extract_pdf(raw_bytes)
         chunk_rows = parsed.chunks
         needs_ocr = bool(getattr(parsed, "needs_ocr", False))
+        title = parsed.title or source.url
+    elif (source.content_kind or "PAGE").upper() == "NEWS_LIST":
+        # A dated listing: one chunk per announcement, so a change to one item
+        # is traceable to that item instead of looking like a whole-page
+        # rewrite. Falls back to the ordinary walk when no items are found.
+        parsed = _extract_news_list(raw_bytes, source.url)
+        chunk_rows = parsed.chunks
         title = parsed.title or source.url
     else:
         parsed = _extract_html(raw_bytes, source.url)

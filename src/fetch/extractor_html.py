@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
@@ -313,3 +314,162 @@ def extract_html(raw_bytes: bytes, source_url: str) -> ExtractionResult:
 
     clean_text = "\n\n".join(text_parts)
     return ExtractionResult(title=title, chunks=chunks, clean_text=clean_text)
+
+
+# ---------------------------------------------------------------------------
+# News / updates listings (content_kind = NEWS_LIST)
+# ---------------------------------------------------------------------------
+# A "latest updates" page is not prose with sections - it is a list of dated
+# items, each of which is its own announcement. Running the ordinary block walk
+# over it produces one giant LIST chunk whose text mixes unrelated items, so a
+# change to item 3 looks like a change to the whole page and a requirement
+# extracted from it cannot say which announcement it came from. Parsing the
+# items apart gives one chunk per announcement, each carrying its own date and
+# link, which is what makes "this changed on 1 October 2026" traceable.
+NEWS_ITEM_CONTAINER_SELECTORS = [
+    "ul.news-list", "ol.news-list",
+    "[class*=news-list]", "[class*=newslist]",
+    "[class*=media-list]", "[class*=update-list]",
+    "[class*=listing]",
+]
+NEWS_ITEM_SELECTORS = ["li", "article", "[class*=news-item]", "[class*=list-item]"]
+DATE_TAGS = ("time",)
+DATE_CLASS_HINT = "date"
+MIN_NEWS_ITEM_CHARS = 3
+
+
+def _item_title(item) -> str | None:
+    """The item's own headline: its link text, or its heading, or its first line."""
+    link = item.find("a")
+    if link is not None:
+        text = link.get_text(strip=True)
+        if text:
+            return text
+    for tag in sorted(HEADING_TAGS):
+        heading = item.find(tag)
+        if heading is not None:
+            text = heading.get_text(strip=True)
+            if text:
+                return text
+    text = item.get_text(" ", strip=True)
+    return text.split("  ")[0][:200] or None
+
+
+def _item_date(item) -> str | None:
+    """The item's published date: a <time datetime=...>, or a date-ish class."""
+    for tag_name in DATE_TAGS:
+        tag = item.find(tag_name)
+        if tag is not None:
+            return (tag.get("datetime") or tag.get_text(strip=True) or "").strip() or None
+    dated = item.find(class_=lambda c: c and DATE_CLASS_HINT in c.lower())
+    if dated is not None:
+        return dated.get_text(strip=True) or None
+    return None
+
+
+def _item_link(item, source_url: str) -> str | None:
+    link = item.find("a")
+    if link is None:
+        return None
+    href = (link.get("href") or "").strip()
+    if not href:
+        return None
+    if href.startswith(("http://", "https://")):
+        return href
+    return urljoin(source_url, href)
+
+
+def _item_summary(item) -> str:
+    """Everything the item says apart from its headline and its date."""
+    paragraphs = [p.get_text(" ", strip=True) for p in item.find_all("p")]
+    paragraphs = [p for p in paragraphs if p]
+    if paragraphs:
+        return "\n".join(paragraphs)
+    return item.get_text(" ", strip=True)
+
+
+def _news_items(container):
+    """The repeated item elements of a listing, without their nested children."""
+    for selector in NEWS_ITEM_SELECTORS:
+        items = [
+            el for el in container.select(selector)
+            # Only the outermost items: a nested <li> belongs to its parent item.
+            if el.find_parent(NEWS_ITEM_SELECTORS[0]) is None or el.name != "li"
+        ]
+        items = [el for el in items if el.get_text(strip=True)]
+        if items:
+            return items
+    return []
+
+
+def _news_containers(main):
+    found = []
+    for selector in NEWS_ITEM_CONTAINER_SELECTORS:
+        for el in main.select(selector):
+            if el not in found:
+                found.append(el)
+        if found:
+            break
+    return found or [main]
+
+
+def extract_news_list(raw_bytes: bytes, source_url: str) -> ExtractionResult:
+    """Parse a news/updates listing into one chunk per announcement.
+
+    Falls back to the ordinary block walk when no repeated items can be found,
+    so mislabelling a prose page as NEWS_LIST degrades to today's behaviour
+    rather than producing nothing.
+    """
+    soup = BeautifulSoup(raw_bytes, "html.parser")
+    title_tag = soup.find("title")
+    title = title_tag.get_text(strip=True) if title_tag else None
+    h1 = soup.find("h1")
+    page_heading = h1.get_text(strip=True) if h1 else None
+    if page_heading:
+        title = page_heading
+
+    cleaned = _clean_soup(soup)
+    main = _find_main_content(cleaned)
+
+    chunks: list[Chunk] = []
+    text_parts: list[str] = []
+    order_index = 0
+    for container in _news_containers(main):
+        for item in _news_items(container):
+            headline = _item_title(item)
+            if not headline or len(headline) < MIN_NEWS_ITEM_CHARS:
+                continue
+            published = _item_date(item)
+            link = _item_link(item, source_url)
+            summary = _item_summary(item)
+
+            lines = [headline]
+            if published:
+                lines.append(f"Published: {published}")
+            if summary and summary != headline:
+                lines.append(summary)
+            if link:
+                lines.append(f"Link: {link}")
+            body = "\n".join(lines)
+
+            order_index += 1
+            chunks.append(
+                Chunk(
+                    chunk_type="NEWS_ITEM",
+                    heading_path=_heading_path(
+                        [page_heading, headline] if page_heading else [headline]
+                    ),
+                    order_index=order_index,
+                    raw_text=body,
+                )
+            )
+            text_parts.append(body)
+
+    if not chunks:
+        # Not actually a listing (or a template this parser does not know):
+        # fall back rather than report a page with content as empty.
+        return extract_html(raw_bytes, source_url)
+
+    return ExtractionResult(
+        title=title, chunks=chunks, clean_text="\n\n".join(text_parts),
+    )

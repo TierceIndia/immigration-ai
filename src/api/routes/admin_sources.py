@@ -22,6 +22,27 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+# How a page is structured, which decides how it is chunked. Separate from
+# source_type (HTML/PDF), which decides how the bytes are fetched.
+_CONTENT_KINDS = {"PAGE", "NEWS_LIST"}
+_CONTENT_KIND_DESCRIPTION = (
+    "PAGE (default) chunks prose by heading. NEWS_LIST chunks a dated "
+    "'latest updates' listing into one chunk per announcement, each with its "
+    "own date and link, so a change to one item is traceable to that item "
+    "instead of looking like a whole-page rewrite."
+)
+
+
+def _normalise_content_kind(value: str) -> str:
+    """Accept any casing, reject anything not a known kind with a clear 422."""
+    kind = (value or "").strip().upper()
+    if kind not in _CONTENT_KINDS:
+        raise ValueError(
+            f"content_kind must be one of {sorted(_CONTENT_KINDS)}, got {value!r}"
+        )
+    return kind
+
+
 class SourceCreateRequest(BaseModel):
     source_id: str = Field(..., description="Unique source identifier (e.g. SRC-AU-189-MAIN)")
     country_id: str = Field(..., description="Country code (e.g. AU)")
@@ -42,6 +63,12 @@ class SourceCreateRequest(BaseModel):
                      "chunks) without ever calling the LLM - for a reference-only source whose "
                      "content is out of product scope.",
     )
+    content_kind: str = Field("PAGE", description=_CONTENT_KIND_DESCRIPTION)
+
+    @field_validator("content_kind")
+    @classmethod
+    def _validate_content_kind(cls, v: str) -> str:
+        return _normalise_content_kind(v)
 
 
 # Statuses an admin may explicitly set via PATCH. Other government_sources.status
@@ -66,6 +93,12 @@ class SourceUpdateRequest(BaseModel):
         None,
         description="Toggle requirement extraction for this source. See SourceCreateRequest.",
     )
+    content_kind: str | None = Field(None, description=_CONTENT_KIND_DESCRIPTION)
+
+    @field_validator("content_kind")
+    @classmethod
+    def _validate_content_kind(cls, v: str | None) -> str | None:
+        return None if v is None else _normalise_content_kind(v)
 
     @field_validator("status")
     @classmethod
@@ -91,6 +124,7 @@ class SourceResponse(BaseModel):
     crawl_frequency: str
     status: str
     extract_requirements: bool
+    content_kind: str
     last_checked_at: str | None = None
     last_successful_fetch_at: str | None = None
     last_hash: str | None = None
@@ -124,6 +158,7 @@ def _source_to_response(
         crawl_frequency=obj.crawl_frequency,
         status=obj.status,
         extract_requirements=obj.extract_requirements,
+        content_kind=obj.content_kind or "PAGE",
         last_checked_at=obj.last_checked_at.isoformat() if obj.last_checked_at else None,
         last_successful_fetch_at=obj.last_successful_fetch_at.isoformat() if obj.last_successful_fetch_at else None,
         last_hash=obj.last_hash,
@@ -210,6 +245,12 @@ class DiscoveryApproveRequest(BaseModel):
     monitoring_method: str = Field("WEB")
     crawl_frequency: str = Field("DAILY")
     notes: str | None = None
+    content_kind: str = Field("PAGE", description=_CONTENT_KIND_DESCRIPTION)
+
+    @field_validator("content_kind")
+    @classmethod
+    def _validate_content_kind(cls, v: str) -> str:
+        return _normalise_content_kind(v)
 
 
 class DiscoveryRejectRequest(BaseModel):
@@ -288,6 +329,7 @@ def approve_discovered(
             "crawl_frequency": body.crawl_frequency,
             "status": "ACTIVE",
             "notes": body.notes,
+            "content_kind": body.content_kind,
         }
         cand, source = repo.approve(
             discovered_source_id,
@@ -382,6 +424,7 @@ def create_source(
             status="ACTIVE",
             notes=body.notes,
             extract_requirements=body.extract_requirements,
+            content_kind=body.content_kind,
         )
         session.commit()
         return _source_to_response(obj, blocked_until(session, obj.url))
