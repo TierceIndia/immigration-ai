@@ -16,6 +16,7 @@ never changes in response to a refusal. See fetch/proxy.py.
 """
 from __future__ import annotations
 
+import os
 import socket
 import time
 from dataclasses import dataclass
@@ -27,7 +28,26 @@ import requests
 from fetch.politeness import HostLimiter, get_limiter
 from fetch.proxy import ProxyConfigError, requests_proxies
 
-USER_AGENT = "AU-Immigration-Source-Monitor/0.1"
+DEFAULT_USER_AGENT = "AU-Immigration-Source-Monitor/0.1"
+
+
+def user_agent() -> str:
+    """The one honest User-Agent every retrieval path sends.
+
+    Operator-overridable through ``FETCH_USER_AGENT`` so a deployment can
+    declare a real contact string, but there is exactly one value per process
+    and it is NEVER varied per request, per host, or in response to a refusal
+    - that would be UA rotation, which this project does not do (see the
+    module docstring and fetch/proxy.py's equivalent rule for the proxy).
+    """
+    raw = (os.getenv("FETCH_USER_AGENT") or "").strip()
+    return raw or DEFAULT_USER_AGENT
+
+
+# Back-compat module constant: the default value, for call sites and tests that
+# reference fetcher.USER_AGENT directly. Prefer user_agent() so the env var is
+# honoured.
+USER_AGENT = DEFAULT_USER_AGENT
 
 DEFAULT_TIMEOUT_SECONDS = 20
 MAX_RETRIES = 3
@@ -81,6 +101,13 @@ class FetchResult:
     etag: str | None = None
     last_modified: str | None = None
     not_modified: bool = False
+    # How this result was actually acquired, recorded verbatim in the raw
+    # snapshot manifest so an archived artifact says which mechanism produced
+    # it: "playwright_page" (real navigation + render) or
+    # "playwright_request" (Playwright's APIRequestContext, used for PDFs,
+    # robots.txt and conditional pre-checks). "http" is the legacy
+    # requests-based path, retired in Phase 1d.
+    acquisition: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -115,34 +142,64 @@ def _classify_exception(exc: BaseException) -> str:
     return "unknown"
 
 
+def looks_like_challenge_body(status_code: int | None, body_sample: str) -> bool:
+    """Whether a refusal body reads like a JS/anti-bot challenge page.
+
+    Transport-agnostic (see ``classify_response``): used only to *report*
+    REQUIRES_BROWSER honestly, never to attempt to defeat such a page.
+    """
+    if status_code not in (403, 429, 503):
+        return False
+    return any(marker in (body_sample or "")[:2000].lower() for marker in _CHALLENGE_MARKERS)
+
+
+def classify_response(
+    status_code: int | None,
+    headers: dict | None,
+    content: bytes | None,
+    source_type: str,
+) -> FetchStatus:
+    """Classify one response from primitives, independent of the HTTP client.
+
+    This is the single decision table both retrieval paths share - the
+    ``requests`` path below and fetch/playwright_client.py - so a status can
+    never be classified one way through one transport and another way through
+    the other. Header lookup is case-insensitive because Playwright lower-cases
+    header names while ``requests`` preserves them.
+    """
+    lowered = {str(k).lower(): v for k, v in (headers or {}).items()}
+    # This sandbox's egress proxy identifies itself explicitly - detect it rather than guess.
+    if "x-deny-reason" in lowered:
+        return FetchStatus.NETWORK_RESTRICTED
+    if status_code in (401, 403, 429):
+        body_sample = (content or b"")[:2000].decode("utf-8", errors="replace")
+        if looks_like_challenge_body(status_code, body_sample):
+            return FetchStatus.REQUIRES_BROWSER
+        return FetchStatus.ACCESS_BLOCKED
+    if status_code != 200:
+        return FetchStatus.FETCH_FAILED
+    # 200 - validate the body is actually usable
+    if not content or len(content) < 50:
+        return FetchStatus.INVALID_CONTENT
+    content_type = str(lowered.get("content-type") or "").lower()
+    if source_type == "PDF" and "pdf" not in content_type and not content.startswith(b"%PDF"):
+        return FetchStatus.REQUIRES_MANUAL_DOWNLOAD
+    return FetchStatus.OK
+
+
 def _looks_like_network_restriction(resp: requests.Response) -> bool:
     # This sandbox's egress proxy identifies itself explicitly - detect it rather than guess.
     return "x-deny-reason" in resp.headers
 
 
 def _looks_like_challenge_page(resp: requests.Response) -> bool:
-    if resp.status_code not in (403, 429, 503):
-        return False
-    body_sample = (resp.text or "")[:2000].lower()
-    return any(marker in body_sample for marker in _CHALLENGE_MARKERS)
+    return looks_like_challenge_body(resp.status_code, resp.text or "")
 
 
 def _classify_response(resp: requests.Response, source_type: str) -> FetchStatus:
-    if _looks_like_network_restriction(resp):
-        return FetchStatus.NETWORK_RESTRICTED
-    if resp.status_code in (401, 403, 429):
-        if _looks_like_challenge_page(resp):
-            return FetchStatus.REQUIRES_BROWSER
-        return FetchStatus.ACCESS_BLOCKED
-    if resp.status_code != 200:
-        return FetchStatus.FETCH_FAILED
-    # 200 - validate the body is actually usable
-    if not resp.content or len(resp.content) < 50:
-        return FetchStatus.INVALID_CONTENT
-    content_type = (resp.headers.get("Content-Type") or "").lower()
-    if source_type == "PDF" and "pdf" not in content_type and not resp.content.startswith(b"%PDF"):
-        return FetchStatus.REQUIRES_MANUAL_DOWNLOAD
-    return FetchStatus.OK
+    return classify_response(
+        resp.status_code, dict(resp.headers), resp.content, source_type,
+    )
 
 
 def _parse_crawl_delay(robots_text: str, user_agent: str = USER_AGENT) -> float | None:
@@ -226,15 +283,18 @@ def _honour_robots_crawl_delay(
         limiter.note_crawl_delay(url, crawl_delay)
 
 
-def _honour_retry_after(resp: requests.Response, url: str, limiter: HostLimiter) -> None:
+def honour_retry_after(
+    status_code: int | None, retry_after: str | None, url: str, limiter: HostLimiter,
+) -> None:
     """Register a 429/503 ``Retry-After`` so this host pauses, if present.
 
     Only the delta-seconds form is honoured; an HTTP-date is ignored rather
     than guessed at, which keeps the pause a plain, auditable number.
+    Transport-agnostic so both retrieval paths honour it identically.
     """
-    if resp.status_code not in (429, 503):
+    if status_code not in (429, 503):
         return
-    raw = (resp.headers.get("Retry-After") or "").strip()
+    raw = (retry_after or "").strip()
     if not raw:
         return
     try:
@@ -243,6 +303,10 @@ def _honour_retry_after(resp: requests.Response, url: str, limiter: HostLimiter)
         return  # HTTP-date form: ignored on purpose (see docstring)
     if seconds > 0:
         limiter.note_retry_after(url, seconds)
+
+
+def _honour_retry_after(resp: requests.Response, url: str, limiter: HostLimiter) -> None:
+    honour_retry_after(resp.status_code, resp.headers.get("Retry-After"), url, limiter)
 
 
 def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SECONDS,
