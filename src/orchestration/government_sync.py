@@ -126,6 +126,32 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     return dt
 
 
+_EMPTY_CONTENT_WARNINGS = {
+    "SCANNED_PDF": (
+        "Fetch succeeded and the PDF changed, but it has no text layer - it is "
+        "a scanned/image-only document. OCR is out of scope, so nothing could "
+        "be extracted; the document version and its raw snapshot are stored as "
+        "evidence. A human has to read this one."
+    ),
+    "NO_STATIC_CONTENT": (
+        "Fetch succeeded and content changed, but extraction produced zero "
+        "document chunks (e.g. a page that renders no structural content) - no "
+        "extraction was attempted. Content review recommended."
+    ),
+}
+
+
+def _empty_content_warning(reason: str | None) -> str:
+    """Say which kind of "nothing to extract" this was; they need different
+    human actions, so the warning must not collapse them."""
+    return _EMPTY_CONTENT_WARNINGS.get(
+        reason or "",
+        "Fetch succeeded and content changed, but extraction produced zero "
+        "document chunks - no extraction was attempted. Content review "
+        "recommended.",
+    )
+
+
 def _record_run_failure(session: Session, run: PipelineRun, error: str) -> PipelineRun:
     """Persist a FAILED PipelineRun on a healthy transaction.
 
@@ -506,9 +532,7 @@ def sync_source(session: Session, source_id: str,
         result.requirements_extracted = outcome.requirements_extracted
         result.stored_new = outcome.stored_new
         empty_content_warning = (
-            "Fetch succeeded and content changed, but extraction produced zero "
-            "document chunks (e.g. a JS-rendered page with no static content) — "
-            "no extraction was attempted. Content review recommended."
+            _empty_content_warning(outcome.empty_content_reason)
             if outcome.empty_content else None
         )
         return _finalize_change(

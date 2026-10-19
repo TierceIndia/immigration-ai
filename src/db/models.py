@@ -150,9 +150,14 @@ class GovernmentSource(Base, TimestampMixin):
             name="ck_source_status",
         ),
         CheckConstraint(
-            "fetch_status IS NULL OR fetch_status IN ('OK','FETCH_FAILED',"
-            "'ACCESS_BLOCKED','NETWORK_RESTRICTED','REQUIRES_BROWSER',"
-            "'REQUIRES_MANUAL_DOWNLOAD','INVALID_CONTENT')",
+            # The FetchStatus values, plus OK_EMPTY_CONTENT: retrieval and
+            # parsing both worked but there was nothing to extract (a scanned
+            # PDF, or a page that renders no structural content). That is
+            # neither a failure nor an ordinary success, and calling it "OK"
+            # hid sources that were quietly contributing no knowledge.
+            "fetch_status IS NULL OR fetch_status IN ('OK','OK_EMPTY_CONTENT',"
+            "'FETCH_FAILED','ACCESS_BLOCKED','NETWORK_RESTRICTED',"
+            "'REQUIRES_BROWSER','REQUIRES_MANUAL_DOWNLOAD','INVALID_CONTENT')",
             name="ck_source_fetch_status",
         ),
     )

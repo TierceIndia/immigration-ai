@@ -235,6 +235,16 @@ from requirement_repository import (  # noqa: E402
 )
 
 
+# A fetch that worked and a parse that found nothing is not a failure and not
+# an ordinary success - calling it "OK" hides a source that is quietly
+# contributing no knowledge. It gets its own honest value in
+# government_sources.fetch_status, which the sources list and the API already
+# surface, together with a machine-readable reason.
+OK_EMPTY_CONTENT = "OK_EMPTY_CONTENT"
+EMPTY_SCANNED_PDF = "SCANNED_PDF"
+EMPTY_NO_STATIC_CONTENT = "NO_STATIC_CONTENT"
+
+
 @dataclass
 class FetchStoreOutcome:
     source_id: str
@@ -256,6 +266,11 @@ class FetchStoreOutcome:
     # the caller (government_sync.sync_source) turns this into a visible
     # PARTIAL PipelineRun warning rather than a silent COMPLETED.
     empty_content: bool = False
+    # Why nothing was extracted, when empty_content is True: SCANNED_PDF (a
+    # PDF with no text layer - OCR is out of scope, so there is nothing to
+    # read) or NO_STATIC_CONTENT (a page that rendered no structural content).
+    # The two need different human actions, so they are not collapsed.
+    empty_content_reason: str | None = None
     timing: SourceTiming | None = None
 
 
@@ -751,6 +766,16 @@ def fetch_document_and_store(
         title = parsed.title or source.url
     extract_ms = int((time.monotonic() - extract_start) * 1000)
 
+    # Nothing extractable: honest about which of the two very different
+    # reasons it was, because they need different human actions - a scanned
+    # PDF needs OCR (out of scope) while a page with no static content needs
+    # a look at the page itself.
+    empty_content_reason = None
+    if not chunk_rows:
+        empty_content_reason = (
+            EMPTY_SCANNED_PDF if needs_ocr else EMPTY_NO_STATIC_CONTENT
+        )
+
     document_id = f"DOC-{source.source_id.replace('SRC-', '')}"
     existing = session.get(GovernmentDocument, document_id)
 
@@ -813,7 +838,7 @@ def fetch_document_and_store(
     source.last_checked_at = now
     source.last_successful_fetch_at = now
     source.status = "ACTIVE"
-    source.fetch_status = "OK"
+    source.fetch_status = OK_EMPTY_CONTENT if empty_content_reason else "OK"
     source.http_status = fetch_result.http_status
     source.last_error = None
     source.last_error_type = None
@@ -917,5 +942,6 @@ def fetch_document_and_store(
         requirements_extracted=requirements_extracted,
         stored_new=stored_new,
         empty_content=(change_type != "UNCHANGED" and not chunk_rows),
+        empty_content_reason=empty_content_reason,
         timing=timing,
     )
