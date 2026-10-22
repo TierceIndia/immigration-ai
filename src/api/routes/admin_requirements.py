@@ -17,10 +17,11 @@ from sqlalchemy.orm import Session
 from api.routes.auth import require_admin
 from db.connection import get_session, get_db_engine
 from db.models import (
-    DocumentVersion, GovernmentDocument, GovernmentSource,
+    DocumentChunk, DocumentVersion, GovernmentDocument, GovernmentSource,
     Requirement, RequirementEvidence, RequirementReview,
 )
 from db.repositories import RequirementRepo
+from extraction.citations import citation_for_chunk
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -115,6 +116,17 @@ def _req_to_summary(req: Requirement) -> dict:
     }
 
 
+def _chunks_by_id(session: Session, chunk_ids: list[int]) -> dict[int, DocumentChunk]:
+    """Load the chunks an evidence set points at, keyed by chunk_id."""
+    wanted = [cid for cid in dict.fromkeys(chunk_ids) if cid is not None]
+    if not wanted:
+        return {}
+    rows = session.execute(
+        select(DocumentChunk).where(DocumentChunk.chunk_id.in_(wanted))
+    ).scalars()
+    return {row.chunk_id: row for row in rows}
+
+
 def _req_to_review_item(session: Session, req: Requirement) -> dict:
     """The full review-feed shape for one requirement: everything a reviewer
     needs to judge it without a second round trip - the requirement itself,
@@ -127,8 +139,17 @@ def _req_to_review_item(session: Session, req: Requirement) -> dict:
     evidence_rows = list(session.execute(
         select(RequirementEvidence).where(RequirementEvidence.requirement_id == req.requirement_id)
     ).scalars())
+    chunk_by_id = _chunks_by_id(session, [e.chunk_id for e in evidence_rows])
     base["evidence"] = [
-        {"chunk_id": e.chunk_id, "evidence_text": e.evidence_text, "evidence_type": e.evidence_type}
+        {
+            "chunk_id": e.chunk_id,
+            "evidence_text": e.evidence_text,
+            "evidence_type": e.evidence_type,
+            # Where in the source this quote came from: "p. 12" for a PDF
+            # page, the heading path for an HTML section. Derived from the
+            # chunk, never stored as free text, so it cannot drift.
+            "citation": citation_for_chunk(chunk_by_id.get(e.chunk_id)),
+        }
         for e in evidence_rows
     ]
 

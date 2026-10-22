@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from db.models import (
+    DocumentChunk,
     DocumentVersion,
     ExtractionRun,
     GovernmentDocument,
@@ -18,6 +19,7 @@ from db.models import (
     RequirementEvidence,
     RequirementVersion,
 )
+from extraction.citations import citation_for_chunk
 from rules.rule_compiler import compile_requirement_to_rule
 from rules.rule_repository import EnhancedRuleRepo
 from logging_config import get_logger
@@ -45,11 +47,22 @@ def _load_requirement_dict(session: Session, req_orm: Requirement) -> dict[str, 
         .filter(RequirementEvidence.requirement_id == req_orm.requirement_id)
         .all()
     )
+    chunk_by_id: dict[int, DocumentChunk] = {}
+    wanted = [e.chunk_id for e in evidence_rows if e.chunk_id is not None]
+    if wanted:
+        chunk_by_id = {
+            c.chunk_id: c
+            for c in session.query(DocumentChunk)
+            .filter(DocumentChunk.chunk_id.in_(wanted))
+            .all()
+        }
     evidence_list = [
         {
             "chunk_id": e.chunk_id,
             "evidence_text": e.evidence_text,
             "evidence_type": e.evidence_type,
+            # "p. 12" for a PDF page, the heading path for an HTML section.
+            "citation": citation_for_chunk(chunk_by_id.get(e.chunk_id)),
         }
         for e in evidence_rows
     ]
