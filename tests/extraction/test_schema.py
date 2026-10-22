@@ -110,11 +110,30 @@ def test_field_enum_accepts_not_modeled_with_concept():
 
 def test_field_enum_rejects_an_invented_dotted_name():
     req = dict(VALID_REQUIREMENT)
-    req["field"] = "applicant.visa_history"  # not in the closed vocabulary - must use NOT_MODELED
+    req["field"] = "applicant.financial_capacity"  # not in the closed vocabulary - must use NOT_MODELED
     payload = {"requirements": [req]}
     result = validate_schema(payload)
     assert not result.ok
     print("PASS: an invented dotted field name outside the closed vocabulary is rejected by schema")
+
+
+def test_field_enum_accepts_the_newly_modelled_concepts():
+    # Phase 4 grew the closed vocabulary; the schema has to accept the new
+    # applicant facts, or the extractor would be sending legal names that
+    # its own schema rejects.
+    for field in (
+        "applicant.visa_history",
+        "applicant.employer_sponsored",
+        "applicant.work_experience_years",
+        "applicant.in_australia_at_application",
+        "applicant.has_health_insurance",
+        "applicant.genuine_temporary_entrant",
+    ):
+        req = dict(VALID_REQUIREMENT)
+        req["field"] = field
+        result = validate_schema({"requirements": [req]})
+        assert result.ok, (field, result.errors)
+    print("PASS: every newly modelled applicant concept is in the schema's closed vocabulary")
 
 
 def test_field_enum_accepts_null():

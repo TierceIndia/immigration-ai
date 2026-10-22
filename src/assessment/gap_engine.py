@@ -43,6 +43,13 @@ _FIELD_QUESTIONS: dict[str, str] = {
     "character_status": "Have you completed your character assessment? (UNKNOWN/PASSED/FAILED)",
     "has_regional_nomination": "Do you have a regional nomination?",
     "visa_subclass_detail": "What visa subclass are you applying for?",
+    # First batch of newly modelled applicant concepts (Phase 4).
+    "visa_history": "What is your Australian visa history? (NONE/PRIOR_GRANTED/PRIOR_REFUSED/PRIOR_CANCELLED/PRIOR_REMOVED)",
+    "employer_sponsored": "Are you sponsored by an employer?",
+    "work_experience_years": "How many years of relevant work experience do you have?",
+    "in_australia_at_application": "Will you be in Australia when you lodge your application?",
+    "has_health_insurance": "Do you hold health insurance that covers you in Australia?",
+    "genuine_temporary_entrant": "Do you meet the genuine temporary entrant test?",
 }
 
 

@@ -345,6 +345,9 @@ def _build_profile_data(applicant_orm) -> dict:
         "age", "english_level", "points", "occupation",
         "skills_assessment_status", "health_status", "character_status",
         "has_regional_nomination", "visa_subclass",
+        "visa_history", "employer_sponsored", "work_experience_years",
+        "in_australia_at_application", "has_health_insurance",
+        "genuine_temporary_entrant",
     ):
         val = getattr(applicant_orm, field_name, None)
         if val is not None:

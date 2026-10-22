@@ -75,18 +75,33 @@ def test_already_not_modeled_untouched():
 
 
 def test_non_evaluable_field_demoted_to_not_modeled():
-    field, concept, note = normalize_field("applicant.visa_history", "REQUIREMENT")
+    # applicant.financial_capacity is a real eligibility concept that still
+    # has no modeled applicant fact, so it must be demoted.
+    field, concept, note = normalize_field("applicant.financial_capacity", "REQUIREMENT")
     assert field == "NOT_MODELED"
-    assert concept == "applicant.visa_history"
+    assert concept == "applicant.financial_capacity"
     assert note is not None and "NOT_MODELED" in note
     print("PASS: a non-evaluable field is demoted to NOT_MODELED, original preserved as concept")
 
 
 def test_non_evaluable_field_keeps_a_separately_supplied_concept():
-    field, concept, note = normalize_field("applicant.visa_history", "REQUIREMENT", "visa_history_bridging_count")
+    field, concept, note = normalize_field(
+        "applicant.financial_capacity", "REQUIREMENT", "financial_capacity"
+    )
     assert field == "NOT_MODELED"
-    assert concept == "visa_history_bridging_count"
+    assert concept == "financial_capacity"
     print("PASS: a model-supplied concept is kept rather than overwritten by the raw field string")
+
+
+def test_the_newly_modelled_visa_history_is_evaluable():
+    # applicant.visa_history was the canonical example of a NOT_MODELED
+    # concept; Phase 4 gave the applicant a real visa_history fact, so it
+    # must now survive normalization as an evaluable field.
+    field, concept, note = normalize_field("applicant.visa_history", "REQUIREMENT")
+    assert field == "applicant.visa_history"
+    assert concept is None
+    assert note is None
+    print("PASS: a newly modelled applicant concept is no longer demoted")
 
 
 def test_field_vocabulary_only_applies_to_requirement_rows():

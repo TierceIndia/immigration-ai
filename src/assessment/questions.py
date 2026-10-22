@@ -117,6 +117,43 @@ class QuestionBank:
             accepted_values=["189", "190", "491", "476"],
             value_type="string",
         ),
+        # First batch of newly modelled applicant concepts (Phase 4).
+        "visa_history": QuestionDefinition(
+            field="visa_history",
+            text="What is your Australian visa history?",
+            accepted_values=[
+                "NONE", "PRIOR_GRANTED", "PRIOR_REFUSED",
+                "PRIOR_CANCELLED", "PRIOR_REMOVED",
+            ],
+            value_type="string",
+        ),
+        "employer_sponsored": QuestionDefinition(
+            field="employer_sponsored",
+            text="Are you sponsored by an employer?",
+            value_type="boolean",
+        ),
+        "work_experience_years": QuestionDefinition(
+            field="work_experience_years",
+            text="How many years of relevant work experience do you have?",
+            value_type="integer",
+            min_val=0,
+            max_val=80,
+        ),
+        "in_australia_at_application": QuestionDefinition(
+            field="in_australia_at_application",
+            text="Will you be in Australia when you lodge your application?",
+            value_type="boolean",
+        ),
+        "has_health_insurance": QuestionDefinition(
+            field="has_health_insurance",
+            text="Do you hold health insurance that covers you in Australia?",
+            value_type="boolean",
+        ),
+        "genuine_temporary_entrant": QuestionDefinition(
+            field="genuine_temporary_entrant",
+            text="Do you meet the genuine temporary entrant test?",
+            value_type="boolean",
+        ),
     }
 
     @classmethod
@@ -157,5 +194,20 @@ class AnswerNormalizer:
             if isinstance(raw_answer, bool):
                 return raw_answer
             return str(raw_answer).strip().lower() in ("yes", "true", "1")
+
+        if field == "visa_history":
+            return str(raw_answer).strip().upper()
+
+        if field in ("employer_sponsored", "in_australia_at_application",
+                     "has_health_insurance", "genuine_temporary_entrant"):
+            if isinstance(raw_answer, bool):
+                return raw_answer
+            return str(raw_answer).strip().lower() in ("yes", "true", "1")
+
+        if field == "work_experience_years":
+            try:
+                return int(raw_answer)
+            except (ValueError, TypeError):
+                return raw_answer
 
         return raw_answer

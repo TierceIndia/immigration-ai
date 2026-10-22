@@ -717,6 +717,15 @@ class ApplicantProfile(Base, TimestampMixin):
     character_status = Column(String(32))
     has_regional_nomination = Column(Boolean)
     visa_subclass = Column(String(8))
+    # First batch of newly modelled applicant concepts (Phase 4). Each one is
+    # a fact an applicant can supply, so a rule that references it can resolve
+    # to PASS/FAIL instead of always UNKNOWN.
+    visa_history = Column(String(32))
+    employer_sponsored = Column(Boolean)
+    work_experience_years = Column(Integer)
+    in_australia_at_application = Column(Boolean)
+    has_health_insurance = Column(Boolean)
+    genuine_temporary_entrant = Column(Boolean)
 
     __table_args__ = (Index("idx_applicant_user", "user_id"),)
 

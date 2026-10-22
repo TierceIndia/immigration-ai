@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +10,18 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 # Applicant
 # ---------------------------------------------------------------------------
+class VisaIntake(BaseModel):
+    """The visa program an applicant is applying for."""
+    program_id: str = Field(..., examples=["SKILLED_189", "SKILLED_190", "SKILLED_491"])
+
+
+# The closed value vocabulary for the applicant's prior Australian visa
+# history. Mirrors schema/applicant_intake.schema.json.
+VisaHistory = Literal[
+    "NONE", "PRIOR_GRANTED", "PRIOR_REFUSED", "PRIOR_CANCELLED", "PRIOR_REMOVED"
+]
+
+
 class ApplicantCreate(BaseModel):
     first_name: str | None = None
     last_name: str | None = None
@@ -25,6 +37,13 @@ class ApplicantCreate(BaseModel):
     character_status: str | None = None
     has_regional_nomination: bool | None = None
     visa_subclass: str | None = None
+    # First batch of newly modelled applicant concepts (Phase 4).
+    visa_history: VisaHistory | None = None
+    employer_sponsored: bool | None = None
+    work_experience_years: int | None = None
+    in_australia_at_application: bool | None = None
+    has_health_insurance: bool | None = None
+    genuine_temporary_entrant: bool | None = None
 
 
 class ApplicantUpdate(BaseModel):
@@ -39,6 +58,13 @@ class ApplicantUpdate(BaseModel):
     character_status: str | None = None
     has_regional_nomination: bool | None = None
     visa_subclass: str | None = None
+    # First batch of newly modelled applicant concepts (Phase 4).
+    visa_history: VisaHistory | None = None
+    employer_sponsored: bool | None = None
+    work_experience_years: int | None = None
+    in_australia_at_application: bool | None = None
+    has_health_insurance: bool | None = None
+    genuine_temporary_entrant: bool | None = None
 
 
 class ApplicantResponse(BaseModel):
@@ -55,7 +81,40 @@ class ApplicantResponse(BaseModel):
     character_status: str | None = None
     has_regional_nomination: bool | None = None
     visa_subclass: str | None = None
+    # First batch of newly modelled applicant concepts (Phase 4).
+    visa_history: str | None = None
+    employer_sponsored: bool | None = None
+    work_experience_years: int | None = None
+    in_australia_at_application: bool | None = None
+    has_health_insurance: bool | None = None
+    genuine_temporary_entrant: bool | None = None
     created_at: datetime | None = None
+
+
+class ApplicantIntake(BaseModel):
+    """The full intake payload for an eligibility assessment.
+
+    Mirrors schema/applicant_intake.schema.json. Every fact except ``visa``
+    is optional: an omitted fact stays *missing* (the rule engine answers
+    UNKNOWN for it), which is deliberately different from a fact that was
+    supplied and does not meet a threshold (FAIL).
+    """
+    visa: VisaIntake
+    age: int | None = Field(default=None, ge=0, le=120)
+    english_level: str | None = None
+    points: int | None = Field(default=None, ge=0, le=200)
+    occupation: str | None = None
+    skills_assessment_status: str | None = None
+    health_status: str | None = None
+    character_status: str | None = None
+    has_regional_nomination: bool | None = None
+    visa_subclass: str | None = None
+    visa_history: VisaHistory | None = None
+    employer_sponsored: bool | None = None
+    work_experience_years: int | None = Field(default=None, ge=0, le=80)
+    in_australia_at_application: bool | None = None
+    has_health_insurance: bool | None = None
+    genuine_temporary_entrant: bool | None = None
 
 
 # ---------------------------------------------------------------------------

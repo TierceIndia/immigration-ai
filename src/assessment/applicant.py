@@ -41,6 +41,15 @@ class ApplicantProfile:
     character_status: str | None = None  # UNKNOWN|PASSED|FAILED
     has_regional_nomination: bool | None = None
     visa_subclass: str | None = None  # e.g. "189", "190", "476"
+    # --- first batch of newly modelled applicant concepts (Phase 4) ---
+    # Each one is a fact the applicant can supply, so a rule that references
+    # it can resolve to PASS/FAIL instead of always UNKNOWN.
+    visa_history: str | None = None  # NONE|PRIOR_GRANTED|PRIOR_REFUSED|PRIOR_CANCELLED|PRIOR_REMOVED
+    employer_sponsored: bool | None = None
+    work_experience_years: int | None = None
+    in_australia_at_application: bool | None = None
+    has_health_insurance: bool | None = None
+    genuine_temporary_entrant: bool | None = None
 
     def to_dict(self) -> dict:
         """Full serialization including None fields."""
@@ -55,6 +64,12 @@ class ApplicantProfile:
             "character_status": self.character_status,
             "has_regional_nomination": self.has_regional_nomination,
             "visa_subclass": self.visa_subclass,
+            "visa_history": self.visa_history,
+            "employer_sponsored": self.employer_sponsored,
+            "work_experience_years": self.work_experience_years,
+            "in_australia_at_application": self.in_australia_at_application,
+            "has_health_insurance": self.has_health_insurance,
+            "genuine_temporary_entrant": self.genuine_temporary_entrant,
         }
 
     @classmethod
@@ -78,6 +93,12 @@ class ApplicantProfile:
             character_status=d.get("character_status"),
             has_regional_nomination=d.get("has_regional_nomination"),
             visa_subclass=d.get("visa_subclass"),
+            visa_history=d.get("visa_history"),
+            employer_sponsored=d.get("employer_sponsored"),
+            work_experience_years=d.get("work_experience_years"),
+            in_australia_at_application=d.get("in_australia_at_application"),
+            has_health_insurance=d.get("has_health_insurance"),
+            genuine_temporary_entrant=d.get("genuine_temporary_entrant"),
         )
 
     def to_rule_data(self) -> dict[str, Any]:
@@ -111,4 +132,16 @@ class ApplicantProfile:
             data["has_regional_nomination"] = self.has_regional_nomination
         if self.visa_subclass is not None:
             data["visa_subclass"] = self.visa_subclass
+        if self.visa_history is not None:
+            data["visa_history"] = self.visa_history
+        if self.employer_sponsored is not None:
+            data["employer_sponsored"] = self.employer_sponsored
+        if self.work_experience_years is not None:
+            data["work_experience_years"] = self.work_experience_years
+        if self.in_australia_at_application is not None:
+            data["in_australia_at_application"] = self.in_australia_at_application
+        if self.has_health_insurance is not None:
+            data["has_health_insurance"] = self.has_health_insurance
+        if self.genuine_temporary_entrant is not None:
+            data["genuine_temporary_entrant"] = self.genuine_temporary_entrant
         return data

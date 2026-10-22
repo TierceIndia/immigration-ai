@@ -56,7 +56,7 @@ logger = get_logger(__name__)
 if not os.environ.get("TESTING"):
     dotenv.load_dotenv()  # load OPENAI_API_KEY from .env if present (prod/dev only)
 
-PROMPT_VERSION = "requirement_extraction_v3"
+PROMPT_VERSION = "requirement_extraction_v4"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 OPENAI_PROVIDER = "openai"
 GEMINI_PROVIDER = "gemini"
@@ -193,7 +193,7 @@ class MockLLMClient(LLMClient):
 
     model_name = "mock-llm-v1"
 
-    # Mirrors requirement_normalizer._EVALUABLE_FIELDS (the v3 closed vocabulary):
+    # Mirrors requirement_normalizer._EVALUABLE_FIELDS (the v4 closed vocabulary):
     # a compliant extractor - mock or real - only ever emits one of these, or
     # NOT_MODELED. Kept as a literal copy rather than an import so this mock has
     # no dependency on the real normalizer's internals - it simulates what a
@@ -203,6 +203,9 @@ class MockLLMClient(LLMClient):
         "applicant.required_points", "applicant.occupation", "applicant.skills_assessment",
         "applicant.health_check", "applicant.character_check",
         "applicant.has_regional_nomination", "applicant.visa_subclass",
+        "applicant.visa_history", "applicant.employer_sponsored",
+        "applicant.work_experience_years", "applicant.in_australia_at_application",
+        "applicant.has_health_insurance", "applicant.genuine_temporary_entrant",
     }
 
     def __init__(self, model: str | None = None, visa_category: str | None = None,

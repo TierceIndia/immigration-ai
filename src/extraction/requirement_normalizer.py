@@ -49,7 +49,7 @@ _VALID_CATEGORIES = {
     "DEBT", "VALUES_STATEMENT", "VISA_HISTORY",
 }
 
-# Closed field vocabulary (v3) - must match ApplicantProfile.to_rule_data()'s
+# Closed field vocabulary (v4) - must match ApplicantProfile.to_rule_data()'s
 # real output keys and rule_engine._FIELD_ALIASES exactly (with the
 # "applicant." prefix the extraction prompt/schema uses), or a rule compiled
 # from this requirement can never evaluate to PASS/FAIL, only UNKNOWN - see
@@ -61,6 +61,12 @@ _EVALUABLE_FIELDS = {
     "applicant.required_points", "applicant.occupation", "applicant.skills_assessment",
     "applicant.health_check", "applicant.character_check",
     "applicant.has_regional_nomination", "applicant.visa_subclass",
+    # First batch of newly modelled applicant concepts (Phase 4). These six
+    # were the concepts most often demoted to NOT_MODELED because the
+    # applicant could not supply them; they are now real, askable facts.
+    "applicant.visa_history", "applicant.employer_sponsored",
+    "applicant.work_experience_years", "applicant.in_australia_at_application",
+    "applicant.has_health_insurance", "applicant.genuine_temporary_entrant",
 }
 
 

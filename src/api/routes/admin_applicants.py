@@ -1,4 +1,4 @@
-"""Admin-only, read-only applicant visibility.
+﻿"""Admin-only, read-only applicant visibility.
 
 Deliberately separate from applicants.py/assessments.py: those routes stay
 scoped to the authenticated end-user's OWN applicant records (unchanged by
@@ -36,6 +36,13 @@ class AdminApplicantResponse(BaseModel):
     character_status: str | None = None
     has_regional_nomination: bool | None = None
     visa_subclass: str | None = None
+    # First batch of newly modelled applicant concepts (Phase 4).
+    visa_history: str | None = None
+    employer_sponsored: bool | None = None
+    work_experience_years: int | None = None
+    in_australia_at_application: bool | None = None
+    has_health_insurance: bool | None = None
+    genuine_temporary_entrant: bool | None = None
     created_at: str | None = None
 
 
@@ -75,6 +82,12 @@ def _to_response(applicant: ApplicantProfile, owner_email: str) -> AdminApplican
         character_status=applicant.character_status,
         has_regional_nomination=applicant.has_regional_nomination,
         visa_subclass=applicant.visa_subclass,
+        visa_history=applicant.visa_history,
+        employer_sponsored=applicant.employer_sponsored,
+        work_experience_years=applicant.work_experience_years,
+        in_australia_at_application=applicant.in_australia_at_application,
+        has_health_insurance=applicant.has_health_insurance,
+        genuine_temporary_entrant=applicant.genuine_temporary_entrant,
         created_at=applicant.created_at.isoformat() if applicant.created_at else None,
     )
 

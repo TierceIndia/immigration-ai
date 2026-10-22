@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://immigration-knowledge.local/schema/applicant_intake.schema.json",
+  "title": "Applicant intake",
+  "description": "The facts an applicant can supply about themselves. This is the intake contract: the set of fields the assessment engine can ask about, the type of each answer, and the closed value vocabulary where one exists. Every field is optional - a field that was not supplied stays missing (UNKNOWN), which is deliberately different from a field that was supplied and fails (FAIL).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "visa": {
+      "type": "object",
+      "description": "The visa program being applied for. Required.",
+      "additionalProperties": false,
+      "properties": {
+        "program_id": {
+          "type": "string",
+          "description": "The immigration program id, e.g. SKILLED_189, SKILLED_190, SKILLED_491.",
+          "examples": ["SKILLED_189"]
+        }
+      },
+      "required": ["program_id"]
+    },
+    "age": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 120,
+      "description": "Age in years at the time of application."
+    },
+    "english_level": {
+      "type": ["string", "null"],
+      "enum": ["none", "vocational", "competent", "proficient", "superior", null],
+      "description": "Highest demonstrated English proficiency."
+    },
+    "points": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 200,
+      "description": "Points test score."
+    },
+    "occupation": {
+      "type": ["string", "null"],
+      "description": "ANZSCO occupation code."
+    },
+    "skills_assessment_status": {
+      "type": ["string", "null"],
+      "enum": ["NOT_APPLICABLE", "PENDING", "VALID", "INVALID", "EXEMPT", null],
+      "description": "Status of the skills assessment."
+    },
+    "health_status": {
+      "type": ["string", "null"],
+      "enum": ["UNKNOWN", "PASSED", "FAILED", null],
+      "description": "Result of the health examination."
+    },
+    "character_status": {
+      "type": ["string", "null"],
+      "enum": ["UNKNOWN", "PASSED", "FAILED", null],
+      "description": "Result of the character assessment."
+    },
+    "has_regional_nomination": {
+      "type": ["boolean", "null"],
+      "description": "Whether the applicant holds a regional nomination."
+    },
+    "visa_subclass": {
+      "type": ["string", "null"],
+      "description": "The subclass code being applied for, e.g. 189, 190, 476."
+    },
+    "visa_history": {
+      "type": ["string", "null"],
+      "enum": ["NONE", "PRIOR_GRANTED", "PRIOR_REFUSED", "PRIOR_CANCELLED", "PRIOR_REMOVED", null],
+      "description": "The applicant's prior Australian visa history. NONE means no prior application; PRIOR_GRANTED means a visa was granted; PRIOR_REFUSED / PRIOR_CANCELLED / PRIOR_REMOVED record how a prior application ended."
+    },
+    "employer_sponsored": {
+      "type": ["boolean", "null"],
+      "description": "Whether the applicant is sponsored by an employer."
+    },
+    "work_experience_years": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 80,
+      "description": "Years of relevant work experience."
+    },
+    "in_australia_at_application": {
+      "type": ["boolean", "null"],
+      "description": "Whether the applicant is physically in Australia when the application is lodged."
+    },
+    "has_health_insurance": {
+      "type": ["boolean", "null"],
+      "description": "Whether the applicant holds current health insurance covering them in Australia."
+    },
+    "genuine_temporary_entrant": {
+      "type": ["boolean", "null"],
+      "description": "Whether the applicant is a genuine temporary entrant (the genuine temporary entrant test)."
+    }
+  },
+  "required": ["visa"]
+}
