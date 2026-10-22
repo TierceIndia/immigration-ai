@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from assessment.applicant import APPLICANT_FACT_FIELDS
 from rules.models import Rule, RuleEvaluation, EvaluationStatus, EligibilityResult
 from rules.operators import evaluate_operator
 
@@ -22,6 +23,42 @@ _FIELD_ALIASES: dict[str, str] = {
     "health_check": "health_status",
     "character_check": "character_status",
 }
+
+# The facts an applicant can supply, plus the program the assessment is for.
+# A rule whose field resolves to none of these is documentation, not a check:
+# no applicant has the fact, so the rule can never reach PASS or FAIL.
+MODELLED_APPLICANT_FIELDS: frozenset[str] = frozenset(APPLICANT_FACT_FIELDS) | {
+    "program_id",
+}
+
+
+def resolve_field_name(rule_field: str | None) -> str | None:
+    """Canonical applicant fact a rule's field refers to.
+
+    Returns None when the field refers to nothing the applicant can supply:
+    a blank field, the literal ``NOT_MODELED`` placeholder, or a name outside
+    the modelled fact set. The alias table is applied here, so
+    ``applicant.points_score`` and ``applicant.required_points`` both resolve
+    to ``points``.
+    """
+    if not rule_field:
+        return None
+    if rule_field == "NOT_MODELED":
+        return None
+    normalized = rule_field[len("applicant."):] if rule_field.startswith("applicant.") else rule_field
+    normalized = _FIELD_ALIASES.get(normalized, normalized)
+    return normalized if normalized in MODELLED_APPLICANT_FIELDS else None
+
+
+def is_field_evaluable(rule_field: str | None) -> bool:
+    """Whether a rule's field can ever be answered by an applicant.
+
+    This is a property of the rule alone, not of any particular applicant:
+    it says "somebody could supply this", not "this applicant supplied it".
+    A rule that is not evaluable always evaluates to UNKNOWN in practice, so
+    the admin UI badges it and requires an explicit confirmation to activate.
+    """
+    return resolve_field_name(rule_field) is not None
 
 
 def _resolve_field_value(rule_field: str, applicant_data: dict[str, Any]) -> Any:

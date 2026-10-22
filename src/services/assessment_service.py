@@ -13,7 +13,6 @@ Pipeline:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timezone
 
@@ -26,6 +25,7 @@ from db.repositories import (
 )
 from rules.expressions import ANDNode, RuleLeaf
 from rules.models import Rule, RuleStatus, EvaluationStatus
+from rules.ruleset_hash import compute_ruleset_hash
 from assessment.applicant import ApplicantProfile as Phase3CProfile, VisaSelection
 from assessment.assessment import assess_eligibility as _assess, EligibilityOutcome
 from assessment.gap_engine import GapEngine, Gap
@@ -358,23 +358,11 @@ def _build_profile_data(applicant_orm) -> dict:
 def _compute_ruleset_hash(program_id: str, rules) -> str:
     """Compute a deterministic hash of the exact rule-version set used in an assessment.
 
-    Accepts a list of ``(rule_id, version_number)`` tuples OR a list of ``rules.models.Rule``
-    dataclasses (both are used by callers/tests). If any rule version changes, the hash changes.
+    Thin wrapper over ``rules.ruleset_hash.compute_ruleset_hash`` - kept here so
+    existing callers keep working; the implementation lives with the rules so
+    the admin rule checker can fingerprint a ruleset the same way.
     """
-    def _fingerprints(rules):
-        for rule in rules:
-            if isinstance(rule, (tuple, list)):
-                rid, ver = rule
-            else:
-                rid, ver = rule.rule_id, rule.version
-            yield f"{rid}:v{ver}"
-
-    rule_fingerprints = sorted(_fingerprints(rules))
-    payload = json.dumps({
-        "program_id": program_id,
-        "rules": rule_fingerprints,
-    }, sort_keys=True)
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+    return compute_ruleset_hash(program_id, rules)
 
 
 def _resolve_rule_versions(session, rules: list[Rule]) -> dict[str, tuple[int, int] | None]:

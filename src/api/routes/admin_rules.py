@@ -13,15 +13,25 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from api.routes.auth import require_admin
+from assessment.applicant import APPLICANT_FACT_FIELDS, ApplicantProfile, VisaSelection
 from db.connection import get_session, get_db_engine
 from db.models import DocumentChunk, Rule as RuleORM, RuleVersion
 from extraction.citations import citation_for_chunk
 from logging_config import get_logger
-from rules.rule_repository import EnhancedRuleRepo
+from rules.rule_checker import check_rules
+from rules.rule_engine import is_field_evaluable
+from rules.rule_repository import EnhancedRuleRepo, orm_to_dataclass
 from rules.rule_activation import can_transition
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+
+# The exact word an admin has to type to activate a rule that no applicant
+# field can ever answer. Anything else (including a boolean flag) is
+# refused, so the confirmation cannot be fired by accident or by a script
+# that does not understand what it is confirming.
+NOT_EVALUABLE_CONFIRMATION = "ACTIVATE"
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +39,9 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 class RuleActionRequest(BaseModel):
     notes: str | None = None
+    # Typed confirmation, required only when the rule's field is not
+    # something an applicant can supply. See NOT_EVALUABLE_CONFIRMATION.
+    confirm_not_evaluable: str | None = None
 
 
 class RuleResponse(BaseModel):
@@ -50,6 +63,10 @@ class RuleResponse(BaseModel):
     # page, the heading path for an HTML section, None when the rule has no
     # chunk anchor at all.
     citation: str | None = None
+    # Whether an applicant field can ever answer this rule. False means the
+    # rule is real source material that no applicant profile can satisfy -
+    # it will always evaluate as UNKNOWN.
+    evaluable: bool = True
     created_at: str | None = None
 
 
@@ -64,6 +81,34 @@ class ReviewQueueResponse(BaseModel):
 class BatchActionRequest(BaseModel):
     rule_ids: list[str]
     notes: str | None = None
+    # Typed confirmation, required when ANY rule in the batch is not
+    # evaluable. See NOT_EVALUABLE_CONFIRMATION.
+    confirm_not_evaluable: str | None = None
+
+
+class RuleCheckRequest(BaseModel):
+    """A dry run of the rules against a hypothetical applicant."""
+    program_id: str
+    # The applicant's facts, using the intake field names.
+    profile: dict[str, Any] = Field(default_factory=dict)
+    # Which rules to check. Defaults to the program's ACTIVE rules; an admin
+    # can also check a specific rule (any status) before activating it.
+    rule_ids: list[str] | None = None
+
+
+class RuleCheckResponse(BaseModel):
+    program_id: str
+    overall_status: str
+    business_status: str
+    total_rules: int
+    passed: int
+    failed: int
+    unknown: int
+    not_applicable: int
+    ruleset_hash: str
+    evaluated_at: str
+    results: list[dict]
+    gaps: list[dict]
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +148,34 @@ def _orm_to_response(obj: RuleORM, citation: str | None = None) -> RuleResponse:
         current_version=obj.current_version or 1,
         evidence_text=obj.evidence_text,
         citation=citation,
+        evaluable=is_field_evaluable(obj.field),
         created_at=obj.created_at.isoformat() if obj.created_at else None,
     )
+
+
+def _require_evaluable_confirmation(rule_field: str | None, confirmation: str | None) -> None:
+    """Refuse to activate a rule no applicant field can answer, unless the
+    admin explicitly typed the confirmation word.
+
+    A rule like "you must hold a valid invitation at the time of
+    application" is genuine source material, but nothing in the applicant
+    profile can answer it, so it will evaluate as UNKNOWN for every applicant
+    forever. That is a legitimate thing to activate - the requirement may
+    still be worth recording - but it should never be a click that happens
+    by accident, so it takes a typed confirmation.
+    """
+    if is_field_evaluable(rule_field):
+        return
+    if confirmation != NOT_EVALUABLE_CONFIRMATION:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Rule field {rule_field!r} is not evaluable - no applicant field "
+                f"supplies it, so this rule will always evaluate as UNKNOWN. "
+                f"To activate it anyway, repeat the request with "
+                f"confirm_not_evaluable=\"{NOT_EVALUABLE_CONFIRMATION}\"."
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -203,11 +274,21 @@ def batch_activate(
     request: Request,
     current_user: dict = Depends(require_admin),
 ):
-    """Batch APPROVED â†’ ACTIVE (each transactionally supersedes old version)."""
+    """Batch APPROVED → ACTIVE (each transactionally supersedes old version)."""
     actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
+
+        # The typed confirmation covers the whole batch: if ANY rule in it
+        # is not evaluable, the admin has to confirm - a batch is exactly
+        # where a guard that can be skipped one rule at a time would leak.
+        for rule_id in body.rule_ids:
+            obj = repo.get(rule_id)
+            if obj is None:
+                continue
+            _require_evaluable_confirmation(obj.field, body.confirm_not_evaluable)
+
         results = []
         for rule_id in body.rule_ids:
             try:
@@ -217,6 +298,59 @@ def batch_activate(
                 logger.warning("Batch activate failed for rule",
                                extra={"rule_id": rule_id, "error": str(e)})
         return results
+
+
+@router.post("/evaluate", response_model=RuleCheckResponse)
+def evaluate_rules(
+    body: RuleCheckRequest,
+    request: Request,
+    current_user: dict = Depends(require_admin),
+):
+    """Dry-run the rules against a hypothetical applicant.
+
+    Deterministic and side-effect free: no LLM call, no network request, no
+    database write. The admin gets per-rule PASS/FAIL/UNKNOWN with a plain
+    explanation, the overall verdict, the gaps to ask about, and a hash of
+    exactly which rule versions produced the report.
+    """
+    engine = get_db_engine(request)
+    with get_session(engine) as session:
+        repo = EnhancedRuleRepo(session)
+
+        if body.rule_ids:
+            rules = []
+            for rule_id in body.rule_ids:
+                obj = repo.get(rule_id)
+                if obj is None:
+                    raise HTTPException(status_code=404, detail=f"Rule {rule_id} not found")
+                rules.append(orm_to_dataclass(obj))
+        else:
+            rules = [
+                orm_to_dataclass(obj)
+                for obj in repo.list_active(body.program_id)
+            ]
+
+        if not rules:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No rules to check for program {body.program_id}",
+            )
+
+        # Only facts the applicant profile actually carries are used; an
+        # unknown key in the request is ignored rather than silently
+        # becoming a rule input.
+        facts = {
+            name: body.profile[name]
+            for name in APPLICANT_FACT_FIELDS
+            if body.profile.get(name) is not None
+        }
+        applicant = ApplicantProfile(
+            visa=VisaSelection(program_id=body.program_id),
+            **facts,
+        )
+
+        report = check_rules(rules, applicant.to_rule_data(), body.program_id)
+        return report.to_dict()
 
 
 @router.get("/{rule_id}", response_model=RuleResponse)
@@ -302,11 +436,15 @@ def activate_rule(
     request: Request,
     current_user: dict = Depends(require_admin),
 ):
-    """APPROVED â†’ ACTIVE. Transactionally supersedes any existing active version."""
+    """APPROVED → ACTIVE. Transactionally supersedes any existing active version."""
     actor = _actor_from(current_user)
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = EnhancedRuleRepo(session)
+        existing = repo.get(rule_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        _require_evaluable_confirmation(existing.field, body.confirm_not_evaluable)
         try:
             obj = repo.activate_rule(rule_id, actor=actor)
             return _orm_to_response(obj, _citation_for(session, obj))

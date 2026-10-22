@@ -42,6 +42,7 @@ from db.models import (
 from change_detection.change_detector import ChangeType, classify_change
 from db.repositories import PipelineRunRepo
 from rules.requirement_to_rule import compile_approved_requirements
+from rules.rule_engine import is_field_evaluable
 from rules.rule_repository import EnhancedRuleRepo
 from logging_config import get_logger
 from fetch.backend import new_session as new_fetch_session
@@ -804,22 +805,26 @@ def get_review_queue(session: Session, program_id: str | None = None) -> dict[st
         "drafts": [
             {"rule_id": r.rule_id, "program_id": r.program_id,
              "field": r.field, "category": r.category,
+             "evaluable": is_field_evaluable(r.field),
              "created_at": r.created_at.isoformat() if r.created_at else None}
             for r in drafts
         ],
         "validated": [
             {"rule_id": r.rule_id, "program_id": r.program_id,
-             "field": r.field, "category": r.category}
+             "field": r.field, "category": r.category,
+             "evaluable": is_field_evaluable(r.field)}
             for r in validated
         ],
         "approved_pending": [
             {"rule_id": r.rule_id, "program_id": r.program_id,
-             "field": r.field, "category": r.category}
+             "field": r.field, "category": r.category,
+             "evaluable": is_field_evaluable(r.field)}
             for r in approved
         ],
         "active": [
             {"rule_id": r.rule_id, "program_id": r.program_id,
              "field": r.field, "category": r.category,
+             "evaluable": is_field_evaluable(r.field),
              "version": r.current_version}
             for r in active
         ],

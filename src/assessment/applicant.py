@@ -10,10 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
 @dataclass
 class VisaSelection:
     """Visa program selection — required for every assessment."""
+
     program_id: str  # e.g. "SKILLED_189", "SKILLED_190", "SKILLED_491"
 
     def to_dict(self) -> dict:
@@ -22,6 +22,33 @@ class VisaSelection:
     @classmethod
     def from_dict(cls, d: dict) -> VisaSelection:
         return cls(program_id=d["program_id"])
+
+
+# The applicant facts this profile carries. Every entry is something an
+# applicant can supply (or explicitly leave empty), which is what makes a
+# rule that references one resolvable to PASS/FAIL instead of always UNKNOWN.
+#
+# This tuple is the single source of truth for the fact list: to_dict(),
+# from_dict(), to_rule_data() and the rule engine's evaluability check all
+# read it, so a fact cannot be added to one place and forgotten in another.
+APPLICANT_FACT_FIELDS: tuple[str, ...] = (
+    "age",
+    "english_level",
+    "points",
+    "occupation",
+    "skills_assessment_status",
+    "health_status",
+    "character_status",
+    "has_regional_nomination",
+    "visa_subclass",
+    # --- first batch of newly modelled applicant concepts (Phase 4) ---
+    "visa_history",
+    "employer_sponsored",
+    "work_experience_years",
+    "in_australia_at_application",
+    "has_health_insurance",
+    "genuine_temporary_entrant",
+)
 
 
 @dataclass
@@ -53,24 +80,10 @@ class ApplicantProfile:
 
     def to_dict(self) -> dict:
         """Full serialization including None fields."""
-        return {
-            "visa": self.visa.to_dict(),
-            "age": self.age,
-            "english_level": self.english_level,
-            "points": self.points,
-            "occupation": self.occupation,
-            "skills_assessment_status": self.skills_assessment_status,
-            "health_status": self.health_status,
-            "character_status": self.character_status,
-            "has_regional_nomination": self.has_regional_nomination,
-            "visa_subclass": self.visa_subclass,
-            "visa_history": self.visa_history,
-            "employer_sponsored": self.employer_sponsored,
-            "work_experience_years": self.work_experience_years,
-            "in_australia_at_application": self.in_australia_at_application,
-            "has_health_insurance": self.has_health_insurance,
-            "genuine_temporary_entrant": self.genuine_temporary_entrant,
-        }
+        data: dict[str, Any] = {"visa": self.visa.to_dict()}
+        for name in APPLICANT_FACT_FIELDS:
+            data[name] = getattr(self, name)
+        return data
 
     @classmethod
     def from_dict(cls, d: dict) -> ApplicantProfile:
@@ -82,24 +95,7 @@ class ApplicantProfile:
             visa = VisaSelection.from_dict(visa_raw)
         else:
             visa = visa_raw
-        return cls(
-            visa=visa,
-            age=d.get("age"),
-            english_level=d.get("english_level"),
-            points=d.get("points"),
-            occupation=d.get("occupation"),
-            skills_assessment_status=d.get("skills_assessment_status"),
-            health_status=d.get("health_status"),
-            character_status=d.get("character_status"),
-            has_regional_nomination=d.get("has_regional_nomination"),
-            visa_subclass=d.get("visa_subclass"),
-            visa_history=d.get("visa_history"),
-            employer_sponsored=d.get("employer_sponsored"),
-            work_experience_years=d.get("work_experience_years"),
-            in_australia_at_application=d.get("in_australia_at_application"),
-            has_health_insurance=d.get("has_health_insurance"),
-            genuine_temporary_entrant=d.get("genuine_temporary_entrant"),
-        )
+        return cls(visa=visa, **{name: d.get(name) for name in APPLICANT_FACT_FIELDS})
 
     def to_rule_data(self) -> dict[str, Any]:
         """Convert to flat dict for rule engine evaluation.
@@ -112,36 +108,9 @@ class ApplicantProfile:
           - "program_id"  → the visa program (e.g. "SKILLED_189")
           - "visa_subclass" → the actual subclass code (e.g. "189")
         """
-        data: dict[str, Any] = {}
-        data["program_id"] = self.visa.program_id
-        if self.age is not None:
-            data["age"] = self.age
-        if self.english_level is not None:
-            data["english_level"] = self.english_level
-        if self.points is not None:
-            data["points"] = self.points
-        if self.occupation is not None:
-            data["occupation"] = self.occupation
-        if self.skills_assessment_status is not None:
-            data["skills_assessment_status"] = self.skills_assessment_status
-        if self.health_status is not None:
-            data["health_status"] = self.health_status
-        if self.character_status is not None:
-            data["character_status"] = self.character_status
-        if self.has_regional_nomination is not None:
-            data["has_regional_nomination"] = self.has_regional_nomination
-        if self.visa_subclass is not None:
-            data["visa_subclass"] = self.visa_subclass
-        if self.visa_history is not None:
-            data["visa_history"] = self.visa_history
-        if self.employer_sponsored is not None:
-            data["employer_sponsored"] = self.employer_sponsored
-        if self.work_experience_years is not None:
-            data["work_experience_years"] = self.work_experience_years
-        if self.in_australia_at_application is not None:
-            data["in_australia_at_application"] = self.in_australia_at_application
-        if self.has_health_insurance is not None:
-            data["has_health_insurance"] = self.has_health_insurance
-        if self.genuine_temporary_entrant is not None:
-            data["genuine_temporary_entrant"] = self.genuine_temporary_entrant
+        data: dict[str, Any] = {"program_id": self.visa.program_id}
+        for name in APPLICANT_FACT_FIELDS:
+            value = getattr(self, name)
+            if value is not None:
+                data[name] = value
         return data
