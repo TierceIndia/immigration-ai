@@ -26,4 +26,12 @@ httpx>=0.27
 fastapi>=0.111
 uvicorn[standard]>=0.30
 apscheduler>=3.10
+# The one retrieval path: src/fetch/playwright_client.py drives a real headless
+# Chromium through Playwright's sync API. The browser itself is baked into the
+# image (see Dockerfile) and installed locally with
+# `python -m playwright install chromium`.
+playwright>=1.49
+# Retired fetch path, reachable only via FETCH_BACKEND=legacy until the live
+# check against a real source confirms the Playwright port. Deleted together
+# with that path; nothing new should import it.
 patchright>=1.49

@@ -48,6 +48,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-gpt-4o-mini}
+      ALLOW_PUBLIC_REGISTRATION: "true"
     depends_on:
       postgres:
         condition: service_healthy
