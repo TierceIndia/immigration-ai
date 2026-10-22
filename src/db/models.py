@@ -23,6 +23,8 @@ from sqlalchemy import (
 from sqlalchemy.types import JSON
 from sqlalchemy.orm import DeclarativeBase, relationship
 
+from db.vector import EMBEDDING_DIMENSIONS, Vector
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -304,6 +306,10 @@ class DocumentChunk(Base, TimestampMixin):
     order_index = Column(Integer, nullable=False)
     raw_text = Column(Text, nullable=False)
     page_number = Column(Integer)
+    # The chunk's embedding, when embeddings are enabled. NULL means "not
+    # embedded yet" - never "embedded as the zero vector", which would be
+    # indistinguishable from a real match at the origin.
+    embedding = Column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
 
     __table_args__ = (
         Index("idx_chunks_document", "document_id", "version_id"),

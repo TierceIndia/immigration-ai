@@ -65,7 +65,10 @@ E2E_URL = os.environ.get(
     # Dedicated e2e-only database - see tests/e2e/conftest.py's docstring:
     # this test disables audit-immutability triggers and must never run
     # against the shared main "immigration" database.
-    "postgresql+psycopg2://immigration:immigration_dev@localhost:5432/immigration_e2e",
+    # The host port follows POSTGRES_HOST_PORT so the suite still finds
+    # docker-compose's database when 5432 is already taken on the host.
+    f"postgresql+psycopg2://immigration:immigration_dev@localhost:"
+    f"{os.environ.get('POSTGRES_HOST_PORT', '5432')}/immigration_e2e",
 )
 
 from conftest import refuse_if_main_database  # noqa: E402

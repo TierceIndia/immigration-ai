@@ -190,13 +190,14 @@ async def request_id_middleware(request: Request, call_next):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs, admin_sources, admin_requirements, admin_documents, admin_scheduler, admin_applicants  # noqa: E402
+from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs, admin_sources, admin_requirements, admin_documents, admin_scheduler, admin_applicants, search  # noqa: E402
 from api.routes.auth import require_admin  # noqa: E402
 
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(applicants.router, prefix="/api/v1/applicants", tags=["applicants"])
 app.include_router(assessments.router, prefix="/api/v1/assessments", tags=["assessments"])
+app.include_router(search.router, prefix="/api/v1/search", tags=["search"])
 app.include_router(admin_rules.router, prefix="/api/v1/admin/rules", tags=["admin-rules"])
 app.include_router(admin_sources.router, prefix="/api/v1/admin/sources", tags=["admin-sources"])
 app.include_router(pipeline_runs.router, prefix="/api/v1/admin/runs", tags=["pipeline-runs"])
