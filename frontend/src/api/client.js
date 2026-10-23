@@ -190,8 +190,11 @@ export function rejectRule(ruleId) {
   return request(`/api/v1/admin/rules/${encodeURIComponent(ruleId)}/reject`, { method: "POST", body: {} });
 }
 
-export function activateRule(ruleId) {
-  return request(`/api/v1/admin/rules/${encodeURIComponent(ruleId)}/activate`, { method: "POST", body: {} });
+export function activateRule(ruleId, { confirmNotEvaluable } = {}) {
+  return request(`/api/v1/admin/rules/${encodeURIComponent(ruleId)}/activate`, {
+    method: "POST",
+    body: confirmNotEvaluable ? { confirm_not_evaluable: confirmNotEvaluable } : {},
+  });
 }
 
 export function retireRule(ruleId) {
@@ -206,8 +209,19 @@ export function batchApproveRules(ruleIds) {
   return request("/api/v1/admin/rules/batch/approve", { method: "POST", body: { rule_ids: ruleIds } });
 }
 
-export function batchActivateRules(ruleIds) {
-  return request("/api/v1/admin/rules/batch/activate", { method: "POST", body: { rule_ids: ruleIds } });
+export function batchActivateRules(ruleIds, { confirmNotEvaluable } = {}) {
+  return request("/api/v1/admin/rules/batch/activate", {
+    method: "POST",
+    body: confirmNotEvaluable
+      ? { rule_ids: ruleIds, confirm_not_evaluable: confirmNotEvaluable }
+      : { rule_ids: ruleIds },
+  });
+}
+
+// Dry-run the rules against a hypothetical applicant. Deterministic and
+// side-effect free: it never activates, edits or records anything.
+export function evaluateRules(body) {
+  return request("/api/v1/admin/rules/evaluate", { method: "POST", body });
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +251,22 @@ export function getDocumentDiff(documentId, fromVersion, toVersion) {
   });
 }
 
+// Search the stored government text. "auto" uses meaning (embeddings) when
+// they are configured and embedded, and always falls back to keyword search;
+// the response says which mode actually ran.
+export function searchDocuments({ query, programId, documentId, mode, limit } = {}) {
+  return request("/api/v1/search", {
+    method: "POST",
+    body: {
+      query,
+      ...(programId ? { program_id: programId } : {}),
+      ...(documentId ? { document_id: documentId } : {}),
+      ...(mode ? { mode } : {}),
+      ...(limit ? { limit } : {}),
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Applicants (read-only)
 // ---------------------------------------------------------------------------
@@ -258,3 +288,31 @@ export function getScheduler() {
 export function updateScheduler(body) {
   return request("/api/v1/admin/scheduler", { method: "PUT", body });
 }
+
+// ---------------------------------------------------------------------------
+// Source discovery
+// ---------------------------------------------------------------------------
+export function discoverSources(body) {
+  return request("/api/v1/admin/sources/discover", { method: "POST", body });
+}
+
+export function listDiscoveredSources({ status, suggestedVisaCategory } = {}) {
+  return request("/api/v1/admin/sources/discovered", {
+    query: { status, suggested_visa_category: suggestedVisaCategory },
+  });
+}
+
+export function approveDiscoveredSource(discoveredSourceId, body) {
+  return request(
+    `/api/v1/admin/sources/discovered/${encodeURIComponent(discoveredSourceId)}/approve`,
+    { method: "POST", body }
+  );
+}
+
+export function rejectDiscoveredSource(discoveredSourceId, reason) {
+  return request(
+    `/api/v1/admin/sources/discovered/${encodeURIComponent(discoveredSourceId)}/reject`,
+    { method: "POST", body: { reason } }
+  );
+}
+

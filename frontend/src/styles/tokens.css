@@ -8,16 +8,17 @@
   /* Text */
   --color-text: #0f172a;
   --color-text-muted: #475569;
-  --color-text-faint: #94a3b8;
+  /* Muted-foreground that still passes WCAG AA (4.5:1) on white. */
+  --color-text-faint: #5b6878;
 
   /* Accent */
   --color-accent: #3b5bdb;
   --color-accent-hover: #364fc7;
 
   /* Status */
-  --color-success-text: #2b8a3e;
+  --color-success-text: #2f6f3e;
   --color-success-bg: #ebfbee;
-  --color-warning-text: #e67700;
+  --color-warning-text: #9c4a00;
   --color-warning-bg: #fff4e6;
   --color-danger-text: #c92a2a;
   --color-danger-bg: #fff5f5;

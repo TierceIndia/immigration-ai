@@ -336,6 +336,14 @@ p {
   flex: 1;
 }
 
+/* Same idea as .form-row, but wraps onto as many lines as it needs - used by
+   forms with many small inputs (e.g. the rule dry run). */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0 var(--space-3);
+}
+
 /* --------------------------------------------------------------------- */
 /* Tables                                                                 */
 /* --------------------------------------------------------------------- */
@@ -581,3 +589,71 @@ tbody tr:hover {
 .text-right {
   text-align: right;
 }
+
+/* --------------------------------------------------------------------- */
+/* Sync banner                                                            */
+/* --------------------------------------------------------------------- */
+.sync-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: #eef2ff;
+  border: 1px solid #c5d0fa;
+  border-radius: var(--radius);
+  padding: 10px var(--space-3);
+  margin-bottom: var(--space-3);
+  font-size: 13px;
+  color: var(--color-accent);
+}
+
+.sync-banner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  flex-shrink: 0;
+  animation: sync-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes sync-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.sync-banner-elapsed {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------------- */
+/* Tab navigation                                                         */
+/* --------------------------------------------------------------------- */
+.tab-nav {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--color-border);
+  margin-bottom: var(--space-4);
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab-btn:hover {
+  color: var(--color-text);
+}
+
+.tab-btn-active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+

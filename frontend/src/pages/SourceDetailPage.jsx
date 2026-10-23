@@ -7,6 +7,7 @@ import DataTable from "../components/DataTable.jsx";
 import DocumentCard from "../components/DocumentCard.jsx";
 import ErrorState from "../components/ErrorState.jsx";
 import EmptyState from "../components/EmptyState.jsx";
+import SyncBanner from "../components/SyncBanner.jsx";
 
 // The backend resolves each requirement's exact source via
 // Requirement.document_version_id -> DocumentVersion.document_id ->
@@ -46,7 +47,7 @@ export default function SourceDetailPage() {
   const { sourceId } = useParams();
   const sourceState = useApi(() => api.getSource(sourceId), [sourceId]);
   const documentsState = useApi(() => api.listDocuments({ sourceId }), [sourceId]);
-  const { running, runOne } = useSyncRunner(() => {
+  const { running, elapsedSeconds, runOne } = useSyncRunner(() => {
     sourceState.reload();
     documentsState.reload();
   });
@@ -78,9 +79,11 @@ export default function SourceDetailPage() {
       <div className="flex-between">
         <h1>{source.source_id}</h1>
         <button className="btn btn-primary" onClick={() => runOne(source.source_id)} disabled={running}>
-          {running ? "Sync in progress…" : "Run this source"}
+          Run this source
         </button>
       </div>
+
+      {running && <SyncBanner elapsedSeconds={elapsedSeconds} />}
 
       <div className="card">
         <div className="card-grid">

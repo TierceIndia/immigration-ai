@@ -79,22 +79,22 @@ export default function DashboardPage() {
     <div>
       <h1>Dashboard</h1>
       <div className="card-grid">
-        <StatTile label="Total sources" value={anyLoading ? <LineSkeleton width="40px" /> : summary.total} to="/sources" />
-        <StatTile label="Healthy sources" value={anyLoading ? <LineSkeleton width="40px" /> : summary.healthy} to="/sources" />
-        <StatTile label="Failing sources" value={anyLoading ? <LineSkeleton width="40px" /> : summary.failing} to="/sources" />
+        <StatTile label="Total sources" value={anyLoading ? <LineSkeleton width="40px" /> : (summary?.total ?? 0)} to="/sources" />
+        <StatTile label="Healthy sources" value={anyLoading ? <LineSkeleton width="40px" /> : (summary?.healthy ?? 0)} to="/sources" />
+        <StatTile label="Failing sources" value={anyLoading ? <LineSkeleton width="40px" /> : (summary?.failing ?? 0)} to="/sources" />
         <StatTile
           label="Requirements awaiting review"
-          value={anyLoading ? <LineSkeleton width="40px" /> : reviewState.data.count}
+          value={anyLoading ? <LineSkeleton width="40px" /> : (reviewState.data?.count ?? 0)}
           to="/review"
         />
         <StatTile
           label="Draft rules"
-          value={anyLoading ? <LineSkeleton width="40px" /> : rulesQueueState.data.counts.drafts}
+          value={anyLoading ? <LineSkeleton width="40px" /> : (rulesQueueState.data?.counts?.drafts ?? 0)}
           to="/rules"
         />
         <StatTile
           label="Rules awaiting approval"
-          value={anyLoading ? <LineSkeleton width="40px" /> : rulesQueueState.data.counts.validated}
+          value={anyLoading ? <LineSkeleton width="40px" /> : (rulesQueueState.data?.counts?.validated ?? 0)}
           to="/rules"
         />
       </div>
@@ -103,13 +103,13 @@ export default function DashboardPage() {
         <h2>Sync status</h2>
         <p>
           <span className="muted">Last checked source: </span>
-          {anyLoading ? <LineSkeleton width="160px" /> : formatDateTime(summary.lastChecked)}
+          {anyLoading ? <LineSkeleton width="160px" /> : formatDateTime(summary?.lastChecked)}
         </p>
         <p>
           <span className="muted">Next scheduled run: </span>
           {anyLoading ? (
             <LineSkeleton width="160px" />
-          ) : schedulerState.data.enabled ? (
+          ) : schedulerState.data?.enabled ? (
             formatDateTime(schedulerState.data.next_run_at)
           ) : (
             "Scheduler disabled"

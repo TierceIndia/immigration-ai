@@ -9,6 +9,8 @@ import ErrorState from "../components/ErrorState.jsx";
 import { TableSkeleton } from "../components/Skeleton.jsx";
 import AddSourceForm from "./AddSourceForm.jsx";
 import { useToast } from "../components/ToastContext.jsx";
+import SyncBanner from "../components/SyncBanner.jsx";
+import DiscoveredSourcesTab from "./DiscoveredSourcesTab.jsx";
 
 function formatDateTime(iso) {
   if (!iso) return "—";
@@ -29,8 +31,9 @@ function isPaused(source, now = Date.now()) {
 }
 
 export default function SourcesPage() {
+  const [tab, setTab] = useState("sources"); // "sources" | "discovered"
   const sourcesState = useApi(() => api.listSources(), []);
-  const { running, runOne, runAll } = useSyncRunner(() => sourcesState.reload());
+  const { running, elapsedSeconds, runOne, runAll } = useSyncRunner(() => sourcesState.reload());
   const [showAddForm, setShowAddForm] = useState(false);
   const { showToast } = useToast();
 
@@ -53,18 +56,6 @@ export default function SourcesPage() {
     } catch (err) {
       showToast(err.message || "Could not update source");
     }
-  }
-
-  if (sourcesState.loading) {
-    return (
-      <div>
-        <h1>Sources</h1>
-        <TableSkeleton rows={6} cols={9} />
-      </div>
-    );
-  }
-  if (sourcesState.error) {
-    return <ErrorState error={sourcesState.error} onRetry={sourcesState.reload} />;
   }
 
   const columns = [
@@ -126,23 +117,60 @@ export default function SourcesPage() {
     <div>
       <div className="flex-between">
         <h1>Sources</h1>
-        <div className="flex">
-          <button className="btn" onClick={runAll} disabled={running}>
-            {running ? "Sync in progress…" : "Run all sources"}
-          </button>
-          <button className="btn btn-primary" onClick={() => setShowAddForm(true)}>
-            Add source
-          </button>
-        </div>
+        {tab === "sources" && (
+          <div className="flex">
+            <button className="btn" onClick={runAll} disabled={running}>
+              Run all sources
+            </button>
+            <button className="btn btn-primary" onClick={() => setShowAddForm(true)}>
+              Add source
+            </button>
+          </div>
+        )}
       </div>
 
-      <DataTable
-        columns={columns}
-        rows={sourcesState.data}
-        rowKey={(s) => s.source_id}
-        emptyTitle="No sources yet"
-        emptyMessage="Add your first government source to start tracking it."
-      />
+      {/* Tab navigation */}
+      <nav className="tab-nav" aria-label="Sources tabs">
+        <button
+          id="tab-sources"
+          className={"tab-btn" + (tab === "sources" ? " tab-btn-active" : "")}
+          onClick={() => setTab("sources")}
+          aria-selected={tab === "sources"}
+          role="tab"
+        >
+          Active sources
+        </button>
+        <button
+          id="tab-discovered"
+          className={"tab-btn" + (tab === "discovered" ? " tab-btn-active" : "")}
+          onClick={() => setTab("discovered")}
+          aria-selected={tab === "discovered"}
+          role="tab"
+        >
+          Discovered sources
+        </button>
+      </nav>
+
+      {tab === "sources" && (
+        <>
+          {running && <SyncBanner elapsedSeconds={elapsedSeconds} />}
+          {sourcesState.loading ? (
+            <TableSkeleton rows={6} cols={9} />
+          ) : sourcesState.error ? (
+            <ErrorState error={sourcesState.error} onRetry={sourcesState.reload} />
+          ) : (
+            <DataTable
+              columns={columns}
+              rows={sourcesState.data}
+              rowKey={(s) => s.source_id}
+              emptyTitle="No sources yet"
+              emptyMessage="Add your first government source to start tracking it."
+            />
+          )}
+        </>
+      )}
+
+      {tab === "discovered" && <DiscoveredSourcesTab />}
 
       {showAddForm && (
         <AddSourceForm

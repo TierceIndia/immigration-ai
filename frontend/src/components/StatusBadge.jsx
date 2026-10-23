@@ -1,14 +1,20 @@
 const OK_VALUES = new Set([
   "ACTIVE", "OK", "COMPLETED", "CHANGED", "UNCHANGED", "APPROVED", "VALIDATED",
+  // rule dry-run verdicts
+  "ELIGIBLE", "PASS",
 ]);
 const ERROR_VALUES = new Set([
   "BROKEN", "FAILED", "ERROR", "ACCESS_BLOCKED", "NETWORK_RESTRICTED",
   "REJECTED", "CONFLICT",
+  // rule dry-run verdicts
+  "INELIGIBLE", "FAIL",
 ]);
 const WARN_VALUES = new Set([
   "REQUIRES_BROWSER", "REQUIRES_MANUAL_DOWNLOAD", "NEEDS_MANUAL_CAPTURE",
   "PARTIAL", "RUNNING", "STARTED", "INACTIVE", "DISABLED", "NEEDS_REVIEW",
   "DRAFT", "SUPERSEDED", "RETIRED",
+  // rule dry-run verdicts: not a pass, not a failure - the fact is missing
+  "INCOMPLETE", "UNKNOWN",
 ]);
 
 // Plain-language translations for technical statuses that would otherwise
@@ -30,6 +36,13 @@ const LABELS = {
   DISABLED: "Disabled",
   NEEDS_REVIEW: "Needs review",
   APPROVED_PENDING: "Pending activation",
+  ELIGIBLE: "Eligible",
+  INELIGIBLE: "Ineligible",
+  INCOMPLETE: "Needs more information",
+  NOT_APPLICABLE: "Not applicable",
+  PASS: "Passes",
+  FAIL: "Fails",
+  UNKNOWN: "Unknown",
 };
 
 export default function StatusBadge({ value, label }) {

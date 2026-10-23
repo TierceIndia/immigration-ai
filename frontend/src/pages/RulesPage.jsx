@@ -6,6 +6,7 @@ import StatusBadge from "../components/StatusBadge.jsx";
 import DataTable from "../components/DataTable.jsx";
 import ConfirmDialog from "../components/ConfirmDialog.jsx";
 import ErrorState from "../components/ErrorState.jsx";
+import RuleTestPanel from "../components/RuleTestPanel.jsx";
 import { TableSkeleton } from "../components/Skeleton.jsx";
 
 const STATUS_OPTIONS = ["", "DRAFT", "VALIDATED", "APPROVED", "ACTIVE", "REJECTED", "SUPERSEDED", "RETIRED"];
@@ -41,6 +42,7 @@ export default function RulesPage() {
   const [programId, setProgramId] = useState("");
   const [selected, setSelected] = useState(() => new Set());
   const [pendingConfirm, setPendingConfirm] = useState(null); // { action, ruleIds, label }
+  const [testTarget, setTestTarget] = useState(null); // { programId, ruleIds }
   const { showToast } = useToast();
 
   const rulesState = useApi(() => api.listRules({ status: status || undefined, programId: programId || undefined }), [
@@ -57,11 +59,19 @@ export default function RulesPage() {
     });
   }
 
-  async function runAction(action, ruleIds) {
+  // A rule is only evaluable if every field it checks is one an applicant
+  // can actually supply. The API refuses to activate the others without a
+  // typed confirmation; the dialog below asks for the same word.
+  function notEvaluableIn(ruleIds) {
+    const byId = new Map((rulesState.data || []).map((r) => [r.rule_id, r]));
+    return ruleIds.map((id) => byId.get(id)).filter((r) => r && r.evaluable === false);
+  }
+
+  async function runAction(action, ruleIds, { confirmNotEvaluable } = {}) {
     try {
       for (const id of ruleIds) {
         // eslint-disable-next-line no-await-in-loop
-        await ACTION_FN[action](id);
+        await ACTION_FN[action](id, { confirmNotEvaluable });
       }
       setSelected(new Set());
       rulesState.reload();
@@ -72,18 +82,25 @@ export default function RulesPage() {
 
   function requestAction(action, ruleIds, label) {
     if (NEEDS_CONFIRM.has(action)) {
-      setPendingConfirm({ action, ruleIds, label });
+      const blocked = action === "activate" ? notEvaluableIn(ruleIds) : [];
+      setPendingConfirm({
+        action,
+        ruleIds,
+        label,
+        notEvaluable: blocked,
+        requireText: blocked.length > 0 ? "ACTIVATE" : undefined,
+      });
     } else {
       runAction(action, ruleIds);
     }
   }
 
-  async function runBatch(action) {
+  async function runBatch(action, { confirmNotEvaluable } = {}) {
     const ids = Array.from(selected);
     try {
       if (action === "validate") await api.batchValidateRules(ids);
       else if (action === "approve") await api.batchApproveRules(ids);
-      else if (action === "activate") await api.batchActivateRules(ids);
+      else if (action === "activate") await api.batchActivateRules(ids, { confirmNotEvaluable });
       setSelected(new Set());
       rulesState.reload();
     } catch (err) {
@@ -93,7 +110,15 @@ export default function RulesPage() {
 
   function requestBatch(action) {
     if (NEEDS_CONFIRM.has(action)) {
-      setPendingConfirm({ action, batch: true, ruleIds: Array.from(selected) });
+      const ruleIds = Array.from(selected);
+      const blocked = action === "activate" ? notEvaluableIn(ruleIds) : [];
+      setPendingConfirm({
+        action,
+        batch: true,
+        ruleIds,
+        notEvaluable: blocked,
+        requireText: blocked.length > 0 ? "ACTIVATE" : undefined,
+      });
     } else {
       runBatch(action);
     }
@@ -133,7 +158,15 @@ export default function RulesPage() {
       render: (r) => (
         <>
           {r.mandatory && <span className="badge badge-neutral">Mandatory</span>}{" "}
-          {r.critical && <span className="badge badge-warn">Critical</span>}
+          {r.critical && <span className="badge badge-warn">Critical</span>}{" "}
+          {r.evaluable === false && (
+            <span
+              className="badge badge-warn"
+              title="This rule checks a fact no applicant can supply, so live assessments can never answer it."
+            >
+              Not evaluable - no applicant field
+            </span>
+          )}
         </>
       ),
     },
@@ -159,6 +192,12 @@ export default function RulesPage() {
                 Reject
               </button>
             )}
+            <button
+              className="btn btn-sm"
+              onClick={() => setTestTarget({ programId: r.program_id, ruleIds: [r.rule_id] })}
+            >
+              Test
+            </button>
           </div>
         );
       },
@@ -188,7 +227,26 @@ export default function RulesPage() {
             placeholder="e.g. SKILLED_189"
           />
         </div>
+        <div className="field" style={{ alignSelf: "flex-end", flex: "0 0 auto" }}>
+          <button
+            className="btn"
+            onClick={() =>
+              setTestTarget({ programId, ruleIds: selected.size > 0 ? Array.from(selected) : undefined })
+            }
+          >
+            Test rules
+          </button>
+        </div>
       </div>
+
+      {testTarget && (
+        <RuleTestPanel
+          key={`${testTarget.programId}:${(testTarget.ruleIds || []).join(",")}`}
+          programId={testTarget.programId}
+          ruleIds={testTarget.ruleIds}
+          onClose={() => setTestTarget(null)}
+        />
+      )}
 
       {selected.size > 0 && (
         <div className="card flex-between">
@@ -220,16 +278,21 @@ export default function RulesPage() {
           title={`${pendingConfirm.action === "activate" ? "Activate" : "Retire"} ${pendingConfirm.ruleIds.length} rule${pendingConfirm.ruleIds.length === 1 ? "" : "s"}?`}
           message={
             pendingConfirm.action === "activate"
-              ? "Activating supersedes any currently active rule with the same program/category/field and immediately affects live eligibility assessments."
+              ? pendingConfirm.notEvaluable?.length
+                ? `${pendingConfirm.notEvaluable.length} of the rules you picked ${pendingConfirm.notEvaluable.length === 1 ? "checks" : "check"} a fact no applicant can supply, so live assessments will always return UNKNOWN for ${pendingConfirm.notEvaluable.length === 1 ? "it" : "them"}. Activating anyway makes the gap permanent; type ACTIVATE to confirm you mean it.`
+                : "Activating supersedes any currently active rule with the same program/category/field and immediately affects live eligibility assessments."
               : "Retiring removes this rule from live eligibility assessments."
           }
           confirmLabel={pendingConfirm.action === "activate" ? "Activate" : "Retire"}
           danger={pendingConfirm.action === "retire"}
-          onConfirm={() =>
-            pendingConfirm.batch
-              ? runBatch(pendingConfirm.action).then(() => setPendingConfirm(null))
-              : runAction(pendingConfirm.action, pendingConfirm.ruleIds).then(() => setPendingConfirm(null))
-          }
+          requireText={pendingConfirm.requireText}
+          onConfirm={() => {
+            const opts = { confirmNotEvaluable: pendingConfirm.requireText };
+            return (pendingConfirm.batch
+              ? runBatch(pendingConfirm.action, opts)
+              : runAction(pendingConfirm.action, pendingConfirm.ruleIds, opts)
+            ).then(() => setPendingConfirm(null));
+          }}
           onCancel={() => setPendingConfirm(null)}
         />
       )}
