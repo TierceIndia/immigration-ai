@@ -43,7 +43,7 @@ services:
       - raw_snapshots:/app/raw
     environment:
       DATABASE_URL: postgresql+psycopg2://immigration:immigration_dev@postgres:5432/immigration
-      JWT_SECRET_KEY: change-me-in-production
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
       JWT_ALGORITHM: HS256
       JWT_EXPIRATION_MINUTES: "1440"
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
@@ -55,7 +55,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-gpt-4o-mini}
-      ALLOW_PUBLIC_REGISTRATION: "true"
+      # Off unless the operator explicitly opts in, matching the code default.
+      ALLOW_PUBLIC_REGISTRATION: ${ALLOW_PUBLIC_REGISTRATION:-false}
     depends_on:
       postgres:
         condition: service_healthy

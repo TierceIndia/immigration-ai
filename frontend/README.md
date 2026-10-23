@@ -1,15 +1,21 @@
 # Admin frontend
 
 Full admin console for the Immigration Knowledge backend: Dashboard, Sources
-(with per-source and all-sources sync), Review (requirement approvals),
-Rules (lifecycle actions), Documents (versions + diffs), Applicants
-(read-only), and Scheduler. Plain React + Vite + react-router-dom, talks to
-the existing FastAPI backend (`src/api/main.py`) over `fetch` — no UI kit, no
-CSS framework.
+(with per-source and all-sources sync), Review (requirement approvals and
+compilation), Rules (dry run, edit, approve, activate — including the typed
+"ACTIVATE" confirmation for a not-evaluable field), Documents (semantic/keyword
+search, versions, diff), Applicants, and Scheduler. Plain React + Vite +
+react-router-dom, talks to the existing FastAPI backend (`src/api/main.py`)
+over `fetch` — no UI kit, no CSS framework.
 
 Pipeline-run internals (run IDs, raw pipeline-run tables) are deliberately
 not exposed anywhere in the UI — only a non-blocking "sync in progress"
 banner and a final plain-language toast summary.
+
+The Docker image is a two-stage build (`frontend/Dockerfile`): Node builds
+`dist/`, nginx serves it and proxies `/api` to the API, so production needs no
+CORS configuration and no baked-in API host. CI builds the image on every
+push but there is no deploy target yet.
 
 When a government host has refused a request (HTTP 403/429), the backend pauses
 every source on it for a while. The Sources table surfaces this: a "Paused
@@ -44,12 +50,15 @@ npm run preview    # serve the production build locally
 ## Test
 
 ```
-npm test           # vitest, runs once
+npm test           # 42 vitest tests, runs once
 npm run test:watch # vitest, watch mode
+npm run test:e2e   # 5 Playwright flows + axe accessibility checks
 ```
 
-Uses Vitest + React Testing Library + jsdom. Tests mock `src/api/client.js`
-directly rather than hitting a real backend.
+Uses Vitest + React Testing Library + jsdom; unit tests mock
+`src/api/client.js` rather than hitting a real backend. The Playwright suite
+runs against a mocked API too, so neither suite needs PostgreSQL or a live
+server. CI runs `npm ci`, `npm test`, `npm run build`, and `npm run test:e2e`.
 
 ## Structure
 
@@ -60,7 +69,8 @@ src/
   auth/                 — AuthContext (session state), AdminRoute (route guard)
   components/           — Layout, Sidebar, Topbar, DataTable, StatusBadge,
                           Modal, ConfirmDialog, ToastContext, DiffView,
-                          DocumentCard, EmptyState, ErrorState, Skeleton
+                          DocumentCard, RuleTestPanel, SyncBanner,
+                          EmptyState, ErrorState, Skeleton
   hooks/                — useApi (load/error/data), useSyncRunner (Run now /
                           Run all, with polling + a plain-language summary toast)
   pages/                — one file per route
