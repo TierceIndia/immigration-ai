@@ -1,4 +1,4 @@
-"""Phase 3D-H: Production Knowledge Pipeline Hardening Tests.
+"""Production knowledge pipeline hardening tests for rule review.
 
 Tests the critical invariants that must hold for production use:
 1. One-active-version invariant (never two ACTIVE for same logical key)

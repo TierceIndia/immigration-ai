@@ -1,4 +1,4 @@
-"""Phase 3D acceptance tests — full lifecycle with PipelineRun tracking.
+"""Acceptance tests for the full rule lifecycle with PipelineRun tracking.
 
 Proves:
     1. Government v1 → Document v1 → Req v1 → Rule v1 → ACTIVE

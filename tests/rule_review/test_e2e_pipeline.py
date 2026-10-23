@@ -1,4 +1,4 @@
-"""End-to-end acceptance test for Phase 3D — Government → Rule → Activation pipeline.
+"""End-to-end acceptance test for the government-to-rule-to-activation pipeline.
 
 This test proves the entire architecture works:
     1. Initial government document → Document v1 → Requirement v1 → Rule v1 → ACTIVE
