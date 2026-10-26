@@ -128,7 +128,7 @@ def _release_sync_lock() -> None:
 # not one row for the whole batch — so a batch-level "how is my sync going"
 # handle needs its own id, tracked here rather than in the DB. This matches
 # _sync_lock's existing single-process-only scope (no Redis/shared state yet;
-# see PLAN.md), so it does not survive a process restart or multiple workers.
+# see DESIGN.md), so it does not survive a process restart or multiple workers.
 # ---------------------------------------------------------------------------
 _sync_jobs: dict[str, dict[str, Any]] = {}
 _sync_jobs_lock = threading.Lock()

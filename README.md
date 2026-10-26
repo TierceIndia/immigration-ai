@@ -291,8 +291,7 @@ immigration-knowledge/
 ├── frontend/Dockerfile       # nginx image serving the admin UI
 ├── docker-compose.yml        # postgres (pgvector) + api
 ├── DBSTRUCTURE.md            # regenerated with scripts/db_structure.py
-├── DESIGN.md                 # architecture design document
-├── PLAN.md                   # roadmap, blockers, definition of done
+├── DESIGN.md                 # architecture, gaps, roadmap and verification
 └── README.md
 ```
 

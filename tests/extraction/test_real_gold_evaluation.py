@@ -18,7 +18,7 @@ from llm_client import MockLLMClient, OpenAILLMClient, get_client  # noqa: E402
 from requirement_extractor import extract_from_document  # noqa: E402
 
 REAL_CHUNKS_PATH = ROOT / "data" / "real_validation" / "skilled_189_real_chunks.json"
-REAL_GOLD_PATH = ROOT / "data" / "gold" / "requirements_gold_real.json"
+REAL_GOLD_PATH = ROOT / "data" / "gold" / "skilled" / "skilled_189_real.json"
 SOURCE_ID = "SRC-AU-189-MAIN"
 DOCUMENT_ID = "DOC-AU-189-MAIN"
 

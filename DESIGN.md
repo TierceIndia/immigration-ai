@@ -1299,7 +1299,7 @@ worth far more than one that is fast and gets the IP blocked.
 
 1. **Run the human gates** in README ("Before production"): live fetch hash, one Home Affairs
    source, the never-synced sources, SKILLED_189 rule activation, secret rotation
-2. **Prove rule supersession on real data** — the one remaining box in `PLAN.md` §6
+2. **Prove rule supersession on real data** — the one remaining Definition-of-Done box (the PostgreSQL e2e proves the mechanism, but not yet with a second real source version)
 3. **Delete the legacy fetch path and `patchright`** once the live gate confirms the port
 4. **Fill real gold datasets** for WORK/STUDENT/VISITOR categories
 5. **Re-source `SRC-AU-CRICOS-REGISTER`** (search-only SPA)

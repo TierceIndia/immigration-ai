@@ -3,7 +3,7 @@
 Admin role required. Provides audit trail for government source sync
 operations. Only GET /{run_id} is exposed (status polling for Run
 now/Run all) - the frontend has no pipeline-runs list/summary/per-source
-history page, so those routes were removed (see PLAN.md / DESIGN.md).
+history page, so those routes were removed (see DESIGN.md).
 """
 from __future__ import annotations
 

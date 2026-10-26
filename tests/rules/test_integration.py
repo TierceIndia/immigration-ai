@@ -13,7 +13,7 @@ from rules.explanations import explain_evaluation, explain_eligibility
 
 
 def _load_real_requirements():
-    gold_path = ROOT / "data" / "gold" / "requirements_gold_real.json"
+    gold_path = ROOT / "data" / "gold" / "skilled" / "skilled_189_real.json"
     gold = json.loads(gold_path.read_text(encoding="utf-8"))
     return [item for item in gold["items"] if item["expected"] is not None]
 
