@@ -60,3 +60,6 @@ Thumbs.db
 
 # Local dev DB backups (Phase 0 safety dumps) - never committed
 backups/
+
+# Production environment files - only the example is committed
+deploy/*.env

@@ -62,7 +62,7 @@ def test_get_run_surfaces_stored_new_alongside_requirements_extracted(client, ad
         s.merge(GovernmentSource(
             source_id="SRC-AU-STORED-NEW", country_id="AU", program_id="SKILLED_189",
             visa_category="SKILLED", authority="Home Affairs",
-            url="https://example.invalid/stored-new", source_type="HTML",
+            url="https://example.gov.au/stored-new", source_type="HTML",
             priority="PRIMARY", monitoring_method="WEB", crawl_frequency="DAILY",
             status="ACTIVE",
         ))

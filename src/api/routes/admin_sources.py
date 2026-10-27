@@ -14,6 +14,11 @@ from db.connection import get_session, get_db_engine
 from db.models import DiscoveredSource, GovernmentSource
 from db.repositories import DiscoveredSourceRepo, SourceRepo
 from fetch.politeness import host_of
+from fetch.source_validation import (
+    SourceValidationError,
+    validate_http_url,
+    validate_source_fields,
+)
 from logging_config import get_logger
 from orchestration.host_cooldown import blocked_until, blocked_until_map
 from source_discovery import discover_sources
@@ -41,6 +46,16 @@ def _normalise_content_kind(value: str) -> str:
             f"content_kind must be one of {sorted(_CONTENT_KINDS)}, got {value!r}"
         )
     return kind
+
+
+def _validated_or_422(fields: dict) -> dict:
+    try:
+        return validate_source_fields(fields)
+    except SourceValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"field": exc.field, "message": str(exc)},
+        ) from exc
 
 
 class SourceCreateRequest(BaseModel):
@@ -76,7 +91,7 @@ class SourceCreateRequest(BaseModel):
 # BROKEN) are system-detected fetch outcomes set automatically by the sync pipeline
 # (src/utils/fetch_document.py) — an admin imposing one of those by hand would
 # misrepresent what the fetcher actually observed, so PATCH does not allow them.
-_ADMIN_SETTABLE_SOURCE_STATUSES = {"ACTIVE", "DISABLED", "NEEDS_MANUAL_CAPTURE"}
+_ADMIN_SETTABLE_SOURCE_STATUSES = {"ACTIVE", "DISABLED"}
 
 
 class SourceUpdateRequest(BaseModel):
@@ -266,9 +281,15 @@ def discover(
     """Run source auto-discovery from a seed URL and return newly created candidates
     (status PENDING_REVIEW). Never activates anything — approval is a separate action."""
     engine = get_db_engine(request)
+    try:
+        seed_url = validate_http_url(body.seed_url)
+    except SourceValidationError as exc:
+        raise HTTPException(
+            status_code=422, detail={"field": "seed_url", "message": str(exc)}
+        ) from exc
     with get_session(engine) as session:
         _, report = discover_sources(
-            seed_url=body.seed_url,
+            seed_url=seed_url,
             max_depth=body.max_depth,
             suggested_category=body.suggested_category,
             session=session,
@@ -315,7 +336,7 @@ def approve_discovered(
         source_repo = SourceRepo(session)
         if source_repo.get(body.source_id):
             raise HTTPException(status_code=409, detail=f"Source {body.source_id} already exists")
-        source_fields = {
+        source_fields = _validated_or_422({
             "source_id": body.source_id,
             "country_id": cand.suggested_country_id or "AU",
             "program_id": body.program_id,
@@ -330,7 +351,7 @@ def approve_discovered(
             "status": "ACTIVE",
             "notes": body.notes,
             "content_kind": body.content_kind,
-        }
+        })
         cand, source = repo.approve(
             discovered_source_id,
             reviewed_by=current_user["user_id"],
@@ -409,22 +430,23 @@ def create_source(
         existing = repo.get(body.source_id)
         if existing:
             raise HTTPException(status_code=409, detail=f"Source {body.source_id} already exists")
+        fields = _validated_or_422(body.model_dump())
         obj = repo.create(
-            source_id=body.source_id,
-            country_id=body.country_id,
-            program_id=body.program_id,
-            visa_category=body.visa_category,
-            authority=body.authority,
-            url=body.url,
-            source_type=body.source_type,
-            source_subtype=body.source_subtype,
-            priority=body.priority,
-            monitoring_method=body.monitoring_method,
-            crawl_frequency=body.crawl_frequency,
+            source_id=fields["source_id"],
+            country_id=fields["country_id"],
+            program_id=fields["program_id"],
+            visa_category=fields["visa_category"],
+            authority=fields["authority"],
+            url=fields["url"],
+            source_type=fields["source_type"],
+            source_subtype=fields.get("source_subtype"),
+            priority=fields["priority"],
+            monitoring_method=fields["monitoring_method"],
+            crawl_frequency=fields["crawl_frequency"],
             status="ACTIVE",
-            notes=body.notes,
-            extract_requirements=body.extract_requirements,
-            content_kind=body.content_kind,
+            notes=fields.get("notes"),
+            extract_requirements=fields["extract_requirements"],
+            content_kind=fields["content_kind"],
         )
         session.commit()
         return _source_to_response(obj, blocked_until(session, obj.url))
@@ -506,6 +528,7 @@ def update_source(
         # entirely is fine (exclude_unset drops it, status is simply left unchanged).
         if "status" in update_fields and update_fields["status"] is None:
             raise HTTPException(status_code=422, detail="status must not be null")
+        update_fields = _validated_or_422(update_fields)
         for k, v in update_fields.items():
             setattr(obj, k, v)
         session.commit()

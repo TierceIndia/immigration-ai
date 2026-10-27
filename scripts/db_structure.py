@@ -54,6 +54,8 @@ MIGRATION_SUMMARIES = {
     "b1c2d3e4f5a6": "First batch of modelled applicant concept fields.",
     "d2e3f4a5b6c7": "`requirements.concept` (closed vocabulary, NOT_MODELED label).",
     "c2d3e4f5a6b7": "pgvector `document_chunks.embedding` + HNSW cosine index.",
+    "d3e4f5a6b7c8": "Fetch retrieval events (`fetch_log.retrieval_id`, URL/content/timing fields).",
+    "e5f6a7b8c9d0": "Retire `NEEDS_MANUAL_CAPTURE`; existing rows become `ACTIVE`.",
 }
 
 

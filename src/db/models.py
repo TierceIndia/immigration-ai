@@ -148,7 +148,7 @@ class GovernmentSource(Base, TimestampMixin):
         ),
         CheckConstraint(
             "status IN ('ACTIVE','DISABLED','ACCESS_BLOCKED','NETWORK_RESTRICTED',"
-            "'REQUIRES_BROWSER','REQUIRES_MANUAL_DOWNLOAD','NEEDS_MANUAL_CAPTURE','BROKEN')",
+            "'REQUIRES_BROWSER','REQUIRES_MANUAL_DOWNLOAD','BROKEN')",
             name="ck_source_status",
         ),
         CheckConstraint(
@@ -338,6 +338,18 @@ class FetchLog(Base):
     duration_ms = Column(Integer)
     error = Column(Text)
     error_type = Column(String(64))  # machine-readable failure class from fetcher
+    # Retrieval event detail: one row is one acquisition attempt, and these
+    # fields make the attempt reproducible/auditable without the sidecar
+    # manifest (which lives next to the immutable bytes).
+    retrieval_id = Column(String(36), unique=True, nullable=True)
+    acquisition = Column(String(32))  # playwright_page | playwright_request | legacy_*
+    final_url = Column(String(2048))
+    content_type = Column(String(128))
+    limiter_wait_ms = Column(Integer)
+    browser_launch_ms = Column(Integer)
+    goto_ms = Column(Integer)
+    selector_wait_ms = Column(Integer)
+    selector_timed_out = Column(Boolean)
 
     __table_args__ = (
         Index("idx_fetchlog_source", "source_id", "fetched_at"),

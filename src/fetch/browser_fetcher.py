@@ -11,8 +11,8 @@ No evasive/anti-bot-bypass technique is used or will be added here, matching the
 principle stated in ``fetcher.py``: no stealth plugins, no credential abuse, no
 proxy/IP rotation, no CAPTCHA bypass, and no retry amplification. The single
 static egress proxy from ``FETCH_PROXY_URL`` (see ``fetch/proxy.py``) is honoured
-here too, for reachability — it is one fixed value, never rotated. Escalating to a
-real browser and honestly reporting the outcome is not evasion — it is a genuine
+here too, for reachability â€” it is one fixed value, never rotated. Escalating to a
+real browser and honestly reporting the outcome is not evasion â€” it is a genuine
 browser session. If a source blocks even that, the correct response is to report
 the block as data (``fetch_status`` + ``error_type``) and let the source be
 retried on its normal schedule, not to try harder to defeat the block.
@@ -40,7 +40,7 @@ from fetch.proxy import ProxyConfigError, browser_proxy
 # Spacing/jitter between browser fetches is owned by fetch.politeness.HostLimiter
 # (shared with the plain-HTTP path), not by a constant here. This module used to
 # define a MIN_BROWSER_DELAY_SECONDS + _polite_delay() pair that nothing ever
-# called — dead code the tests never caught. It is gone; every browser fetch now
+# called â€” dead code the tests never caught. It is gone; every browser fetch now
 # goes through the same limiter wait as every plain fetch.
 
 # How long we let an individual page load before giving up.
@@ -51,14 +51,14 @@ BROWSER_NAVIGATION_TIMEOUT_MS = 30000
 # Several immi.homeaffairs.gov.au pages are Angular apps that ship their real
 # content as an HTML-escaped JSON blob inside a hidden <input>'s value
 # attribute (hydration state) and only materialise it into real <p>/<ul>/<table>
-# DOM nodes via client-side JS *after* domcontentloaded — with no further
+# DOM nodes via client-side JS *after* domcontentloaded â€” with no further
 # network activity, so "networkidle" would not help here. Waiting for this
 # selector is not evasion: it is giving the same real page the time it already
 # needs to finish its own normal rendering before looking at it. A genuinely
 # contentless page (e.g. a search-interface SPA with nothing to show) times
 # out here and is captured/classified exactly as it would have been before.
 # Must track extractor_html.py's _find_main_content() fallback chain (main,
-# [role=main], #content, #main-content, [class*=content]) — a page using one
+# [role=main], #content, #main-content, [class*=content]) â€” a page using one
 # of the non-<main> fallback containers would otherwise always burn the full
 # CONTENT_READY_TIMEOUT_MS even though extraction would succeed once captured.
 CONTENT_READY_SELECTOR = (
@@ -67,8 +67,9 @@ CONTENT_READY_SELECTOR = (
 )
 CONTENT_READY_TIMEOUT_MS = 8000
 
-# Chromium args. --no-sandbox/--disable-dev-shm-usage are required to run as root
-# in a container; they are not fingerprint evasion.
+# Chromium args. --no-sandbox/--disable-dev-shm-usage are container
+# compatibility requirements; they are not fingerprint evasion. The API image
+# runs as an unprivileged user, so these do not also mean running as root.
 BROWSER_LAUNCH_ARGS = ["--no-sandbox", "--disable-dev-shm-usage"]
 
 
@@ -103,15 +104,15 @@ def fetch_with_browser(
     does not need to branch on which fetcher produced a result.
 
     `launch_fn` is an injectable seam (defaults to _patchright_fetch) used only
-    by tests to mock the browser call chain — production always uses Patchright.
+    by tests to mock the browser call chain â€” production always uses Patchright.
     `limiter` is likewise injectable; production uses the process-wide one.
     `browser_session` (item 4) lets a whole sync run share one real Chromium
     process across many sources instead of launching a fresh one per source;
-    it is only honoured on the real ``_patchright_fetch`` path — a custom
+    it is only honoured on the real ``_patchright_fetch`` path â€” a custom
     ``launch_fn`` (always a test seam) keeps its existing 3-arg call shape.
 
     The limiter wait happens *here*, before dispatching to ``launch_fn``, so
-    every browser fetch is spaced by the same per-host rule as a plain fetch —
+    every browser fetch is spaced by the same per-host rule as a plain fetch â€”
     including the ones a test drives through a fake ``launch_fn``.
     """
     from fetch.politeness import get_limiter
@@ -245,7 +246,7 @@ def _fetch_page(
 
     Shared by the per-call launch path (``close_browser=True``, the browser
     this function was handed is closed when done) and the shared
-    ``BrowserSession`` path (``close_browser=False`` — the session owns the
+    ``BrowserSession`` path (``close_browser=False`` â€” the session owns the
     browser's lifetime across the whole sync run, so only the context this
     one page used is closed here).
     """
@@ -303,7 +304,7 @@ def _fetch_page(
                 )
             except Exception:
                 # Times out for pages that never render structural content
-                # (e.g. a genuinely contentless search-interface SPA) —
+                # (e.g. a genuinely contentless search-interface SPA) â€”
                 # that is real, honest information, not an error: capture
                 # whatever is there now, same as before this wait existed.
                 selector_timed_out = True
@@ -312,7 +313,7 @@ def _fetch_page(
         body_text = page.content()
         body_bytes = body_text.encode("utf-8")
     finally:
-        # Always close the context, even on the failure paths above — a
+        # Always close the context, even on the failure paths above â€” a
         # leaked context would otherwise accumulate per source. The browser
         # itself is only closed here in per-call mode; a BrowserSession owns
         # closing its own browser once, at the end of the whole sync run.
@@ -352,7 +353,7 @@ def _patchright_fetch(
 
     With no ``browser_session``, launches and tears down one browser per
     call (the original behaviour). With one, reuses its already-running
-    browser (item 4) — only a fresh context is opened/closed per call.
+    browser (item 4) â€” only a fresh context is opened/closed per call.
     """
     start = time.monotonic()
 
@@ -447,7 +448,7 @@ def _classify_browser_result(url: str, status_code: int | None, body_bytes: byte
         body_text = body_bytes.decode("utf-8", errors="replace")
         if _looks_like_challenge_text(body_text):
             # Even a genuine browser session was served a challenge page. Do NOT
-            # try harder against it — report it. REQUIRES_BROWSER marks it as
+            # try harder against it â€” report it. REQUIRES_BROWSER marks it as
             # unrecoverable by automation so operations can see why.
             return FetchResult(
                 url=url, status=FetchStatus.REQUIRES_BROWSER,
@@ -462,7 +463,7 @@ def _classify_browser_result(url: str, status_code: int | None, body_bytes: byte
             duration_ms=duration_ms, error=None,
         )
 
-    # Non-200 (or empty) via browser — classify honestly.
+    # Non-200 (or empty) via browser â€” classify honestly.
     if status_code in (401, 403, 429):
         return FetchResult(
             url=url, status=FetchStatus.ACCESS_BLOCKED, http_status=status_code,

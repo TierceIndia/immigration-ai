@@ -755,13 +755,19 @@ class TestOneBrowserPerSyncRun:
                 pass
 
         class _FakeRequest:
-            def get(self, url, headers=None, timeout=None):
+            def get(self, url, headers=None, timeout=None, max_redirects=None):
                 # robots.txt probe only - no robots file published.
+                return outer._FakeResponse(status=404, headers={}, body=b"", url=url)
+
+            def head(self, url, headers=None, timeout=None, max_redirects=None):
                 return outer._FakeResponse(status=404, headers={}, body=b"", url=url)
 
         class _FakeContext:
             def __init__(self):
                 self.request = _FakeRequest()
+
+            def route(self, *args, **kwargs):
+                pass
 
             def new_page(self):
                 return _FakePage()

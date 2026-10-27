@@ -73,14 +73,14 @@ def seeded(engine):
         s.merge(GovernmentSource(
             source_id="SRC-AU-189", country_id="AU", program_id="SKILLED_189",
             visa_category="SKILLED", authority="Home Affairs",
-            url="https://example.invalid/189", source_type="HTML",
+            url="https://example.gov.au/189", source_type="HTML",
             priority="PRIMARY", monitoring_method="WEB", crawl_frequency="DAILY",
             status="ACTIVE",
         ))
         s.merge(GovernmentDocument(
             document_id="DOC-AU-189", source_id="SRC-AU-189", country_id="AU",
             program_id="SKILLED_189", visa_category="SKILLED", document_type="GENERAL",
-            url="https://example.invalid/189", title="Skilled 189 eligibility",
+            url="https://example.gov.au/189", title="Skilled 189 eligibility",
             retrieved_at=datetime.now(timezone.utc), content_hash="abc123",
             current_version=1, language="en", raw_path="fetch:doc:v1", status="CURRENT",
         ))

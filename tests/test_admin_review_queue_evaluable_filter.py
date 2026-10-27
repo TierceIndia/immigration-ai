@@ -65,7 +65,7 @@ def _seed_program(session, program_id):
     session.merge(GovernmentSource(
         source_id=source_id, country_id="AU", program_id=program_id,
         visa_category="SKILLED", authority="Home Affairs",
-        url=f"https://example.invalid/{program_id.lower()}", source_type="HTML",
+        url=f"https://example.gov.au/{program_id.lower()}", source_type="HTML",
         priority="PRIMARY", monitoring_method="WEB", crawl_frequency="DAILY",
         status="ACTIVE",
     ))
@@ -73,7 +73,7 @@ def _seed_program(session, program_id):
     session.merge(GovernmentDocument(
         document_id=document_id, source_id=source_id, country_id="AU",
         program_id=program_id, visa_category="SKILLED", document_type="GENERAL",
-        url=f"https://example.invalid/{program_id.lower()}", title=program_id,
+        url=f"https://example.gov.au/{program_id.lower()}", title=program_id,
         retrieved_at=datetime.now(timezone.utc), content_hash=f"hash-{program_id}",
         current_version=1, language="en", raw_path="fetch:doc:v1", status="CURRENT",
     ))

@@ -34,6 +34,7 @@ from db.models import (
     ImmigrationProgram,
 )
 from utils.fetch_document import (
+    RawSnapshotIntegrityError,
     _raw_snapshot_relpath,
     build_raw_metadata,
     fetch_document_and_store,
@@ -264,14 +265,69 @@ class TestRawSnapshotPathConvention:
         first = persist_raw_snapshot(source, 1, HTML_V1)
         second = persist_raw_snapshot(source, 1, HTML_V1)
         # Same version_number always maps to the same file, holding the same
-        # bytes — never a second file and never divergent content.
+        # bytes - never a second file and never divergent content.
         assert first == second
         assert second.read_bytes() == HTML_V1
-        # Exactly the snapshot plus its sidecar manifest — no stray temp files.
+        # Exactly the snapshot plus its sidecar manifest - no stray temp files.
         assert sorted(p.name for p in first.parent.iterdir()) == [
             "content.v1.html",
             "content.v1.html.meta.json",
         ]
+
+    def test_existing_snapshot_is_never_replaced_by_different_bytes(self, source, raw_root):
+        path = persist_raw_snapshot(source, 1, HTML_V1)
+        before = path.read_bytes()
+        with pytest.raises(RawSnapshotIntegrityError):
+            persist_raw_snapshot(source, 1, HTML_V2)
+        assert path.read_bytes() == before
+        assert read_raw_metadata(path)["content_hash"] == sha256_bytes(HTML_V1)
+
+    def test_reused_snapshot_keeps_its_original_manifest(
+        self, source, raw_root
+    ):
+        path = persist_raw_snapshot(
+            source, 1, HTML_V1,
+            retrieved_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        original = _manifest_path_for_test(path).read_bytes()
+        persist_raw_snapshot(
+            source, 1, HTML_V1,
+            retrieved_at=datetime(2026, 2, 2, tzinfo=timezone.utc),
+        )
+        assert _manifest_path_for_test(path).read_bytes() == original
+        assert read_raw_metadata(path)["retrieved_at"] == (
+            datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat()
+        )
+
+    def test_missing_manifest_is_an_integrity_error(self, source, raw_root):
+        path = persist_raw_snapshot(source, 1, HTML_V1)
+        _manifest_path_for_test(path).unlink()
+        with pytest.raises(RawSnapshotIntegrityError):
+            persist_raw_snapshot(source, 1, HTML_V1)
+
+    def test_manifest_content_hash_mismatch_is_an_integrity_error(
+        self, source, raw_root
+    ):
+        path = persist_raw_snapshot(source, 1, HTML_V1)
+        manifest_path = _manifest_path_for_test(path)
+        manifest = read_raw_metadata(path)
+        manifest["content_hash"] = "0" * 64
+        manifest_path.write_text(
+            __import__("json").dumps(manifest, sort_keys=True), encoding="utf-8"
+        )
+        with pytest.raises(RawSnapshotIntegrityError):
+            persist_raw_snapshot(source, 1, HTML_V1)
+
+    def test_provided_content_hash_must_match_the_bytes(self, source, raw_root):
+        with pytest.raises(RawSnapshotIntegrityError):
+            persist_raw_snapshot(source, 1, HTML_V1, content_hash="deadbeef")
+
+    def test_orphan_manifest_is_refused(self, source, raw_root):
+        path = raw_root / "AU" / "skilled" / "SRC-AU-189" / "content.v1.html"
+        path.parent.mkdir(parents=True)
+        _manifest_path_for_test(path).write_text("{}", encoding="utf-8")
+        with pytest.raises(RawSnapshotIntegrityError):
+            persist_raw_snapshot(source, 1, HTML_V1)
 
 
 # ---------------------------------------------------------------------------

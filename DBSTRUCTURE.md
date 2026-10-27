@@ -1,11 +1,11 @@
 # Database Structure
 
-**Regenerated**: 2026-10-23 with `python scripts/db_structure.py` from a
+**Regenerated**: 2026-10-27 with `python scripts/db_structure.py` from a
 live PostgreSQL 16 + pgvector database at the current alembic head. The table and column
 lists are introspected, not hand-written; row counts are whatever that database held at
 generation time. Re-run the script after a migration instead of editing this file.
 
-- Alembic head: `c2d3e4f5a6b7`
+- Alembic head: `e5f6a7b8c9d0`
 - Application tables: 33
 - `document_chunks.embedding` is pgvector's `vector(1536)`; SQLAlchemy's stock
   inspector reports it as an unknown `NULL` type, so it is labelled explicitly here.
@@ -36,7 +36,9 @@ generation time. Re-run the script after a migration instead of editing this fil
 | 20 | `c7d8e9f0a1b3` | `c7d8e9f0a1b3_add_source_content_kind.py` | `government_sources.content_kind` (PAGE \| NEWS_LIST). |
 | 21 | `d8e9f0a1b2c4` | `d8e9f0a1b2c4_allow_ok_empty_content_fetch_status.py` | Allow `fetch_status = OK_EMPTY_CONTENT`. |
 | 22 | `b1c2d3e4f5a6` | `b1c2d3e4f5a6_add_applicant_concept_fields.py` | First batch of modelled applicant concept fields. |
-| 23 | `c2d3e4f5a6b7` **(head)** | `c2d3e4f5a6b7_add_chunk_embeddings.py` | pgvector `document_chunks.embedding` + HNSW cosine index. |
+| 23 | `c2d3e4f5a6b7` | `c2d3e4f5a6b7_add_chunk_embeddings.py` | pgvector `document_chunks.embedding` + HNSW cosine index. |
+| 24 | `d3e4f5a6b7c8` | `d3e4f5a6b7c8_add_fetch_retrieval_events.py` | Fetch retrieval events (`fetch_log.retrieval_id`, URL/content/timing fields). |
+| 25 | `e5f6a7b8c9d0` **(head)** | `e5f6a7b8c9d0_retire_needs_manual_capture.py` | Retire `NEEDS_MANUAL_CAPTURE`; existing rows become `ACTIVE`. |
 
 ## Tables
 
@@ -54,7 +56,7 @@ generation time. Re-run the script after a migration instead of editing this fil
 | document_versions | 11 | 4 |
 | extraction_cache | 7 | 0 |
 | extraction_runs | 24 | 5 |
-| fetch_log | 10 | 7 |
+| fetch_log | 19 | 7 |
 | gaps | 11 | 1 |
 | government_documents | 19 | 3 |
 | government_sources | 28 | 14 |
@@ -107,6 +109,7 @@ partial (`WHERE`) indexes and vector (HNSW) indexes.
 | extraction_cache | `extraction_cache_pkey` | `CREATE UNIQUE INDEX extraction_cache_pkey ON public.extraction_cache USING btree (chunk_content_hash, prompt_version, model)` |
 | extraction_runs | `extraction_runs_pkey` | `CREATE UNIQUE INDEX extraction_runs_pkey ON public.extraction_runs USING btree (run_id)` |
 | fetch_log | `fetch_log_pkey` | `CREATE UNIQUE INDEX fetch_log_pkey ON public.fetch_log USING btree (log_id)` |
+| fetch_log | `uq_fetch_log_retrieval_id` | `CREATE UNIQUE INDEX uq_fetch_log_retrieval_id ON public.fetch_log USING btree (retrieval_id)` |
 | gaps | `gaps_pkey` | `CREATE UNIQUE INDEX gaps_pkey ON public.gaps USING btree (gap_id)` |
 | government_documents | `government_documents_pkey` | `CREATE UNIQUE INDEX government_documents_pkey ON public.government_documents USING btree (document_id)` |
 | government_sources | `government_sources_pkey` | `CREATE UNIQUE INDEX government_sources_pkey ON public.government_sources USING btree (source_id)` |
@@ -442,6 +445,15 @@ be rewritten. The only supported way to bypass them is the test/cleanup pattern 
 | duration_ms | integer | yes |  |
 | error | text | yes |  |
 | error_type | varchar(64) | yes |  |
+| retrieval_id | varchar(36) | yes |  |
+| acquisition | varchar(32) | yes |  |
+| final_url | varchar(2048) | yes |  |
+| content_type | varchar(128) | yes |  |
+| limiter_wait_ms | integer | yes |  |
+| browser_launch_ms | integer | yes |  |
+| goto_ms | integer | yes |  |
+| selector_wait_ms | integer | yes |  |
+| selector_timed_out | boolean | yes |  |
 
 ### gaps
 

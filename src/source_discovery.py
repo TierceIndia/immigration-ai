@@ -40,6 +40,7 @@ from db.repositories import DiscoveredSourceRepo, SourceRepo
 # rules. Still injectable: tests pass their own fetch_fn.
 from fetch.backend import fetch as _default_fetch
 from fetch.fetcher import FetchResult
+from fetch.source_validation import SourceValidationError, validate_http_url
 
 # In TESTS, dotenv loading is suppressed so a developer's .env cannot leak
 # keys into the hermetic suite (conftest strips them at module load).
@@ -255,8 +256,15 @@ def discover_sources(
     report["robots_applied"] = False
     report["robots_blocked_seed"] = False
 
+    try:
+        seed_url = validate_http_url(seed_url)
+    except SourceValidationError as exc:
+        report["errors"].append(str(exc))
+        return [], report
+
     base_host = _host_of(seed_url)
     if not base_host:
+        report["errors"].append("seed URL has no host")
         return [], report
 
     # 1. robots.txt gate
@@ -289,6 +297,11 @@ def discover_sources(
                 continue
             if not _is_same_domain(url, base_host):
                 report["skipped"].append({"url": url, "reason": "different domain"})
+                continue
+            try:
+                url = validate_http_url(url)
+            except SourceValidationError as exc:
+                report["skipped"].append({"url": url, "reason": str(exc)})
                 continue
 
             report["crawled"].append(url)

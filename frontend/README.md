@@ -13,9 +13,11 @@ not exposed anywhere in the UI — only a non-blocking "sync in progress"
 banner and a final plain-language toast summary.
 
 The Docker image is a two-stage build (`frontend/Dockerfile`): Node builds
-`dist/`, nginx serves it and proxies `/api` to the API, so production needs no
-CORS configuration and no baked-in API host. CI builds the image on every
-push but there is no deploy target yet.
+`dist/`, unprivileged nginx serves it on port 8080 and proxies `/api` to the
+API, so production needs no CORS configuration and no baked-in API host. It
+preserves the TLS scheme forwarded by Caddy. CI builds the image and asserts it
+does not run as root. `docker-compose.prod.yml` is the intended production
+topology, but no target host has been provisioned or exercised.
 
 When a government host has refused a request (HTTP 403/429), the backend pauses
 every source on it for a while. The Sources table surfaces this: a "Paused

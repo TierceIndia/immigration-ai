@@ -49,12 +49,18 @@ from fetch.fetcher import (
 )
 from fetch.politeness import HostLimiter, get_limiter
 from fetch.proxy import ProxyConfigError, browser_proxy, redact
+from fetch.source_validation import (
+    SourceValidationError,
+    assert_fetch_destination,
+)
 from logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# Container hardening, not fingerprint evasion: Chromium cannot run as root in
-# a container without --no-sandbox, and the default 64MB /dev/shm crashes it.
+# Container compatibility, not fingerprint evasion: the kernel sandbox is not
+# available in a default Docker seccomp/user-namespace setup, and the default
+# 64MB /dev/shm crashes Chromium. The image runs as an unprivileged user so
+# these flags do not also grant root inside the container.
 LAUNCH_ARGS = ["--no-sandbox", "--disable-dev-shm-usage"]
 LOCALE = "en-AU"
 
@@ -84,6 +90,80 @@ ACQUISITION_REQUEST = "playwright_request"
 # Source types we fetch as bytes rather than navigating to. Everything else is
 # treated as a page to render.
 _BYTES_SOURCE_TYPES = {"PDF"}
+
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_MAX_REDIRECTS = 5
+
+
+def _install_network_guard(context, limiter: HostLimiter) -> dict:
+    """Refuse private/link-local/metadata destinations inside the browser.
+
+    A pre-flight DNS check on the source URL is not enough: a public host can
+    redirect (or a page can subrequest) to 127.0.0.1, RFC1918 space, or a cloud
+    metadata address. Every browser request passes through this route. Navigation
+    redirects also honour the same host spacing as any other outbound request.
+    """
+    state = {"seen_navigation": False}
+
+    def _guard(route):
+        request = route.request
+        try:
+            assert_fetch_destination(request.url)
+            if request.is_navigation_request():
+                if state["seen_navigation"]:
+                    limiter.wait(request.url)
+                state["seen_navigation"] = True
+        except SourceValidationError as exc:
+            logger.warning(
+                "Blocked non-public browser destination",
+                extra={"url": request.url, "reason": str(exc)},
+            )
+            route.abort("blockedbyclient")
+            return
+        except Exception as exc:  # fail closed on an unclassifiable destination
+            logger.warning(
+                "Blocked browser destination after validation error",
+                extra={"url": request.url, "error": str(exc)},
+            )
+            route.abort("blockedbyclient")
+            return
+        route.continue_()
+
+    context.route("**/*", _guard)
+    return state
+
+
+def _guarded_request(
+    context, method: str, url: str, headers: dict[str, str] | None,
+    timeout_ms: int, limiter: HostLimiter,
+):
+    """One APIRequestContext call with manual, validated redirect following.
+
+    Playwright's automatic redirect handling would issue a request to the
+    ``Location`` target before this process could inspect it. Setting
+    ``max_redirects=0`` makes each hop explicit; every target is checked for
+    public addresses and spaced through the same host limiter.
+    """
+    current = url
+    for hop in range(_MAX_REDIRECTS + 1):
+        assert_fetch_destination(current)
+        if hop:
+            limiter.wait(current)
+        response = getattr(context.request, method)(
+            current,
+            headers=headers or {},
+            timeout=timeout_ms,
+            max_redirects=0,
+        )
+        if response.status not in _REDIRECT_STATUSES:
+            return response
+        location = _header(dict(response.headers or {}), "location")
+        if not location:
+            return response
+        from urllib.parse import urljoin
+
+        current = urljoin(current, location)
+    raise SourceValidationError("too many redirects while fetching source")
 
 
 def _headless() -> bool:
@@ -244,9 +324,11 @@ def _failure(
     status: FetchStatus = FetchStatus.FETCH_FAILED,
     limiter_wait_ms: int | None = None, browser_launch_ms: int | None = None,
     goto_ms: int | None = None, acquisition: str | None = None,
+    http_status: int | None = None, content_type: str | None = None,
 ) -> FetchResult:
     return FetchResult(
-        url=url, status=status, http_status=None, content_type=None, raw_bytes=None,
+        url=url, status=status, http_status=http_status, content_type=content_type,
+        raw_bytes=None,
         duration_ms=int((time.monotonic() - started) * 1000), error=error,
         error_type=error_type, limiter_wait_ms=limiter_wait_ms,
         browser_launch_ms=browser_launch_ms, goto_ms=goto_ms, acquisition=acquisition,
@@ -270,7 +352,10 @@ def honour_robots_crawl_delay(context, url: str, limiter: HostLimiter, timeout_m
         return
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
     try:
-        response = context.request.get(robots_url, timeout=timeout_ms)
+        limiter.wait(robots_url)
+        response = _guarded_request(
+            context, "get", robots_url, None, timeout_ms, limiter,
+        )
         if response.status != 200:
             return
         body = response.text()
@@ -291,8 +376,16 @@ def _fetch_bytes(
     """Fetch a non-HTML body (PDF etc.) as real bytes via Playwright's HTTP client."""
     request_started = time.monotonic()
     try:
-        response = context.request.get(
-            url, headers=_conditional_headers(etag, last_modified), timeout=timeout_ms,
+        response = _guarded_request(
+            context, "get", url, _conditional_headers(etag, last_modified),
+            timeout_ms, limiter,
+        )
+    except SourceValidationError as exc:
+        return _failure(
+            url, started, "blocked_destination", str(exc),
+            status=FetchStatus.NETWORK_RESTRICTED,
+            limiter_wait_ms=limiter_wait_ms, browser_launch_ms=browser_launch_ms,
+            acquisition=ACQUISITION_REQUEST,
         )
     except Exception as exc:
         return _failure(
@@ -348,8 +441,15 @@ def _fetch_page(
     """
     if etag or last_modified:
         try:
-            probe = context.request.get(
-                url, headers=_conditional_headers(etag, last_modified), timeout=timeout_ms,
+            # HEAD asks the same question as a conditional GET without a second
+            # body transfer. Servers that do not implement HEAD answer 405/501;
+            # that is a failed pre-check, so we render normally rather than
+            # treating it as a block. A real 401/403/429 is authoritative and
+            # stops here: navigating again would be a second request to an
+            # origin that has just refused us.
+            probe = _guarded_request(
+                context, "head", url,
+                _conditional_headers(etag, last_modified), timeout_ms, limiter,
             )
             probe_headers = dict(probe.headers or {})
             honour_retry_after(probe.status, _header(probe_headers, "retry-after"), url, limiter)
@@ -358,6 +458,25 @@ def _fetch_page(
                     url, 304, probe_headers, started, limiter_wait_ms,
                     etag, last_modified, ACQUISITION_REQUEST,
                 )
+            if probe.status in {401, 403, 429}:
+                return _failure(
+                    url, started, "access_refused",
+                    f"conditional pre-check refused with HTTP {probe.status}",
+                    status=FetchStatus.ACCESS_BLOCKED,
+                    limiter_wait_ms=limiter_wait_ms,
+                    browser_launch_ms=browser_launch_ms,
+                    acquisition=ACQUISITION_REQUEST,
+                    http_status=probe.status,
+                    content_type=_header(probe_headers, "content-type"),
+                )
+        except SourceValidationError as exc:
+            return _failure(
+                url, started, "blocked_destination", str(exc),
+                status=FetchStatus.NETWORK_RESTRICTED,
+                limiter_wait_ms=limiter_wait_ms,
+                browser_launch_ms=browser_launch_ms,
+                acquisition=ACQUISITION_REQUEST,
+            )
         except Exception:
             # A failed pre-check is not a failed fetch: fall through and
             # navigate normally. The worst case is that we re-download a body
@@ -468,6 +587,7 @@ def fetch(
 
     try:
         with session.context_for(proxy) as (context, browser_launch_ms):
+            _install_network_guard(context, limiter)
             # robots.txt first (once per host per run), then the politeness
             # wait, so a Crawl-delay the host publishes is already registered
             # before we decide how long to wait.

@@ -6,9 +6,16 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 
-from api.schemas.models import RegisterResponse, TokenResponse, UserCreate, UserResponse
+from api.schemas.models import (
+    LoginRequest,
+    RegisterResponse,
+    TokenResponse,
+    UserCreate,
+    UserResponse,
+)
 from db.connection import get_session, get_db_engine
 from logging_config import get_logger
+from services import login_throttle
 from services.auth_service import AuthService, decode_access_token
 
 router = APIRouter()
@@ -94,13 +101,31 @@ def register(body: UserCreate, request: Request):
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(body: UserCreate, request: Request):
+def login(body: LoginRequest, request: Request):
+    client_host = request.client.host if request.client else "unknown"
+    throttle_key = f"{body.email}|{client_host}"
+    wait = login_throttle.retry_after_seconds(throttle_key)
+    if wait:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts. Try again later.",
+            headers={"Retry-After": str(wait)},
+        )
+
     engine = get_db_engine(request)
     with get_session(engine) as session:
         svc = AuthService(session)
         result = svc.login(body.email, body.password)
         if not result:
+            locked_for = login_throttle.record_failure(throttle_key)
+            if locked_for:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many failed login attempts. Try again later.",
+                    headers={"Retry-After": str(locked_for)},
+                )
             raise HTTPException(status_code=401, detail="Invalid email or password")
+        login_throttle.reset(throttle_key)
         return TokenResponse(
             access_token=result["access_token"],
             token_type=result["token_type"],

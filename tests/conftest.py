@@ -53,9 +53,20 @@ def _set_testing_env():
     # real egress proxy (FETCH_PROXY_URL). Remove it for the whole session; the
     # proxy tests set it back explicitly and per-test.
     os.environ.pop("FETCH_PROXY_URL", None)
+    # Unit tests use reserved domains (example.gov.au) with fake contexts.
+    # Production startup refuses this flag; the SSRF/DNS tests exercise the
+    # resolver directly rather than relying on a live lookup.
+    os.environ["FETCH_VALIDATE_DESTINATION_DNS"] = "false"
+    # The historical suite registers users with 6-7 character passwords. Keep
+    # that convenience local to tests; the production/API default remains 8 and
+    # the policy itself is covered explicitly in test_auth.py.
+    os.environ.setdefault("PASSWORD_MIN_LENGTH", "6")
     yield
-    os.environ.pop("TESTING", None)
-    os.environ.pop("ALLOW_PUBLIC_REGISTRATION", None)
+    for _key in (
+        "TESTING", "ALLOW_PUBLIC_REGISTRATION", "FETCH_VALIDATE_DESTINATION_DNS",
+        "FETCH_ALLOW_PRIVATE_HOSTS", "PASSWORD_MIN_LENGTH",
+    ):
+        os.environ.pop(_key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +75,21 @@ def _set_testing_env():
 # Explicitly marked ``integration`` tests skip this swap so they can call the
 # real OpenAI API (when PYTEST_LLM_LIVE=1 and OPENAI_API_KEY is exported).
 # ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _isolate_raw_snapshots(tmp_path, monkeypatch):
+    """Never let a unit test publish into the developer's real raw/ archive."""
+    monkeypatch.setenv("RAW_SNAPSHOT_DIR", str(tmp_path / "raw"))
+
+
+@pytest.fixture(autouse=True)
+def _reset_login_throttle():
+    from services import login_throttle
+
+    login_throttle.reset_all()
+    yield
+    login_throttle.reset_all()
+
+
 @pytest.fixture(autouse=True)
 def _patch_llm_client_for_unit_tests(request, monkeypatch):
     if request.node.get_closest_marker("integration"):

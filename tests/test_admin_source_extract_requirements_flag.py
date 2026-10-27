@@ -63,7 +63,7 @@ def seeded_source(engine):
         s.merge(GovernmentSource(
             source_id="SRC-AU-TEST-SCOPE", country_id="AU", program_id="SKILLED_189",
             visa_category="SKILLED", authority="Home Affairs",
-            url="https://example.invalid/scope", source_type="HTML",
+            url="https://example.gov.au/scope", source_type="HTML",
             priority="PRIMARY", monitoring_method="WEB", crawl_frequency="DAILY",
             status="ACTIVE",
         ))
@@ -113,7 +113,7 @@ class TestExtractRequirementsFlagSettable:
             json={
                 "source_id": "SRC-AU-NEW-REFERENCE-ONLY",
                 "country_id": "AU", "program_id": "SKILLED_189", "visa_category": "SKILLED",
-                "authority": "Home Affairs", "url": "https://example.invalid/reference-only",
+                "authority": "Home Affairs", "url": "https://example.gov.au/reference-only",
                 "extract_requirements": False,
             },
             headers=admin_headers,
@@ -127,7 +127,7 @@ class TestExtractRequirementsFlagSettable:
             json={
                 "source_id": "SRC-AU-NEW-DEFAULT",
                 "country_id": "AU", "program_id": "SKILLED_189", "visa_category": "SKILLED",
-                "authority": "Home Affairs", "url": "https://example.invalid/default",
+                "authority": "Home Affairs", "url": "https://example.gov.au/default",
             },
             headers=admin_headers,
         )

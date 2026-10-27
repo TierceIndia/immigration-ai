@@ -33,12 +33,15 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def _get_jwt_secret() -> str:
     secret = os.getenv("JWT_SECRET_KEY")
+    env = os.getenv("ENVIRONMENT", "development").strip().lower()
+    if env == "production":
+        from production_config import validate_jwt_secret
+
+        problems = validate_jwt_secret(secret)
+        if problems:
+            raise ValueError("; ".join(problems))
+        return secret  # type: ignore[return-value]
     if not secret:
-        env = os.getenv("ENVIRONMENT", "development")
-        if env == "production":
-            raise ValueError(
-                "JWT_SECRET_KEY environment variable must be set in production"
-            )
         logger.warning(
             "JWT_SECRET_KEY not set — using development default (not for production use)"
         )

@@ -305,8 +305,8 @@ def test_is_headless_parses_env_values(monkeypatch, value, expected):
 
 
 def test_launch_args_are_container_hardening_not_evasion():
-    """--no-sandbox/--disable-dev-shm-usage are needed to run as root in a
-    container. They must not grow into fingerprint-evasion flags."""
+    """--no-sandbox/--disable-dev-shm-usage are container compatibility flags,
+    not root requirements. They must not grow into fingerprint-evasion flags."""
     assert "--no-sandbox" in BROWSER_LAUNCH_ARGS
     assert "--disable-dev-shm-usage" in BROWSER_LAUNCH_ARGS
     for evasion in ("--disable-blink-features", "user-agent", "AutomationControlled"):

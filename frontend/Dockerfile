@@ -21,11 +21,17 @@ ENV VITE_API_BASE_URL=""
 RUN npm run build
 
 
-FROM nginx:1.27-alpine AS runtime
+# Unprivileged nginx: the master process is not root and the image is built to
+# run as UID 101. Nothing here needs to bind a privileged port.
+FROM nginxinc/nginx-unprivileged:stable-alpine AS runtime
 
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-EXPOSE 80
+EXPOSE 8080
 
-# nginx's own image already runs it in the foreground with the right signals.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
+
+# The base image already runs nginx in the foreground as a non-root user with
+# the right signal handling.

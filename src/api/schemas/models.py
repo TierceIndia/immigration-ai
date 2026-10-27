@@ -1,10 +1,12 @@
 """Pydantic request/response schemas for the API."""
 from __future__ import annotations
 
+import os
+import re
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -238,10 +240,71 @@ class RegisterResponse(BaseModel):
     expires_in: int
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PASSWORD_MAX_BYTES = 72  # bcrypt's effective input limit
+
+
+def password_min_length() -> int:
+    try:
+        value = int(os.getenv("PASSWORD_MIN_LENGTH", "8"))
+    except ValueError:
+        value = 8
+    return max(1, min(value, _PASSWORD_MAX_BYTES))
+
+
+def normalise_email(value: str) -> str:
+    email = (value or "").strip().lower()
+    if len(email) > 254 or not _EMAIL_RE.match(email):
+        raise ValueError("email must be a valid address")
+    return email
+
+
+class LoginRequest(BaseModel):
+    """Login deliberately has no password-strength rule.
+
+    A wrong short password must reach authentication and produce the same 401 as
+    any other wrong password; rejecting it at schema level would leak policy and
+    make login behaviour inconsistent with existing accounts.
+    """
+
+    email: str
+    password: str
+
+    _normalise_login_email = field_validator("email")(normalise_email)
+
+
 class UserCreate(BaseModel):
     email: str
     password: str
     full_name: str | None = None
+
+    _normalise_register_email = field_validator("email")(normalise_email)
+
+    @field_validator("password")
+    @classmethod
+    def _validate_password(cls, value: str) -> str:
+        if not isinstance(value, str) or not value:
+            raise ValueError("password is required")
+        if len(value.encode("utf-8")) > _PASSWORD_MAX_BYTES:
+            raise ValueError(
+                f"password must be at most {_PASSWORD_MAX_BYTES} bytes"
+            )
+        minimum = password_min_length()
+        if len(value) < minimum:
+            raise ValueError(f"password must be at least {minimum} characters")
+        if value.strip() != value:
+            raise ValueError("password must not have leading/trailing whitespace")
+        return value
+
+    @field_validator("full_name")
+    @classmethod
+    def _validate_full_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if len(value) > 128:
+            raise ValueError("full_name must be at most 128 characters")
+        return value or None
 
 
 class UserResponse(BaseModel):

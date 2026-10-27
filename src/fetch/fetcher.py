@@ -21,12 +21,13 @@ import socket
 import time
 from dataclasses import dataclass
 from enum import Enum
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 
 from fetch.politeness import HostLimiter, get_limiter
 from fetch.proxy import ProxyConfigError, requests_proxies
+from fetch.source_validation import SourceValidationError, assert_fetch_destination
 
 DEFAULT_USER_AGENT = "AU-Immigration-Source-Monitor/0.1"
 
@@ -250,6 +251,46 @@ def _parse_crawl_delay(robots_text: str, user_agent: str = USER_AGENT) -> float 
     return best
 
 
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_MAX_REDIRECTS = 5
+
+
+def _guarded_get(
+    url: str, *, headers: dict[str, str], timeout: int,
+    proxies: dict[str, str] | None, limiter: HostLimiter,
+) -> tuple[requests.Response, int]:
+    """GET with explicit, validated redirects and the same host spacing.
+
+    ``requests`` would otherwise follow a ``Location`` to RFC1918 space or a
+    cloud metadata endpoint before this process can inspect it. Every hop is
+    checked immediately before the request is issued. The returned integer is
+    the limiter wait added by redirect hops, so callers can still report the
+    real total.
+    """
+    current = url
+    redirect_wait_ms = 0
+    for hop in range(_MAX_REDIRECTS + 1):
+        assert_fetch_destination(current)
+        if hop:
+            redirect_wait_ms += int(limiter.wait(current) * 1000)
+        response = requests.get(
+            current,
+            headers=headers,
+            timeout=timeout,
+            proxies=proxies,
+            allow_redirects=False,
+        )
+        if response.status_code not in _REDIRECT_STATUSES:
+            return response, redirect_wait_ms
+        location = (getattr(response, "headers", {}) or {}).get("Location")
+        if not location:
+            return response, redirect_wait_ms
+        current = urljoin(current, location)
+    raise requests.TooManyRedirects(
+        f"more than {_MAX_REDIRECTS} redirects while fetching {url}"
+    )
+
+
 def _honour_robots_crawl_delay(
     url: str, limiter: HostLimiter, timeout: int,
     proxies: dict[str, str] | None = None,
@@ -268,13 +309,14 @@ def _honour_robots_crawl_delay(
         return
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
     try:
-        resp = requests.get(
+        resp, _ = _guarded_get(
             robots_url,
             headers={"User-Agent": USER_AGENT, "Accept": "text/plain,*/*"},
             timeout=timeout,
             proxies=proxies,
+            limiter=limiter,
         )
-    except requests.RequestException:
+    except (requests.RequestException, SourceValidationError):
         return
     if resp.status_code != 200 or not resp.text:
         return
@@ -346,12 +388,14 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
         limiter_wait_ms += int(limiter.wait(url) * 1000)
         start = time.monotonic()
         try:
-            resp = requests.get(
+            resp, redirect_wait_ms = _guarded_get(
                 url,
                 headers=headers,
                 timeout=timeout,
                 proxies=proxies,
+                limiter=limiter,
             )
+            limiter_wait_ms += redirect_wait_ms
             duration_ms = int((time.monotonic() - start) * 1000)
 
             _honour_retry_after(resp, url, limiter)
@@ -394,6 +438,14 @@ def fetch(url: str, source_type: str = "HTML", timeout: int = DEFAULT_TIMEOUT_SE
                 http_ms=duration_ms,
                 etag=resp.headers.get("ETag"),
                 last_modified=resp.headers.get("Last-Modified"),
+            )
+        except SourceValidationError as exc:
+            return FetchResult(
+                url=url, status=FetchStatus.NETWORK_RESTRICTED, http_status=None,
+                content_type=None, raw_bytes=None,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error=str(exc), error_type="blocked_destination",
+                limiter_wait_ms=limiter_wait_ms,
             )
         except requests.RequestException as e:
             duration_ms = int((time.monotonic() - start) * 1000)

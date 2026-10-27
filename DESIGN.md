@@ -28,11 +28,13 @@ End-to-end deterministic immigration eligibility system for Australian skilled m
 | 7 | Test/package cleanup (no phase-named test packages, no scratch scripts) | COMPLETE |
 | 8+ | Real-data supersession proof, RAG, recommendations, applicant product, multi-country | NOT STARTED |
 
-**Current state (2026-10-23)**: 1,587 backend tests pass in the hermetic suite and 56 pass
+**Current state (2026-10-27)**: 1,695 backend tests pass in the hermetic suite and 56 pass
 against real PostgreSQL + pgvector; the frontend runs 42 unit tests and 5 Playwright/axe
-tests. CI runs all four gates on every change. The remaining work is human-gated (live
-fetch confirmation, real source syncs, rule activation, secret rotation) and breadth
-(real supersession, WORK/STUDENT/VISITOR gold, applicant-facing UI, multi-country).
+tests. The production compose topology is config-checked and the non-root images were
+smoke-tested, but no target host has been provisioned. CI runs all four gates on every
+change. The remaining work is human-gated (live fetch confirmation, real source syncs, rule
+activation, secret rotation) and breadth (real supersession, WORK/STUDENT/VISITOR gold,
+applicant-facing UI, multi-country).
 
 ---
 
@@ -864,14 +866,16 @@ created_at       → datetime
 
 ## 11. Docker Deployment
 
-**Updated 2026-10-23**: one Playwright/Chromium path (headless), a durable volume for raw
-snapshots, a pgvector-enabled database image, and a separate nginx image for the admin UI.
+**Updated 2026-10-27**: one Playwright/Chromium path (headless), a durable volume for raw
+snapshots, a pgvector-enabled database image, an unprivileged API image, and a separate
+unprivileged nginx image for the admin UI. `docker-compose.prod.yml` now describes a TLS
+topology, but no target host has been provisioned or exercised.
 
 ### Dockerfile
 
 ```dockerfile
 FROM python:3.12-slim
-# Installs requirements, copies src/, runs uvicorn.
+# Installs requirements, copies src/, runs uvicorn as fixed UID/GID 10001 (app).
 # Bakes the browser with `playwright install --with-deps chromium`; the browser is
 # headless, so there is no Xvfb/xauth/DISPLAY. PLAYWRIGHT_BROWSERS_PATH is fixed so
 # the path does not depend on the container user's HOME.
@@ -879,9 +883,9 @@ FROM python:3.12-slim
 ```
 
 `frontend/Dockerfile` is a two-stage build: Node 22 runs `npm ci` and `npm run build`, then
-nginx serves `dist/` and proxies `/api` to the API on the same origin (no CORS, no
-localhost baked into the bundle). It is built by CI but is not part of
-`docker-compose.yml` - there is no deploy target yet.
+unprivileged nginx serves `dist/` on port 8080 and proxies `/api` to the API on the
+same origin (no CORS, no localhost baked into the bundle). It is built by CI, and the
+production compose file adds Caddy TLS in front of it; no target host has been run yet.
 
 ### docker-compose.yml
 
@@ -956,7 +960,7 @@ Government Source
 
 ## 13. Test Inventory
 
-**Current totals (2026-10-23)**: 1,587 passed / 65 skipped in the hermetic backend suite;
+**Current totals (2026-10-27)**: 1,695 passed / 65 skipped in the hermetic backend suite;
 56 passed against PostgreSQL + pgvector; 42 frontend unit tests; 5 Playwright/axe tests.
 The per-file tables below are a 2026-09-15 snapshot kept for orientation; the counts that
 follow the "Current collection counts" heading are exact.
@@ -1056,7 +1060,7 @@ The 65 hermetic skips are PostgreSQL-gated or explicit live opt-ins (`POSTGRES_E
 | test_pipeline_runs.py | 42 | PipelineRun model, repo CRUD, API endpoints, computed counters, orchestrator integration |
 | test_e2e_scenarios.py | 14 | Multi-program, multi-version, gap engine, evaluation, orchestration |
 
-### Total: 1,587 passed / 65 skipped (2026-10-23)
+### Total: 1,695 passed / 65 skipped (2026-10-27)
 
 (The per-file tables above are a representative 2026-09-15 snapshot — several files have
 grown since. The exact current counts are under "Current collection counts" above and in the
@@ -1204,7 +1208,7 @@ worth far more than one that is fast and gets the IP blocked.
 
 ### Strengths
 
-- 1,587 hermetic tests passing / 65 skipped, plus 56 PostgreSQL and 47 frontend tests, all green
+- 1,695 hermetic tests passing / 65 skipped, plus 56 PostgreSQL and 47 frontend tests, all green
 - CI gates every push/PR on backend, PostgreSQL e2e, frontend unit/browser/axe and image builds
 - Strong domain separation (LLM extraction vs deterministic rules)
 - Complete provenance chain from rule to government URL
@@ -1255,7 +1259,7 @@ worth far more than one that is fast and gets the IP blocked.
 | `SRC-AU-MIGRATION-REGS-1994` wrong URL | P2 | DONE | 2026-09-25: fixed to a verified-real PDF deep-link (validated during source inspection; the one-off registry report was retired); **re-confirmed live 2026-10-05** — real sync extracted 13 real requirements |
 | `SRC-AU-CRICOS-REGISTER` yields 0 chunks | P2 | OPEN | Confirmed (2026-09-25) a genuine search-interface SPA, not fixable via render-wait; needs re-sourcing |
 | ~~Raw immutable snapshot persistence~~ | P1 | **DONE (2026-10-05)** | `docker-compose.yml` had no volume for `/app/raw` — every container recreation silently lost previously-fetched raw files while `government_documents.raw_path` kept pointing at now-missing paths. Added a `raw_snapshots` named volume; verified a fetch's file survives a recreate with its hash matching the DB. |
-| ~~Fresh Docker build can't reach PostgreSQL~~ | P0 | **DONE (2026-10-01)** | `DATABASE_URL` now names `postgresql+psycopg2://` explicitly instead of a bare `postgresql://`. The earlier host-venv-only psycopg v3 failures are gone: the current hermetic suite is 1,587 passed / 65 skipped with zero failures. |
+| ~~Fresh Docker build can't reach PostgreSQL~~ | P0 | **DONE (2026-10-01)** | `DATABASE_URL` now names `postgresql+psycopg2://` explicitly instead of a bare `postgresql://`. The earlier host-venv-only psycopg v3 failures are gone: the suite at that time was 1,587 passed / 65 skipped with zero failures. |
 | ~~`requirement_id`/`rule_id` truncation on PostgreSQL~~ | **P0, new** | **DONE (2026-10-05)** | `String(48)` silently dropped rows for long `program_id`s on Postgres (`StringDataRightTruncation`) — SQLite never caught it since it doesn't enforce VARCHAR length. Widened to `String(96)` with a fail-fast length guard (migration `a3c5e7f9b1d3`). |
 | `SRC-AU-600-MAIN` (and 6 other `immi.homeaffairs.gov.au` pages) yield 0 chunks | **P1** | **Partially done — two bugs, not one** | (1) DONE: content sat inside a legacy ASP.NET `<form>` that `extractor_html.py` deleted wholesale as noise — fixed by unwrapping, not decomposing, `<form>` tags. (2) Found the same day, bigger: a full-registry sync still showed 7/14 sources at 0 chunks on a genuinely successful fetch — these Angular pages render real content from a hidden-input JSON blob client-side, *after* `domcontentloaded`, and `browser_fetcher.py` was capturing too early. Fixed with a bounded wait for a real structural selector; unit-tested against the real captured shape; **live reconfirmation blocked** by the WAF (see row above) as of this writing. |
 | ~~`uq_rules_active_per_field` narrower than its own invariant~~ | **P1, new** | **DONE (2026-10-05)** | Covered only `(program_id, field)`; `activate_rule`'s own logical key is `(program_id, category, field)`. A legitimate same-field-different-category ACTIVE rule was incorrectly rejected. Widened via migration `7c9e2a4f1b6d`. |
@@ -1265,11 +1269,11 @@ worth far more than one that is fast and gets the IP blocked.
 | 491 real-world coverage | P3 | OPEN | Partial real scenario validation |
 | Applicant-facing frontend | P2 | OPEN | The internal admin console (`frontend/`) now covers sources, review, rules (test/activate), documents/search, applicants and scheduler. The applicant-facing product UI is still unstarted. |
 | Supersession with real government data | P1 | OPEN | Works in the PostgreSQL e2e (v1 ACTIVE → v2 activates → v1 SUPERSEDED → historical assessment untouched), but no second real version of a real source has been processed yet. |
-| Deployment target (TLS, orchestration) | P2 | OPEN | Images build (API and UI) and compose runs locally; there is no production deploy target, ingress or TLS termination. |
+| Deployment target (TLS, orchestration) | P2 | **PARTIAL** | `docker-compose.prod.yml` + Caddy define TLS, private networks, no published API/DB ports and unprivileged containers. No target host has been provisioned; DNS, certificates, backups/restores, monitoring and rollback are unverified. |
 
-### Verification performed (2026-08-27; re-verified 2026-09-15, 2026-09-25, 2026-10-05, 2026-10-23)
+### Verification performed (2026-08-27; re-verified 2026-09-15, 2026-09-25, 2026-10-05, 2026-10-23, 2026-10-27)
 
-1. **1,587 passed / 65 skipped, 0 failed** (2026-10-23) in the hermetic backend suite, plus
+1. **1,695 passed / 65 skipped, 0 failed** (2026-10-27) in the hermetic backend suite, plus
    **56 passed** against PostgreSQL 16 + pgvector, **42** frontend unit tests and **5**
    Playwright/axe tests. The suite is hermetic: it makes no live network call, launches no
    browser and needs no database. The skips are explicit PostgreSQL/live opt-ins.
@@ -1294,6 +1298,14 @@ worth far more than one that is fast and gets the IP blocked.
    pip/npm/actions updates.
 10. **Container builds** (2026-10-23): both the API image and the nginx UI image build
     locally and in CI.
+11. **Production hardening** (2026-10-27): the API image runs as UID/GID `10001` and
+    launches Chromium headlessly; the admin image runs as UID `101` and proxies
+    `/health` + `/ready` to the API; a fresh named volume inherits app ownership; unsafe
+    production env values abort startup; `docker-compose.prod.yml` renders with no
+    published API/DB/frontend ports; and `caddy validate` accepts the Caddyfile.
+    Migration `d3e4f5a6b7c8`/`e5f6a7b8c9d0` downgrade and re-upgrade cleanly on
+    PostgreSQL. No target host, DNS, certificate, backup or monitoring test has been
+    performed.
 
 ### Next Milestones
 

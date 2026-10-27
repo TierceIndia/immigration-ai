@@ -9,10 +9,11 @@ PASS/FAIL/UNKNOWN answers with a citation trail back to the exact government tex
 **Core principle**: no LLM decides eligibility. LLMs help read government pages;
 the eligibility answer is computed by deterministic code from versioned rules.
 
-**State (2026-10-23)**: the internal admin workflow is complete and tested
+**State (2026-10-27)**: the internal admin workflow is complete and tested
 (ingest, review, compile, activate, assess, search) and every change is gated by
 CI. It is **not production-ready** until the human gates at the end of this file
-are done. No live government host or paid LLM is contacted by the test suite.
+are done. Production hardening is in place and verified locally; no target host has
+been exercised. No live government host or paid LLM is contacted by the test suite.
 
 ---
 
@@ -30,7 +31,7 @@ are done. No live government host or paid LLM is contacted by the test suite.
 | Assessment | Eligible/ineligible/incomplete with gaps and follow-up questions; persisted `ruleset_hash`, rule versions and per-rule results |
 | Search | `POST /api/v1/search` with keyword and pgvector semantic modes; `auto` falls back honestly and reports which mode ran |
 | Admin UI | React + Vite console: dashboard, sources, review queue, rules (test/approve/activate), documents (search, versions, diff), applicants, scheduler. Talks only to existing API routes |
-| Docker | API image bakes Playwright Chromium; `docker-compose.yml` runs PostgreSQL 16 + pgvector and the API; a separate `frontend/Dockerfile` builds the UI and serves it behind nginx on the same origin |
+| Docker | API image bakes Playwright Chromium and runs unprivileged (UID 10001); `docker-compose.yml` runs PostgreSQL 16 + pgvector and the API; a separate `frontend/Dockerfile` builds the UI and serves it behind unprivileged nginx on the same origin; `docker-compose.prod.yml` adds TLS termination, private networking and no published API/DB ports |
 | CI | Backend (hermetic), PostgreSQL e2e, frontend unit + browser/axe, and both container images, on every push/PR |
 
 Known content limits are recorded in [Known limitations](#known-limitations).
@@ -63,8 +64,8 @@ Compose runs migrations, seeds the registry, then serves the API on
 `POSTGRES_HOST_PORT=5433` and the matching `DATABASE_URL` port in `.env`; the
 container-internal port does not change.
 
-The admin UI is not part of `docker-compose.yml` (there is no deploy target yet).
-Run it from source, or build its image and point nginx at the API:
+The admin UI is not part of the development `docker-compose.yml`. Run it from
+source, or build its image and point nginx at the API:
 
 ```powershell
 cd frontend
@@ -72,7 +73,52 @@ npm ci
 npm run dev          # http://localhost:5173, API at VITE_API_BASE_URL
 npm run build        # static bundle in dist/
 docker build -t immigration-admin .
+docker run --rm -p 8080:8080 --network immigration-knowledge_default immigration-admin
 ```
+
+Both images run as unprivileged users (API UID 10001; nginx UID 101). The API
+runs `alembic upgrade head` and seeds the registry before starting uvicorn.
+
+If an existing raw-snapshot volume was created by an older root-running image,
+give it to the API user once before starting the hardened image:
+
+```powershell
+docker run --rm -v immigration-knowledge-prod_raw_snapshots:/raw alpine chown -R 10001:10001 /raw
+```
+
+New named volumes inherit the image's `/app/raw` ownership and do not need this.
+
+### Production compose (not exercised here)
+
+`docker-compose.prod.yml` describes the production topology: PostgreSQL and the
+API have no published ports, the UI is only reachable through Caddy on 80/443,
+Caddy obtains and renews TLS, and the database/UI networks have no egress. The
+API keeps one egress network for government/LLM calls. Required values have no
+defaults, so compose refuses to start with a missing secret.
+
+```powershell
+Copy-Item deploy\prod.env.example <outside-repo>\immigration-prod.env
+# fill DOMAIN, DATABASE_URL, POSTGRES_PASSWORD, JWT_SECRET_KEY, ADMIN_*
+docker compose --env-file <outside-repo>\immigration-prod.env -f docker-compose.prod.yml up -d --build
+docker compose --env-file <outside-repo>\immigration-prod.env -f docker-compose.prod.yml ps
+```
+
+There is **no provisioned target** and this file has not been run against a real
+host. DNS/TLS issuance, firewall rules, PostgreSQL backup/restore, raw-snapshot
+backup/restore, alerting and secret rotation must be verified in that environment
+before any production-ready claim. Example backup/restore commands (run from the
+repository, with the same env file):
+
+```powershell
+# Database (custom format, restore with pg_restore).
+docker compose --env-file <outside-repo>\immigration-prod.env -f docker-compose.prod.yml exec -T postgres pg_dump -U immigration -d immigration -Fc > immigration.dump
+
+# Raw snapshots (immutable files referenced by government_documents.raw_path).
+docker run --rm -v immigration-knowledge-prod_raw_snapshots:/raw:ro -v ${PWD}:/backup alpine tar czf /backup/raw-snapshots.tgz -C /raw .
+```
+
+Restore into a **new, empty** database/volume, verify hashes, then switch over;
+never restore over the live database or append-only audit tables in place.
 
 On startup the API creates or promotes an admin when both `ADMIN_EMAIL` and
 `ADMIN_PASSWORD` are set. Otherwise create one explicitly:
@@ -95,10 +141,13 @@ Copy `.env.example` and fill in only what you need. The most important values:
 | `DATABASE_URL` | none | SQLAlchemy URL. Name the driver: `postgresql+psycopg2://...` |
 | `POSTGRES_HOST_PORT` | 5432 | Host port published by compose |
 | `SECRET_KEY`, `JWT_SECRET_KEY` | placeholders | Replace before any real use |
-| `ENVIRONMENT` | `development` | `production` requires a real JWT secret |
-| `CORS_ORIGINS` | localhost 3000/5173 | Comma-separated allowed origins |
+| `ENVIRONMENT` | `development` | `production` fail-closes on weak/placeholder config |
+| `CORS_ORIGINS` | localhost 3000/5173 | Comma-separated origins; production requires absolute HTTPS, no localhost |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | unset | Idempotent admin bootstrap |
 | `ALLOW_PUBLIC_REGISTRATION` | `false` | Must be `true` for `/auth/register` |
+| `PASSWORD_MIN_LENGTH` | 8 | API minimum; production refuses values below 8 |
+| `LOGIN_MAX_ATTEMPTS` / `LOGIN_LOCKOUT_SECONDS` | 5 / 900 | Per-email login throttle |
+| `SOURCE_ALLOWED_HOST_SUFFIXES` | `.gov.au` | Source host allowlist; never a bare wildcard |
 | `EXTRACTION_MODEL` | `gpt-4o-mini` | OpenAI (`gpt-*`) or Gemini (`gemini-*`) model |
 | `OPENAI_API_KEY`, `GEMINI_API_KEY` | unset | Required for live extraction |
 | `LLM_DAILY_BUDGET_USD` / `LLM_MONTHLY_BUDGET_USD` | 10 / 200 | Budget guard for extraction |
@@ -211,12 +260,12 @@ Commands: `npm test` (Vitest), `npm run test:e2e` (Playwright + axe), `npm run b
 
 ## Testing
 
-Everything below was run on 2026-10-23.
+Everything below was run on 2026-10-27.
 
 | Suite | Command | Result |
 |---|---|---|
-| Backend, hermetic | `python -m pytest -q` | **1587 passed, 65 skipped** (~2m10s) |
-| PostgreSQL e2e | `POSTGRES_E2E=1 POSTGRES_E2E_URL=... python -m pytest tests/e2e tests/services/test_search_service.py tests/db/test_vector_type.py -q` | **56 passed** |
+| Backend, hermetic | `python -m pytest -q` | **1,695 passed, 65 skipped** (~2m24s) |
+| PostgreSQL e2e | `POSTGRES_E2E=1 POSTGRES_E2E_URL=... python -m pytest tests/e2e tests/services/test_search_service.py tests/db/test_vector_type.py -q` | **56 passed** (~6s) |
 | Frontend unit | `cd frontend; npm test` | **42 passed** (12 files) |
 | Frontend browser | `cd frontend; npm run test:e2e` | **5 passed** (incl. axe: no serious/critical) |
 
@@ -280,7 +329,7 @@ immigration-knowledge/
 │   └── create_admin.py       # CLI: bootstrap an admin
 ├── tests/                    # pytest suites (+ tests/e2e, guarded PostgreSQL tests)
 ├── frontend/                 # React admin console, Vitest, Playwright, Dockerfile
-├── migrations/versions/      # 23 alembic migrations (head c2d3e4f5a6b7)
+├── migrations/versions/      # 25 alembic migrations (head e5f6a7b8c9d0)
 ├── sources/                  # source_registry.seed.json
 ├── prompts/                  # extraction prompts per visa category
 ├── schema/                   # JSON schema + static SQL snapshot
@@ -289,7 +338,9 @@ immigration-knowledge/
 ├── .github/                  # CI + Dependabot
 ├── Dockerfile                # API image (Playwright Chromium baked in)
 ├── frontend/Dockerfile       # nginx image serving the admin UI
-├── docker-compose.yml        # postgres (pgvector) + api
+├── docker-compose.yml        # dev: postgres (pgvector) + api
+├── docker-compose.prod.yml   # prod: TLS, private networks, no published API/DB
+├── deploy/                   # Caddyfile + production env example
 ├── DBSTRUCTURE.md            # regenerated with scripts/db_structure.py
 ├── DESIGN.md                 # architecture, gaps, roadmap and verification
 └── README.md
@@ -308,7 +359,8 @@ immigration-knowledge/
 The fetch layer is one code path: Playwright drives a real headless Chromium
 (`src/fetch/playwright_client.py`). It sends an honest User-Agent, loads the page
 in `en-AU`, and uses only the launch flags a container needs
-(`--no-sandbox`, `--disable-dev-shm-usage`). It waits for real content (bounded)
+(`--no-sandbox`, `--disable-dev-shm-usage`). The image itself runs unprivileged,
+so those flags do not also mean running as root. It waits for real content (bounded)
 because several sources render after `domcontentloaded` - waiting is not evasion,
 it just stops racing the page.
 
@@ -353,8 +405,10 @@ and the `patchright` dependency are deleted. Nothing new imports it.
 - **No applicant-facing UI.** The console is an internal admin tool.
 - **Single-process LLM governance** (in-memory rate/budget state); horizontal
   scaling would need a shared store.
-- **No deploy target** is defined; images build, but there is no production
-  orchestration or TLS termination.
+- **No deploy target has been provisioned or exercised.** Images build and
+  `docker-compose.prod.yml` defines orchestration/TLS, but DNS, certificates,
+  firewall, backups/restores, monitoring and rollback have not been validated on
+  a real host.
 - Multi-country support is not started; the schema carries `country_id`, but only
   Australia is seeded.
 

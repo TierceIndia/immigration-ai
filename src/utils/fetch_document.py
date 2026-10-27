@@ -24,7 +24,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -116,6 +118,87 @@ def _manifest_path(path: Path) -> Path:
     return path.parent / f"{path.name}.meta.json"
 
 
+class RawSnapshotIntegrityError(RuntimeError):
+    """An immutable snapshot exists but its bytes or manifest do not agree."""
+
+
+def _write_new_file(path: Path, data: bytes) -> None:
+    """Atomically publish ``data`` at ``path`` without ever replacing a file.
+
+    The bytes go to a temp file in the same directory (rename/link is only
+    atomic within a filesystem) and are then hard-linked into place with
+    ``O_EXCL`` semantics. If the target already exists, ``FileExistsError`` is
+    raised and the caller decides whether the existing bytes are acceptable.
+    """
+    fd, tmp_name = tempfile.mkstemp(prefix=".tmp-", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            raise
+        except OSError:
+            # Some filesystems/Windows configurations do not support hard
+            # links. O_EXCL still guarantees we never clobber an existing
+            # snapshot; a crash can leave a partial file, which the manifest
+            # check on the next run will refuse.
+            with open(path, "xb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _manifest_bytes(metadata: dict[str, Any]) -> bytes:
+    return (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _verify_existing_snapshot(
+    path: Path, raw_bytes: bytes, content_hash: str, metadata: dict[str, Any],
+) -> None:
+    existing = path.read_bytes()
+    if existing != raw_bytes:
+        raise RawSnapshotIntegrityError(
+            f"immutable snapshot {path} already exists with different bytes "
+            f"(stored sha256={sha256_bytes(existing)}, incoming={content_hash})"
+        )
+    manifest_path = _manifest_path(path)
+    if not manifest_path.is_file():
+        raise RawSnapshotIntegrityError(
+            f"immutable snapshot {path} has no retrieval manifest"
+        )
+    try:
+        stored_meta = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RawSnapshotIntegrityError(
+            f"retrieval manifest {manifest_path} is unreadable: {exc}"
+        ) from exc
+    if stored_meta.get("content_hash") != content_hash:
+        raise RawSnapshotIntegrityError(
+            f"retrieval manifest {manifest_path} does not match stored bytes"
+        )
+    if stored_meta.get("content_length") != len(raw_bytes):
+        raise RawSnapshotIntegrityError(
+            f"retrieval manifest {manifest_path} records a different length"
+        )
+    # The first manifest wins: identical bytes on the same version keep their
+    # original retrieval time/duration rather than being rewritten to look like
+    # a fresh acquisition.
+    for key in ("source_id", "document_id", "version_number"):
+        if key in metadata and stored_meta.get(key) != metadata[key]:
+            raise RawSnapshotIntegrityError(
+                f"retrieval manifest {manifest_path} disagrees on {key}"
+            )
+
+
 def _status_value(status: Any) -> str | None:
     value = getattr(status, "value", status)
     return str(value) if value is not None else None
@@ -186,21 +269,50 @@ def persist_raw_snapshot(
     """
     path = _raw_root() / _raw_snapshot_relpath(source, version_number)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(raw_bytes)
 
+    actual_hash = sha256_bytes(raw_bytes)
+    if content_hash is not None and content_hash != actual_hash:
+        raise RawSnapshotIntegrityError(
+            f"content_hash {content_hash} does not match the bytes to store "
+            f"({actual_hash})"
+        )
     metadata = build_raw_metadata(
         source=source,
         document_id=document_id or f"DOC-{str(source.source_id).replace('SRC-', '')}",
         version_number=version_number,
-        content_hash=content_hash or sha256_bytes(raw_bytes),
+        content_hash=actual_hash,
         retrieved_at=retrieved_at or datetime.now(timezone.utc),
         raw_bytes=raw_bytes,
         fetch_result=fetch_result,
         acquisition=acquisition,
     )
-    _manifest_path(path).write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+
+    if path.exists():
+        _verify_existing_snapshot(path, raw_bytes, actual_hash, metadata)
+        return path
+
+    manifest_path = _manifest_path(path)
+    if manifest_path.exists():
+        raise RawSnapshotIntegrityError(
+            f"orphan retrieval manifest {manifest_path} exists without its snapshot"
+        )
+
+    # Publish the manifest first, then the bytes. The DB row is only written
+    # after this function returns. If the process dies between the two links,
+    # the next run sees an orphan manifest and refuses rather than silently
+    # reusing unverifiable evidence. Both links are no-clobber.
+    _write_new_file(manifest_path, _manifest_bytes(metadata))
+    try:
+        _write_new_file(path, raw_bytes)
+    except FileExistsError:
+        # Lost a race with another writer: verify what they published.
+        _verify_existing_snapshot(path, raw_bytes, actual_hash, metadata)
+    except Exception:
+        try:
+            manifest_path.unlink()
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -334,6 +446,25 @@ def _build_timing(
     )
 
 
+def _retrieval_event(fetch_result) -> dict[str, Any]:
+    """FetchLog columns describing one acquisition attempt.
+
+    A fresh retrieval id is generated per attempt; timings stay ``None`` when
+    the stage did not run rather than being coerced to zero.
+    """
+    return {
+        "retrieval_id": str(uuid.uuid4()),
+        "acquisition": getattr(fetch_result, "acquisition", None),
+        "final_url": getattr(fetch_result, "url", None),
+        "content_type": getattr(fetch_result, "content_type", None),
+        "limiter_wait_ms": getattr(fetch_result, "limiter_wait_ms", None),
+        "browser_launch_ms": getattr(fetch_result, "browser_launch_ms", None),
+        "goto_ms": getattr(fetch_result, "goto_ms", None),
+        "selector_wait_ms": getattr(fetch_result, "selector_wait_ms", None),
+        "selector_timed_out": getattr(fetch_result, "selector_timed_out", None),
+    }
+
+
 def _record_fetch_failure(
     session: Session, source: GovernmentSource, fetch_result, now: datetime,
     timing: SourceTiming | None = None,
@@ -383,6 +514,7 @@ def _record_fetch_failure(
             duration_ms=fetch_result.duration_ms,
             error=fetch_result.error,
             error_type=fetch_result.error_type,
+            **_retrieval_event(fetch_result),
         )
     )
     session.flush()
@@ -667,7 +799,7 @@ def fetch_document_and_store(
     run requirement extraction. Returns a ``FetchStoreOutcome`` describing what happened.
 
     On fetch/parse failure the source diagnostics are updated and a ``FetchLog`` row records
-    the outcome; blocked sources are demoted to ``NEEDS_MANUAL_CAPTURE``.
+    the outcome; a source is never demoted out of the scheduled sync set.
 
     ``browser_session``: an optional retrieval session shared across a whole
     sync run (fetch.backend.new_session()), so one browser serves every source
@@ -729,6 +861,7 @@ def fetch_document_and_store(
                 http_status=fetch_result.http_status, status=fetcher.FetchStatus.OK.value,
                 content_hash=source.last_hash, changed=0,
                 duration_ms=fetch_result.duration_ms, error=None,
+                **_retrieval_event(fetch_result),
             )
         )
         session.flush()
@@ -888,6 +1021,7 @@ def fetch_document_and_store(
             changed=1 if change_type != "UNCHANGED" else 0,
             duration_ms=fetch_result.duration_ms,
             error=None,
+            **_retrieval_event(fetch_result),
         )
     )
     session.flush()

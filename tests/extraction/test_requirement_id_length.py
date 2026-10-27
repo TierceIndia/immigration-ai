@@ -72,7 +72,7 @@ def _fresh_conn(tmp_path, program_id: str):
         INSERT INTO government_sources
             (source_id, country_id, program_id, visa_category, authority, url,
              source_type, priority, monitoring_method, crawl_frequency, status)
-        VALUES ('SRC-TEST', 'AU', ?, 'SKILLED', 'Test Authority', 'https://example.invalid',
+        VALUES ('SRC-TEST', 'AU', ?, 'SKILLED', 'Test Authority', 'https://example.gov.au',
                 'HTML', 'PRIMARY', 'WEB', 'WEEKLY', 'ACTIVE')
         """,
         (program_id,),
@@ -83,7 +83,7 @@ def _fresh_conn(tmp_path, program_id: str):
             (document_id, source_id, country_id, program_id, visa_category, document_type,
              url, retrieved_at, content_hash, current_version, raw_path, status)
         VALUES ('DOC-TEST', 'SRC-TEST', 'AU', ?, 'SKILLED', 'LEGISLATION_TEXT',
-                'https://example.invalid', '2026-01-01T00:00:00+00:00', 'hash1', 1,
+                'https://example.gov.au', '2026-01-01T00:00:00+00:00', 'hash1', 1,
                 'raw:v1', 'CURRENT')
         """,
         (program_id,),

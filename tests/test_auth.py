@@ -78,6 +78,117 @@ class TestRegister:
 # Login
 # ---------------------------------------------------------------------------
 
+class TestRegistrationPolicy:
+    def test_email_is_normalised(self, client):
+        resp = client.post(
+            "/api/v1/auth/register",
+            json={"email": "  Mixed.Case@Example.COM ", "password": "pass123"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["email"] == "mixed.case@example.com"
+
+    @pytest.mark.parametrize("email", ["no-at-sign", "a@b", "@example.com", "a b@example.com", ""])
+    def test_invalid_email_is_422(self, client, email):
+        resp = client.post(
+            "/api/v1/auth/register", json={"email": email, "password": "pass123"},
+        )
+        assert resp.status_code == 422
+
+    def test_password_minimum_is_enforced_at_the_api_default(
+        self, client, monkeypatch
+    ):
+        monkeypatch.delenv("PASSWORD_MIN_LENGTH", raising=False)
+        resp = client.post(
+            "/api/v1/auth/register",
+            json={"email": "short@example.com", "password": "seven77"},
+        )
+        assert resp.status_code == 422
+
+    def test_password_over_bcrypt_limit_is_422(self, client):
+        resp = client.post(
+            "/api/v1/auth/register",
+            json={"email": "long@example.com", "password": "a" * 73},
+        )
+        assert resp.status_code == 422
+
+    def test_login_still_accepts_a_short_wrong_password(self, client):
+        """Login must answer 401 (not a schema 422) for a legacy short account."""
+        client.post(
+            "/api/v1/auth/register",
+            json={"email": "legacy@example.com", "password": "mypass"},
+        )
+        resp = client.post(
+            "/api/v1/auth/login",
+            json={"email": "legacy@example.com", "password": "x"},
+        )
+        assert resp.status_code == 401
+
+
+class TestLoginThrottle:
+    def test_repeated_failures_lock_the_email_and_ip(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setenv("LOGIN_MAX_ATTEMPTS", "2")
+        monkeypatch.setenv("LOGIN_LOCKOUT_SECONDS", "60")
+        client.post(
+            "/api/v1/auth/register",
+            json={"email": "lock@example.com", "password": "pass123"},
+        )
+        first = client.post(
+            "/api/v1/auth/login",
+            json={"email": "lock@example.com", "password": "wrong1"},
+        )
+        assert first.status_code == 401
+        second = client.post(
+            "/api/v1/auth/login",
+            json={"email": "lock@example.com", "password": "wrong2"},
+        )
+        assert second.status_code == 429
+        assert second.headers["Retry-After"]
+
+        # Even the correct password is refused while the key is locked.
+        correct = client.post(
+            "/api/v1/auth/login",
+            json={"email": "lock@example.com", "password": "pass123"},
+        )
+        assert correct.status_code == 429
+
+    def test_a_success_resets_the_counter(self, client, monkeypatch):
+        monkeypatch.setenv("LOGIN_MAX_ATTEMPTS", "2")
+        client.post(
+            "/api/v1/auth/register",
+            json={"email": "reset@example.com", "password": "pass123"},
+        )
+        assert client.post(
+            "/api/v1/auth/login",
+            json={"email": "reset@example.com", "password": "wrong1"},
+        ).status_code == 401
+        assert client.post(
+            "/api/v1/auth/login",
+            json={"email": "reset@example.com", "password": "pass123"},
+        ).status_code == 200
+        assert client.post(
+            "/api/v1/auth/login",
+            json={"email": "reset@example.com", "password": "wrong2"},
+        ).status_code == 401
+
+    def test_throttle_is_scoped_per_email(self, client, monkeypatch):
+        monkeypatch.setenv("LOGIN_MAX_ATTEMPTS", "2")
+        for email in ("one@example.com", "two@example.com"):
+            client.post(
+                "/api/v1/auth/register",
+                json={"email": email, "password": "pass123"},
+            )
+        client.post("/api/v1/auth/login", json={"email": "one@example.com", "password": "no1"})
+        client.post("/api/v1/auth/login", json={"email": "one@example.com", "password": "no2"})
+        assert client.post(
+            "/api/v1/auth/login", json={"email": "one@example.com", "password": "pass123"},
+        ).status_code == 429
+        assert client.post(
+            "/api/v1/auth/login", json={"email": "two@example.com", "password": "pass123"},
+        ).status_code == 200
+
+
 class TestLogin:
     def test_login_success(self, client):
         client.post(

@@ -25,6 +25,14 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     setup_logging(level="INFO", json_output=True)
 
+    # Production must fail closed before opening a database connection or
+    # serving a single request. Tests deliberately skip this: the suite owns
+    # its own hermetic environment and exercises the validator directly.
+    if os.getenv("TESTING") != "true":
+        from production_config import validate_runtime_config
+
+        validate_runtime_config()
+
     # In TESTING mode, never touch db_engine — tests set it themselves
     if os.getenv("TESTING") == "true":
         if not getattr(app.state, "db_engine", None):

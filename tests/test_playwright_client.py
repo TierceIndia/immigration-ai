@@ -20,8 +20,8 @@ import fetch.playwright_client as pw  # noqa: E402
 from fetch.fetcher import FetchStatus  # noqa: E402
 from fetch.politeness import HostLimiter  # noqa: E402
 
-URL = "https://example.invalid/page"
-PDF_URL = "https://example.invalid/doc.pdf"
+URL = "https://example.gov.au/page"
+PDF_URL = "https://example.gov.au/doc.pdf"
 HTML = "<html><body><main><h1>Eligibility</h1><p>" + ("x" * 80) + "</p></main></body></html>"
 
 
@@ -79,7 +79,7 @@ class FakeContext:
         def __init__(self, owner):
             self._owner = owner
 
-        def get(self, url, headers=None, timeout=None):
+        def _respond(self, url, headers=None):
             self._owner.request_calls.append((url, dict(headers or {})))
             if self._owner.request_exc is not None:
                 raise self._owner.request_exc
@@ -97,12 +97,24 @@ class FakeContext:
                 url=url,
             )
 
+        def get(self, url, headers=None, timeout=None, max_redirects=None):
+            return self._respond(url, headers)
+
+        def head(self, url, headers=None, timeout=None, max_redirects=None):
+            return self._respond(url, headers)
+
     def __init__(self, owner, kwargs):
         self._owner = owner
         self.kwargs = kwargs
         self.request = FakeContext._Request(owner)
         self.pages = []
         self.closed = False
+        self.route_calls = []
+        self.routes = []
+
+    def route(self, pattern, handler):
+        self.route_calls.append(pattern)
+        self.routes.append(handler)
 
     def new_page(self):
         page = FakePage(self._owner)
@@ -243,7 +255,7 @@ class TestMechanismSelection:
         assert fake.goto_calls == [(URL, "domcontentloaded")]
         # The only non-navigation request is the once-per-host robots.txt probe;
         # the body itself came from the navigation, not a second HTTP GET.
-        assert [c[0] for c in fake.request_calls] == ["https://example.invalid/robots.txt"]
+        assert [c[0] for c in fake.request_calls] == ["https://example.gov.au/robots.txt"]
 
     def test_pdf_goes_through_the_request_api_never_a_navigation(self, limiter):
         fake = FakePlaywright()

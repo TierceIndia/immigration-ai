@@ -194,7 +194,7 @@ def _seed_lineage(engine) -> int:
         s.merge(GovernmentSource(
             source_id=SOURCE_ID, country_id="AU", program_id=PROGRAM_ID,
             visa_category="SKILLED", authority="Department of Home Affairs",
-            url="https://example.invalid/phase4", source_type="WEBPAGE",
+            url="https://example.gov.au/phase4", source_type="WEBPAGE",
             source_subtype="ELIGIBILITY_CRITERIA", priority="PRIMARY",
             monitoring_method="HASH", crawl_frequency="DAILY", status="ACTIVE",
         ))
@@ -204,7 +204,7 @@ def _seed_lineage(engine) -> int:
         s.merge(GovernmentDocument(
             document_id=DOCUMENT_ID, source_id=SOURCE_ID, country_id="AU",
             program_id=PROGRAM_ID, visa_category="SKILLED", document_type="GENERAL",
-            url="https://example.invalid/phase4", title="E2E Phase 4 document",
+            url="https://example.gov.au/phase4", title="E2E Phase 4 document",
             retrieved_at=datetime.now(timezone.utc), content_hash="phase4hash",
             current_version=1, language="en", raw_path="fetch:doc:v1", status="CURRENT",
         ))

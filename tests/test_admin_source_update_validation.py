@@ -4,10 +4,9 @@ Before this fix, SourceUpdateRequest.status accepted any string, relying only on
 the DB CHECK constraint (ck_source_status) to reject bad values — which surfaces
 as a raw 500 (IntegrityError) on PostgreSQL, not a clean 422, and isn't enforced
 at all on SQLite by default. An admin must only be able to set status to a value
-that makes sense as a manual action (ACTIVE / DISABLED / NEEDS_MANUAL_CAPTURE) —
-the other government_sources.status values (ACCESS_BLOCKED, NETWORK_RESTRICTED,
-REQUIRES_BROWSER, REQUIRES_MANUAL_DOWNLOAD, BROKEN) are system-detected fetch
-outcomes the sync pipeline sets automatically, not something to impose by hand.
+that makes sense as a manual action (ACTIVE / DISABLED). Every other
+government_sources.status value — including the retired NEEDS_MANUAL_CAPTURE —
+is a system-detected fetch/monitoring outcome, not something to impose by hand.
 """
 from __future__ import annotations
 
@@ -68,7 +67,7 @@ def seeded_source(engine):
         s.merge(GovernmentSource(
             source_id="SRC-AU-TEST-PATCH", country_id="AU", program_id="SKILLED_189",
             visa_category="SKILLED", authority="Home Affairs",
-            url="https://example.invalid/189", source_type="HTML",
+            url="https://example.gov.au/189", source_type="HTML",
             priority="PRIMARY", monitoring_method="WEB", crawl_frequency="DAILY",
             status="ACTIVE",
         ))
@@ -77,7 +76,7 @@ def seeded_source(engine):
 
 
 class TestSourceUpdateStatusValidation:
-    @pytest.mark.parametrize("status", ["ACTIVE", "DISABLED", "NEEDS_MANUAL_CAPTURE"])
+    @pytest.mark.parametrize("status", ["ACTIVE", "DISABLED"])
     def test_valid_status_is_accepted(self, client, admin_headers, seeded_source, status):
         resp = client.patch(
             f"/api/v1/admin/sources/{seeded_source}",
@@ -89,7 +88,8 @@ class TestSourceUpdateStatusValidation:
 
     @pytest.mark.parametrize("bad_status", [
         "ACCESS_BLOCKED", "NETWORK_RESTRICTED", "REQUIRES_BROWSER",
-        "REQUIRES_MANUAL_DOWNLOAD", "BROKEN", "active", "not-a-real-status", "",
+        "REQUIRES_MANUAL_DOWNLOAD", "BROKEN", "NEEDS_MANUAL_CAPTURE",
+        "active", "not-a-real-status", "",
     ])
     def test_invalid_status_returns_422(self, client, admin_headers, seeded_source, bad_status):
         resp = client.patch(
