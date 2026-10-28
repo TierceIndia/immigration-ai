@@ -5,7 +5,8 @@ import os
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError as JWTError
 from passlib.context import CryptContext
 
 from db.repositories import ApplicantRepo
@@ -19,6 +20,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Password hashing
 # ---------------------------------------------------------------------------
 
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
@@ -30,6 +32,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 # ---------------------------------------------------------------------------
 # JWT
 # ---------------------------------------------------------------------------
+
 
 def _get_jwt_secret() -> str:
     secret = os.getenv("JWT_SECRET_KEY")
