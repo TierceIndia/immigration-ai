@@ -23,7 +23,7 @@ from sqlalchemy.pool import StaticPool
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "src" / "phase2"))
+sys.path.insert(0, str(ROOT / "src" / "extraction"))
 
 from db.models import (
     Base, Country, ImmigrationProgram, GovernmentSource,

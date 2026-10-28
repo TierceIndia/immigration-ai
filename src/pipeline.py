@@ -18,16 +18,18 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from change_detector import ChangeType, classify_change
+from change_detection.change_detector import ChangeType, classify_change
 from db import ROOT, get_connection, init_schema
-from extractor_html import extract_html
-from extractor_pdf import extract_pdf
-from fetcher import FetchResult, FetchStatus, fetch
-from hashing import sha256_bytes, sha256_text
+from fetch.extractor_html import extract_html
+from fetch.extractor_pdf import extract_pdf
+from fetch.fetcher import FetchResult, FetchStatus
+from change_detection.hashing import sha256_bytes, sha256_text
 
-# Fetch statuses that may be resolved by escalating to a genuine non-headless
-# browser session via browser_fetcher before demoting to a terminal health flag.
-_BROWSER_ESCALATION_STATUSES = {
+# Statuses this legacy CLI treats as "a human has to look at it", rather than
+# as an ordinary transient fault. Retrieval is Playwright-only now, so these
+# are never a cue to try again by some other mechanism - the real browser
+# already ran and the host still said no.
+_NEEDS_HUMAN_STATUSES = {
     FetchStatus.ACCESS_BLOCKED,
     FetchStatus.REQUIRES_BROWSER,
 }
@@ -95,19 +97,14 @@ def process_source(conn, source_row, offline_fixture: Path | None = None) -> dic
             raw_bytes=raw_bytes, duration_ms=0, error=None,
         )
     else:
-        fetch_result = fetch(url, source_type=source_type)
-        # Escalation: if a plain HTTP fetch is blocked/challenged, escalate to a
-        # genuine non-headless Chromium session (browser_fetcher). If that ALSO
-        # fails with ACCESS_BLOCKED or a challenge marker, we do NOT retry again —
-        # the source goes to NEEDS_MANUAL_CAPTURE and the scheduler skips it until
-        # an admin resolves it (see the manual-capture admin endpoint).
-        if fetch_result.status in _BROWSER_ESCALATION_STATUSES:
-            from browser_fetcher import fetch_with_browser
-            escalated = fetch_with_browser(url, source_type=source_type)
-            if escalated.ok:
-                fetch_result = escalated
-            elif escalated.status in _BROWSER_ESCALATION_STATUSES:
-                fetch_result = escalated  # still blocked even via browser
+        # One retrieval path, through the same backend as the ORM sync path
+        # (fetch/backend.py -> Playwright). The old two-step "plain fetch, then
+        # escalate to a browser if blocked" is gone: every fetch is already a
+        # real browser, and a refusal is answered with a host cooldown, never
+        # by trying again some other way.
+        from fetch.backend import fetch as backend_fetch
+
+        fetch_result = backend_fetch(url, source_type=source_type)
 
     fetched_at = _now_iso()
 
@@ -124,7 +121,7 @@ def process_source(conn, source_row, offline_fixture: Path | None = None) -> dic
         # into NEEDS_MANUAL_CAPTURE so it is (a) skipped by the scheduler (which
         # filters on status == "ACTIVE") and (b) resolvable only via an admin's
         # manual-capture action. Do not keep hammering a blocked source.
-        if fetch_result.status in _BROWSER_ESCALATION_STATUSES:
+        if fetch_result.status in _NEEDS_HUMAN_STATUSES:
             source_status = "NEEDS_MANUAL_CAPTURE"
         else:
             source_status = _SOURCE_STATUS_FOR_FETCH_STATUS.get(fetch_result.status, "BROKEN")

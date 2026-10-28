@@ -29,9 +29,9 @@ from db.repositories import (
     SourceRepo, ProgramRepo, CountryRepo, RequirementRepo, PipelineRunRepo,
     ApplicantRepo, AssessmentRepo, AssessmentRuleResultRepo, UserRepo,
 )
-from phase3.rule_repository import EnhancedRuleRepo, orm_to_dataclass
-from phase3.requirement_to_rule import compile_approved_requirements
-from phase3.models import RuleStatus
+from rules.rule_repository import EnhancedRuleRepo, orm_to_dataclass
+from rules.requirement_to_rule import compile_approved_requirements
+from rules.models import RuleStatus
 from services.assessment_service import AssessmentService, _compute_ruleset_hash
 from services.auth_service import AuthService
 from pipeline_run_activation import validate_run_transition
@@ -253,7 +253,7 @@ class TestScenario4_IrrelevantChange:
 class TestScenario5_LLMFailure:
     """LLM extraction fails during sync → existing ACTIVE rule is untouched."""
 
-    def test_llm_failure_preserves_active_rule(self, session, seed_country_program):
+    def test_no_new_rules_leaves_existing_active_rule_intact(self, session, seed_country_program):
         rule_repo = EnhancedRuleRepo(session)
 
         rule_repo.create(
@@ -593,7 +593,7 @@ class TestRulesetHash:
 
     def test_ruleset_hash_is_deterministic(self, session, seed_country_program):
         from services.assessment_service import _compute_ruleset_hash
-        from phase3.models import Rule, Provenance
+        from rules.models import Rule, Provenance
 
         p = Provenance(source_id="S1", document_id="D1", document_version=1,
                        chunk_id=1, requirement_id="REQ1", evidence_text="test")
@@ -615,7 +615,7 @@ class TestRulesetHash:
 
     def test_ruleset_hash_changes_with_version(self, session, seed_country_program):
         from services.assessment_service import _compute_ruleset_hash
-        from phase3.models import Rule, Provenance
+        from rules.models import Rule, Provenance
 
         p = Provenance(source_id="S1", document_id="D1", document_version=1,
                        chunk_id=1, requirement_id="REQ1", evidence_text="test")

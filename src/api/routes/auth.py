@@ -1,12 +1,21 @@
 """Auth routes — register, login, me."""
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 
-from api.schemas.models import RegisterResponse, TokenResponse, UserCreate, UserResponse
+from api.schemas.models import (
+    LoginRequest,
+    RegisterResponse,
+    TokenResponse,
+    UserCreate,
+    UserResponse,
+)
 from db.connection import get_session, get_db_engine
 from logging_config import get_logger
+from services import login_throttle
 from services.auth_service import AuthService, decode_access_token
 
 router = APIRouter()
@@ -52,8 +61,21 @@ def get_current_user_id(request: Request) -> str:
     return get_current_user(request)["user_id"]
 
 
+def _public_registration_allowed() -> bool:
+    return os.getenv("ALLOW_PUBLIC_REGISTRATION", "false").strip().lower() == "true"
+
+
 @router.post("/register", response_model=RegisterResponse, status_code=201)
 def register(body: UserCreate, request: Request):
+    """Self-service registration — gated behind ALLOW_PUBLIC_REGISTRATION
+    (default false). Admin accounts are bootstrapped separately via
+    ADMIN_EMAIL/ADMIN_PASSWORD (src/create_admin.py), never through this
+    route - self-registration always yields role="applicant" regardless."""
+    if not _public_registration_allowed():
+        raise HTTPException(
+            status_code=403,
+            detail="Public registration is disabled. Set ALLOW_PUBLIC_REGISTRATION=true to enable it.",
+        )
     engine = get_db_engine(request)
     with get_session(engine) as session:
         svc = AuthService(session)
@@ -79,13 +101,41 @@ def register(body: UserCreate, request: Request):
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(body: UserCreate, request: Request):
+def login(body: LoginRequest, request: Request):
+    client_host = request.client.host if request.client else "unknown"
+    # Lock on (IP, email) pair
+    throttle_key_ip_email = f"{client_host}|{body.email}"
+    # Per-email limit that cannot lock out admin from another IP
+    throttle_key_email = f"EMAIL|{body.email}"
+    
+    # Check both keys
+    wait_ip_email = login_throttle.retry_after_seconds(throttle_key_ip_email)
+    wait_email = login_throttle.retry_after_seconds(throttle_key_email)
+    wait = max(wait_ip_email, wait_email)
+    if wait:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts. Try again later.",
+            headers={"Retry-After": str(wait)},
+        )
+
     engine = get_db_engine(request)
     with get_session(engine) as session:
         svc = AuthService(session)
         result = svc.login(body.email, body.password)
         if not result:
+            locked_for_ip_email = login_throttle.record_failure(throttle_key_ip_email)
+            locked_for_email = login_throttle.record_failure(throttle_key_email)
+            locked_for = max(locked_for_ip_email, locked_for_email)
+            if locked_for:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many failed login attempts. Try again later.",
+                    headers={"Retry-After": str(locked_for)},
+                )
             raise HTTPException(status_code=401, detail="Invalid email or password")
+        login_throttle.reset(throttle_key_ip_email)
+        login_throttle.reset(throttle_key_email)
         return TokenResponse(
             access_token=result["access_token"],
             token_type=result["token_type"],

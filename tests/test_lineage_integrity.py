@@ -42,7 +42,7 @@ from db.models import AssessmentRuleResult as ArrORM
 from db.models import ApplicantProfile as ApplicantORM
 from db.models import PipelineRun as PipelineRunORM
 from db.repositories import SourceRepo, RulesetRepo
-from phase3.models import Rule as RuleDC, Provenance as ProvenanceDC
+from rules.models import Rule as RuleDC, Provenance as ProvenanceDC
 
 NOW = datetime.now(timezone.utc)
 
@@ -613,7 +613,7 @@ class TestFallbackGuard:
 class TestExtractionRunIdempotency:
     def test_reuse_completed_and_never_reuse_failed(self, tmp_path):
         from db import init_schema, get_connection
-        from phase2.requirement_repository import (
+        from extraction.requirement_repository import (
             create_extraction_run,
             complete_extraction_run,
         )
@@ -633,7 +633,7 @@ class TestExtractionRunIdempotency:
 
     def test_missing_document_version_raises(self, tmp_path):
         from db import init_schema, get_connection
-        from phase2.requirement_repository import create_extraction_run
+        from extraction.requirement_repository import create_extraction_run
 
         db_path = tmp_path / "legacy_missing.db"
         init_schema(get_connection(db_path), db_path)
@@ -683,10 +683,22 @@ class TestAuditHardening:
         _seed_fk_chain(session)
         session.add(ExtractORM(
             run_id="RUN-BAD", document_id="D1", document_version=1,
-            model="mock-llm-v1", prompt_version="p1", status="PARTIAL", dry_run=0,
+            model="mock-llm-v1", prompt_version="p1", status="BOGUS_STATUS", dry_run=0,
         ))
         with pytest.raises(IntegrityError):
             session.flush()
+
+    def test_extraction_run_partial_status_accepted(self, session):
+        """PARTIAL means "completed, but some chunks were deferred by a
+        persistent provider quota 429 and need a retry" - a real, valid
+        status, not a typo of COMPLETED."""
+        _seed_fk_chain(session)
+        session.add(ExtractORM(
+            run_id="RUN-PARTIAL", document_id="D1", document_version=1,
+            model="mock-llm-v1", prompt_version="p1", status="PARTIAL", dry_run=0,
+            deferred_chunks=2,
+        ))
+        session.flush()
 
     def test_pipeline_run_invalid_status_rejected(self, session):
         _seed_fk_chain(session)

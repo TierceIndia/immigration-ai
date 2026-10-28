@@ -13,7 +13,6 @@ Pipeline:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timezone
 
@@ -24,12 +23,13 @@ from db.repositories import (
     ApplicantRepo,
     RulesetRepo,
 )
-from phase3.expressions import ANDNode, RuleLeaf
-from phase3.models import Rule, RuleStatus, EvaluationStatus
-from phase3c.applicant import ApplicantProfile as Phase3CProfile, VisaSelection
-from phase3c.assessment import assess_eligibility as _assess, EligibilityOutcome
-from phase3c.gap_engine import GapEngine, Gap
-from phase3.rule_repository import EnhancedRuleRepo, orm_to_dataclass
+from rules.expressions import ANDNode, RuleLeaf
+from rules.models import Rule, RuleStatus, EvaluationStatus
+from rules.ruleset_hash import compute_ruleset_hash
+from assessment.applicant import ApplicantProfile as Phase3CProfile, VisaSelection
+from assessment.assessment import assess_eligibility as _assess, EligibilityOutcome
+from assessment.gap_engine import GapEngine, Gap
+from rules.rule_repository import EnhancedRuleRepo, orm_to_dataclass
 from db.models import RuleVersion
 from logging_config import get_logger
 from sqlalchemy import select
@@ -345,6 +345,9 @@ def _build_profile_data(applicant_orm) -> dict:
         "age", "english_level", "points", "occupation",
         "skills_assessment_status", "health_status", "character_status",
         "has_regional_nomination", "visa_subclass",
+        "visa_history", "employer_sponsored", "work_experience_years",
+        "in_australia_at_application", "has_health_insurance",
+        "genuine_temporary_entrant",
     ):
         val = getattr(applicant_orm, field_name, None)
         if val is not None:
@@ -355,23 +358,11 @@ def _build_profile_data(applicant_orm) -> dict:
 def _compute_ruleset_hash(program_id: str, rules) -> str:
     """Compute a deterministic hash of the exact rule-version set used in an assessment.
 
-    Accepts a list of ``(rule_id, version_number)`` tuples OR a list of ``phase3.models.Rule``
-    dataclasses (both are used by callers/tests). If any rule version changes, the hash changes.
+    Thin wrapper over ``rules.ruleset_hash.compute_ruleset_hash`` - kept here so
+    existing callers keep working; the implementation lives with the rules so
+    the admin rule checker can fingerprint a ruleset the same way.
     """
-    def _fingerprints(rules):
-        for rule in rules:
-            if isinstance(rule, (tuple, list)):
-                rid, ver = rule
-            else:
-                rid, ver = rule.rule_id, rule.version
-            yield f"{rid}:v{ver}"
-
-    rule_fingerprints = sorted(_fingerprints(rules))
-    payload = json.dumps({
-        "program_id": program_id,
-        "rules": rule_fingerprints,
-    }, sort_keys=True)
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+    return compute_ruleset_hash(program_id, rules)
 
 
 def _resolve_rule_versions(session, rules: list[Rule]) -> dict[str, tuple[int, int] | None]:

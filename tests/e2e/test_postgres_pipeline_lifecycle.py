@@ -34,6 +34,7 @@ from sqlalchemy import text
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from db.models import (
     Country, ImmigrationProgram, GovernmentSource, GovernmentDocument,
@@ -42,11 +43,11 @@ from db.models import (
 )
 from db.connection import get_session_factory
 from db.repositories import PipelineRunRepo
-from fetcher import FetchResult, FetchStatus, fetch
-from hashing import sha256_bytes
+from fetch.fetcher import FetchResult, FetchStatus, fetch
+from change_detection.hashing import sha256_bytes
 from orchestration.government_sync import sync_source
-from phase3.rule_repository import EnhancedRuleRepo
-from phase3.requirement_to_rule import compile_approved_requirements
+from rules.rule_repository import EnhancedRuleRepo
+from rules.requirement_to_rule import compile_approved_requirements
 
 pytestmark = [
     pytest.mark.postgres_e2e,
@@ -58,8 +59,21 @@ pytestmark = [
 
 E2E_URL = os.environ.get(
     "POSTGRES_E2E_URL",
-    "postgresql://immigration:immigration_dev@localhost:5432/immigration",
+    # Driver named explicitly - see test_db_driver_pinning.py: a bare
+    # postgresql:// re-inherits SQLAlchemy's version-dependent default
+    # dialect (psycopg v3 on 2.1+, not a project dependency).
+    # Dedicated e2e-only database - see tests/e2e/conftest.py's docstring:
+    # this test disables audit-immutability triggers and must never run
+    # against the shared main "immigration" database.
+    # The host port follows POSTGRES_HOST_PORT so the suite still finds
+    # docker-compose's database when 5432 is already taken on the host.
+    f"postgresql+psycopg2://immigration:immigration_dev@localhost:"
+    f"{os.environ.get('POSTGRES_HOST_PORT', '5432')}/immigration_e2e",
 )
+
+from conftest import refuse_if_main_database  # noqa: E402
+
+refuse_if_main_database(E2E_URL)
 
 SOURCE_ID = "SRC-AU-E2E-189"
 DOCUMENT_ID = "DOC-AU-E2E-189"
@@ -187,7 +201,7 @@ def _sandbox_fetch(payload: bytes):
 def _seed_program(session) -> None:
     if session.get(Country, "AU") is None:
         session.add(Country(
-            country_id="AU", name="Australia", iso_code="AUS", status="ACTIVE",
+            country_id="AU", name="Australia", iso_code="AUS",
         ))
     prog = session.get(ImmigrationProgram, PROGRAM_ID)
     if prog is None:
@@ -282,7 +296,7 @@ class TestPostgresPipelineLifecycle:
         run_repo = PipelineRunRepo(session)
 
         # ===================== STEP 1: government v1 =====================
-        monkeypatch.setattr("fetcher.fetch", _sandbox_fetch(FIXTURE_V1))
+        monkeypatch.setattr("fetch.backend.fetch", _sandbox_fetch(FIXTURE_V1))
         result_v1 = sync_source(session, SOURCE_ID, trigger_type="ON_DEMAND")
         session.expire_all()
         session.commit()
@@ -364,7 +378,7 @@ class TestPostgresPipelineLifecycle:
         assert active[0].value_json == "45"
 
         # ===================== STEP 3: government changes to v2 =====================
-        monkeypatch.setattr("fetcher.fetch", _sandbox_fetch(FIXTURE_V2))
+        monkeypatch.setattr("fetch.backend.fetch", _sandbox_fetch(FIXTURE_V2))
         result_v2 = sync_source(session, SOURCE_ID, trigger_type="ON_DEMAND")
         session.expire_all()
         session.commit()

@@ -42,8 +42,31 @@ else:
 @pytest.fixture(autouse=True, scope="session")
 def _set_testing_env():
     os.environ["TESTING"] = "true"
+    # POST /auth/register is gated behind ALLOW_PUBLIC_REGISTRATION in
+    # production (default false). A large number of unrelated test files use
+    # self-registration purely as a way to mint a test user/admin, so the
+    # test session opts in globally here rather than requiring every one of
+    # them to set the flag individually. The gate itself is still covered by
+    # a dedicated test that explicitly overrides this back to false/unset.
+    os.environ["ALLOW_PUBLIC_REGISTRATION"] = "true"
+    # A developer's shell must not be able to point the suite's fetches at a
+    # real egress proxy (FETCH_PROXY_URL). Remove it for the whole session; the
+    # proxy tests set it back explicitly and per-test.
+    os.environ.pop("FETCH_PROXY_URL", None)
+    # Unit tests use reserved domains (example.gov.au) with fake contexts.
+    # Production startup refuses this flag; the SSRF/DNS tests exercise the
+    # resolver directly rather than relying on a live lookup.
+    os.environ["FETCH_VALIDATE_DESTINATION_DNS"] = "false"
+    # The historical suite registers users with 6-7 character passwords. Keep
+    # that convenience local to tests; the production/API default remains 8 and
+    # the policy itself is covered explicitly in test_auth.py.
+    os.environ.setdefault("PASSWORD_MIN_LENGTH", "6")
     yield
-    os.environ.pop("TESTING", None)
+    for _key in (
+        "TESTING", "ALLOW_PUBLIC_REGISTRATION", "FETCH_VALIDATE_DESTINATION_DNS",
+        "FETCH_ALLOW_PRIVATE_HOSTS", "PASSWORD_MIN_LENGTH",
+    ):
+        os.environ.pop(_key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -53,12 +76,27 @@ def _set_testing_env():
 # real OpenAI API (when PYTEST_LLM_LIVE=1 and OPENAI_API_KEY is exported).
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
+def _isolate_raw_snapshots(tmp_path, monkeypatch):
+    """Never let a unit test publish into the developer's real raw/ archive."""
+    monkeypatch.setenv("RAW_SNAPSHOT_DIR", str(tmp_path / "raw"))
+
+
+@pytest.fixture(autouse=True)
+def _reset_login_throttle():
+    from services import login_throttle
+
+    login_throttle.reset_all()
+    yield
+    login_throttle.reset_all()
+
+
+@pytest.fixture(autouse=True)
 def _patch_llm_client_for_unit_tests(request, monkeypatch):
     if request.node.get_closest_marker("integration"):
         yield
         return
-    from phase2 import llm_client
-    from phase2.llm_client import MockLLMClient
+    from extraction import llm_client
+    from extraction.llm_client import MockLLMClient
 
     monkeypatch.setattr(llm_client, "get_client", MockLLMClient)
     # get_client is imported into these modules at their top level, so each

@@ -23,6 +23,8 @@ from sqlalchemy import (
 from sqlalchemy.types import JSON
 from sqlalchemy.orm import DeclarativeBase, relationship
 
+from db.vector import EMBEDDING_DIMENSIONS, Vector
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -104,6 +106,31 @@ class GovernmentSource(Base, TimestampMixin):
     status = Column(String(32), nullable=False, default="ACTIVE")
     notes = Column(Text)
 
+    # Scope flag: a source can be fetched/hashed/diffed and used as evidence
+    # (document_versions/document_chunks) without ever running requirement
+    # extraction against it - for a reference-only source whose content is
+    # out of product scope (e.g. the whole Migration Regulations covering
+    # subclasses nothing here supports yet). Deleting no rows: this only
+    # gates the extraction step in fetch_document_and_store, never the fetch/
+    # store step itself. Defaults true (opt-out) so every existing/new source
+    # keeps today's behavior unless explicitly scoped out.
+    extract_requirements = Column(Boolean, nullable=False, default=True)
+
+    # What kind of page this URL serves, which decides how it is chunked.
+    # PAGE (default): prose with headings - the ordinary block walk.
+    # NEWS_LIST: a dated "latest updates" listing - one chunk per
+    # announcement, each with its own date and link, so a change to one item
+    # is not indistinguishable from a change to the whole page. Kept separate
+    # from source_type (HTML/PDF, which decides how the bytes are fetched)
+    # because it is about structure, not transport.
+    content_kind = Column(String(16), nullable=False, default="PAGE")
+
+    # Conditional GET (item 5): the validators the origin sent with the last
+    # successful fetch, so the next request can ask "has this changed since
+    # then?" instead of always re-downloading the full body.
+    etag = Column(String(256), nullable=True)
+    last_modified = Column(String(64), nullable=True)
+
     # Fallback strategy fields
     fallback_source_id = Column(String(32), ForeignKey("government_sources.source_id"), nullable=True)
     fetch_status = Column(String(32), nullable=True)
@@ -121,15 +148,54 @@ class GovernmentSource(Base, TimestampMixin):
         ),
         CheckConstraint(
             "status IN ('ACTIVE','DISABLED','ACCESS_BLOCKED','NETWORK_RESTRICTED',"
-            "'REQUIRES_BROWSER','REQUIRES_MANUAL_DOWNLOAD','NEEDS_MANUAL_CAPTURE','BROKEN')",
+            "'REQUIRES_BROWSER','REQUIRES_MANUAL_DOWNLOAD','BROKEN')",
             name="ck_source_status",
         ),
         CheckConstraint(
-            "fetch_status IS NULL OR fetch_status IN ('OK','FETCH_FAILED',"
-            "'ACCESS_BLOCKED','NETWORK_RESTRICTED','REQUIRES_BROWSER',"
-            "'REQUIRES_MANUAL_DOWNLOAD','INVALID_CONTENT')",
+            # The FetchStatus values, plus OK_EMPTY_CONTENT: retrieval and
+            # parsing both worked but there was nothing to extract (a scanned
+            # PDF, or a page that renders no structural content). That is
+            # neither a failure nor an ordinary success, and calling it "OK"
+            # hid sources that were quietly contributing no knowledge.
+            "fetch_status IS NULL OR fetch_status IN ('OK','OK_EMPTY_CONTENT',"
+            "'FETCH_FAILED','ACCESS_BLOCKED','NETWORK_RESTRICTED',"
+            "'REQUIRES_BROWSER','REQUIRES_MANUAL_DOWNLOAD','INVALID_CONTENT')",
             name="ck_source_fetch_status",
         ),
+    )
+
+
+# ===========================================================================
+#  HOST COOLDOWN — one pause per hostname after it refused us (HTTP 403/429).
+# ===========================================================================
+
+class HostCooldown(Base, TimestampMixin):
+    """A temporary pause on fetching from one hostname after it refused us.
+
+    Keyed by host rather than by source: if a host refuses one of our URLs it
+    will refuse the others too, so every source on that host is skipped until
+    ``cooldown_until`` passes. This table is the *only* reaction to a refusal —
+    it never changes the IP address, user agent or fetch method we use, and
+    there is deliberately no override flag to skip it.
+    """
+    __tablename__ = "host_cooldowns"
+
+    host = Column(String(255), primary_key=True)
+    cooldown_until = Column(DateTime(timezone=True), nullable=False)
+    http_status = Column(Integer, nullable=True)
+    # How many times this host has refused us inside the current pause window.
+    # Refreshing a cooldown leaves an existing count intact; a new refusal
+    # window starts it again at 1.
+    hits = Column(Integer, nullable=False, default=1)
+    # The source whose fetch provoked the pause (diagnostic only).
+    source_id = Column(
+        String(32),
+        ForeignKey("government_sources.source_id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        Index("idx_host_cooldown_until", "cooldown_until"),
     )
 
 
@@ -240,6 +306,10 @@ class DocumentChunk(Base, TimestampMixin):
     order_index = Column(Integer, nullable=False)
     raw_text = Column(Text, nullable=False)
     page_number = Column(Integer)
+    # The chunk's embedding, when embeddings are enabled. NULL means "not
+    # embedded yet" - never "embedded as the zero vector", which would be
+    # indistinguishable from a real match at the origin.
+    embedding = Column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
 
     __table_args__ = (
         Index("idx_chunks_document", "document_id", "version_id"),
@@ -268,6 +338,18 @@ class FetchLog(Base):
     duration_ms = Column(Integer)
     error = Column(Text)
     error_type = Column(String(64))  # machine-readable failure class from fetcher
+    # Retrieval event detail: one row is one acquisition attempt, and these
+    # fields make the attempt reproducible/auditable without the sidecar
+    # manifest (which lives next to the immutable bytes).
+    retrieval_id = Column(String(36), unique=True, nullable=True)
+    acquisition = Column(String(32))  # playwright_page | playwright_request | legacy_*
+    final_url = Column(String(2048))
+    content_type = Column(String(128))
+    limiter_wait_ms = Column(Integer)
+    browser_launch_ms = Column(Integer)
+    goto_ms = Column(Integer)
+    selector_wait_ms = Column(Integer)
+    selector_timed_out = Column(Boolean)
 
     __table_args__ = (
         Index("idx_fetchlog_source", "source_id", "fetched_at"),
@@ -291,12 +373,24 @@ class ExtractionRun(Base, TimestampMixin):
     chunks_seen = Column(Integer, nullable=False, default=0)
     candidate_chunks = Column(Integer, nullable=False, default=0)
     llm_calls = Column(Integer, nullable=False, default=0)
+    # Item 6: requirements_extracted counts ATTEMPTS (every accepted/needs-
+    # review candidate persist_requirement() was called for), not stored
+    # rows - a dedup/conflict/evidence-merge can turn several attempts into
+    # zero new rows. stored_new/merged_into_existing split that apart; use
+    # stored_new, never requirements_extracted, for "how much new knowledge
+    # did this run add".
     requirements_extracted = Column(Integer, nullable=False, default=0)
+    stored_new = Column(Integer, nullable=False, default=0)
+    merged_into_existing = Column(Integer, nullable=False, default=0)
     validated = Column(Integer, nullable=False, default=0)
     needs_review = Column(Integer, nullable=False, default=0)
     rejected = Column(Integer, nullable=False, default=0)
     evidence_failures = Column(Integer, nullable=False, default=0)
     schema_failures = Column(Integer, nullable=False, default=0)
+    # Chunks whose LLM call hit a persistent provider quota/rate-limit
+    # exhaustion and were skipped rather than extracted - a later sync
+    # should retry them, not treat them as "the model found nothing".
+    deferred_chunks = Column(Integer, nullable=False, default=0)
     status = Column(String(16), nullable=False, default="RUNNING")
     dry_run = Column(SmallInteger, nullable=False, default=0)
     error = Column(Text)
@@ -313,15 +407,45 @@ class ExtractionRun(Base, TimestampMixin):
         CheckConstraint("document_version > 0", name="ck_extract_version_positive"),
         CheckConstraint("dry_run IN (0,1)", name="ck_extract_dry_run"),
         CheckConstraint(
-            "status IN ('RUNNING','COMPLETED','FAILED','DRY_RUN')",
+            # PARTIAL: completed, but at least one chunk was deferred due to
+            # provider quota exhaustion and needs a retry on a later sync.
+            "status IN ('RUNNING','COMPLETED','FAILED','DRY_RUN','PARTIAL')",
             name="ck_extract_status",
         ),
     )
 
 
+class ExtractionCache(Base, TimestampMixin):
+    """Persistent chunk-level LLM extraction cache (item 5).
+
+    Keyed by (chunk content hash, prompt_version, model): a chunk whose exact
+    text was already sent through this exact prompt/model combination never
+    reaches the LLM again, even across document versions and sync runs -
+    every new DocumentVersion gets fresh DocumentChunk rows even for
+    byte-identical text (see fetch_document_and_store), so the chunk_id alone
+    can never be the cache key. A new prompt_version is a different primary
+    key entirely, so it naturally never reuses a stale cache entry.
+    """
+    __tablename__ = "extraction_cache"
+    chunk_content_hash = Column(String(64), primary_key=True)
+    prompt_version = Column(String(64), primary_key=True)
+    model = Column(String(64), primary_key=True)
+    # The chunk_id that produced this cached response - evidence[].chunk_id
+    # references in raw_output are rewritten to the requesting call's own
+    # chunk_id on every cache hit (see llm_client.CachingLLMClient).
+    source_chunk_id = Column(Integer, nullable=False)
+    raw_output = Column(Text, nullable=False)
+
+
 class Requirement(Base, TimestampMixin):
     __tablename__ = "requirements"
-    requirement_id = Column(String(48), primary_key=True)
+    # 96, not 48: "REQ-{program_id}-{sem_key}-{uuid6}" (the CONFLICT-path format)
+    # can exceed 48 once program_id is long (e.g. "LEGISLATION_MIGRATION_REGS") —
+    # confirmed in production as a PostgreSQL StringDataRightTruncation that
+    # silently dropped a correctly-extracted requirement. See migration
+    # a3c5e7f9b1d3 and the MAX_REQUIREMENT_ID_LENGTH guard in
+    # extraction/requirement_repository.py.
+    requirement_id = Column(String(96), primary_key=True)
     semantic_key = Column(String(256), nullable=False)
     program_id = Column(String(32), ForeignKey("immigration_programs.program_id"), nullable=False)
     country_id = Column(String(8), ForeignKey("countries.country_id"), nullable=False)
@@ -331,6 +455,10 @@ class Requirement(Base, TimestampMixin):
     name = Column(String(256), nullable=False)
     description = Column(Text)
     field = Column(String(128))
+    # Closed field vocabulary (v3): free-text label for the real legal/policy
+    # concept when field="NOT_MODELED" - preserves the extractor's intent
+    # instead of dropping it. Null when field is a real evaluable name.
+    concept = Column(String(256))
     operator = Column(String(16), nullable=False, default="UNKNOWN")
     value_json = Column(Text)
     unit = Column(String(32))
@@ -377,7 +505,7 @@ class Requirement(Base, TimestampMixin):
 class RequirementEvidence(Base, TimestampMixin):
     __tablename__ = "requirement_evidence"
     evidence_id = Column(Integer, primary_key=True, autoincrement=True)
-    requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
+    requirement_id = Column(String(96), ForeignKey("requirements.requirement_id"), nullable=False)
     document_id = Column(String(32), ForeignKey("government_documents.document_id"), nullable=False)
     document_version = Column(Integer, nullable=False)
     # canonical audit lineage: chunk -> owner document version (proves the evidence
@@ -414,7 +542,7 @@ class RequirementEvidence(Base, TimestampMixin):
 class RequirementVersion(Base, TimestampMixin):
     __tablename__ = "requirement_versions"
     version_id = Column(Integer, primary_key=True, autoincrement=True)
-    requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
+    requirement_id = Column(String(96), ForeignKey("requirements.requirement_id"), nullable=False)
     version_number = Column(Integer, nullable=False)
     snapshot_json = Column(Text, nullable=False)
     document_version = Column(Integer, nullable=False)
@@ -434,7 +562,7 @@ class RequirementVersion(Base, TimestampMixin):
 class RequirementReview(Base, TimestampMixin):
     __tablename__ = "requirement_review"
     review_id = Column(Integer, primary_key=True, autoincrement=True)
-    requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
+    requirement_id = Column(String(96), ForeignKey("requirements.requirement_id"), nullable=False)
     reviewer = Column(String(64), nullable=False)
     action = Column(String(32), nullable=False)
     old_state_json = Column(Text)
@@ -447,7 +575,7 @@ class RequirementReview(Base, TimestampMixin):
 class RequirementReference(Base, TimestampMixin):
     __tablename__ = "requirement_references"
     reference_id = Column(Integer, primary_key=True, autoincrement=True)
-    requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
+    requirement_id = Column(String(96), ForeignKey("requirements.requirement_id"), nullable=False)
     reference_type = Column(String(32), nullable=False, default="LEGAL_CROSS_REFERENCE")
     target_text = Column(Text, nullable=False)
     resolved_chunk_id = Column(Integer, ForeignKey("document_chunks.chunk_id"))
@@ -462,8 +590,12 @@ class RequirementReference(Base, TimestampMixin):
 
 class Rule(Base, TimestampMixin):
     __tablename__ = "rules"
-    rule_id = Column(String(48), primary_key=True)
-    requirement_id = Column(String(48), ForeignKey("requirements.requirement_id"), nullable=False)
+    # 96, matching requirement_id: requirement_to_rule.py builds
+    # rule_id = f"RULE-{requirement_id}" directly from it, so rule_id must be at
+    # least as wide as "RULE-" + the widened requirement_id or the same
+    # truncation bug just resurfaces one stage later, at rule compilation.
+    rule_id = Column(String(96), primary_key=True)
+    requirement_id = Column(String(96), ForeignKey("requirements.requirement_id"), nullable=False)
     program_id = Column(String(32), ForeignKey("immigration_programs.program_id"), nullable=False)
     # canonical audit lineage: the exact immutable requirement version this rule was
     # compiled from (rules.requirement_version_id -> requirement_versions.version_id
@@ -506,9 +638,19 @@ class Rule(Base, TimestampMixin):
             name="ck_rule_status",
         ),
         CheckConstraint("current_version > 0", name="ck_rule_current_version"),
-        # at most one ACTIVE rule per (program_id, field) — enforced at DB level too
+        # At most one ACTIVE rule per (program_id, category, field) — matches
+        # EnhancedRuleRepo.activate_rule's own logical key
+        # (_find_active_for_logical_key(program_id, category, field)). The
+        # previous version of this index covered only (program_id, field),
+        # which is narrower than the invariant it's meant to enforce: it
+        # rejected a legitimate second ACTIVE rule that shares a field but has
+        # a different category, something activate_rule's own supersede logic
+        # explicitly treats as a different, non-conflicting logical rule (see
+        # migration 7c9e2a4f1b6d). Found by driving a real rule through
+        # approve->compile->activate and then testing the DB constraint
+        # directly with raw INSERTs.
         Index(
-            "uq_rules_active_per_field", "program_id", "field", unique=True,
+            "uq_rules_active_per_field", "program_id", "category", "field", unique=True,
             postgresql_where=text("status = 'ACTIVE'"),
             sqlite_where=text("status = 'ACTIVE'"),
         ),
@@ -518,7 +660,7 @@ class Rule(Base, TimestampMixin):
 class RuleVersion(Base, TimestampMixin):
     __tablename__ = "rule_versions"
     version_id = Column(Integer, primary_key=True, autoincrement=True)
-    rule_id = Column(String(48), ForeignKey("rules.rule_id"), nullable=False)
+    rule_id = Column(String(96), ForeignKey("rules.rule_id"), nullable=False)
     version_number = Column(Integer, nullable=False)
     snapshot_json = Column(JSON, nullable=False)
     change_type = Column(String(16), nullable=False)
@@ -593,6 +735,15 @@ class ApplicantProfile(Base, TimestampMixin):
     character_status = Column(String(32))
     has_regional_nomination = Column(Boolean)
     visa_subclass = Column(String(8))
+    # First batch of newly modelled applicant concepts (Phase 4). Each one is
+    # a fact an applicant can supply, so a rule that references it can resolve
+    # to PASS/FAIL instead of always UNKNOWN.
+    visa_history = Column(String(32))
+    employer_sponsored = Column(Boolean)
+    work_experience_years = Column(Integer)
+    in_australia_at_application = Column(Boolean)
+    has_health_insurance = Column(Boolean)
+    genuine_temporary_entrant = Column(Boolean)
 
     __table_args__ = (Index("idx_applicant_user", "user_id"),)
 
@@ -649,7 +800,7 @@ class AssessmentRuleResult(Base, TimestampMixin):
     __tablename__ = "assessment_rule_results"
     result_id = UUIDColumn(primary_key=True)
     assessment_id = Column(UUID(as_uuid=False), ForeignKey("assessments.assessment_id"), nullable=False)
-    rule_id = Column(String(48), ForeignKey("rules.rule_id"), nullable=False)
+    rule_id = Column(String(96), ForeignKey("rules.rule_id"), nullable=False)
     rule_version = Column(Integer, nullable=False)
     # canonical audit lineage: the exact immutable rule_versions row this result came from
     rule_version_id = Column(Integer, ForeignKey("rule_versions.version_id"))
@@ -680,7 +831,7 @@ class Gap(Base, TimestampMixin):
     field = Column(String(128), nullable=False)
     priority = Column(String(16), nullable=False)  # CRITICAL/HIGH/MEDIUM/LOW
     message = Column(Text, nullable=False)
-    rule_id = Column(String(48))
+    rule_id = Column(String(96))
     evidence_text = Column(Text)
     answer = Column(Text)
     source_chunk_ids = Column(JSON, default=list)
@@ -704,7 +855,11 @@ class PipelineRun(Base, TimestampMixin):
     duration_ms = Column(Integer)
     old_hash = Column(String(64))
     new_hash = Column(String(64))
+    # Item 6: requirements_extracted counts attempts, not stored rows - see
+    # the identical comment on ExtractionRun. stored_new is the "how much new
+    # knowledge did this run add" figure admin summaries/UI should surface.
     requirements_extracted = Column(Integer, nullable=False, default=0)
+    stored_new = Column(Integer, nullable=False, default=0)
     requirements_approved = Column(Integer, nullable=False, default=0)
     rules_created = Column(Integer, nullable=False, default=0)
     rules_validated = Column(Integer, nullable=False, default=0)
@@ -720,6 +875,44 @@ class PipelineRun(Base, TimestampMixin):
         CheckConstraint(
             "status IN ('RUNNING','COMPLETED','FAILED','PARTIAL')",
             name="ck_pipeline_status",
+        ),
+    )
+
+
+class SchedulerSettings(Base, TimestampMixin):
+    """Live, admin-editable override of the government sync schedule.
+
+    Single-row table (id is fixed to 1 by the CheckConstraint below) so there
+    is always exactly one current schedule, global across all sources - not
+    per-source. When this row exists, its values override the
+    GOVERNMENT_SYNC_*_UTC / GOVERNMENT_SYNC_INTERVAL_MINUTES env-var defaults
+    at startup (see src/api/main.py's lifespan) and PUT /admin/scheduler
+    applies a change live via APScheduler's reschedule_job/pause_job, without
+    requiring a restart.
+    """
+    __tablename__ = "scheduler_settings"
+    id = Column(Integer, primary_key=True, default=1)
+    enabled = Column(Boolean, nullable=False, default=True)
+    mode = Column(String(16), nullable=False, default="daily")  # daily | interval
+    hour_utc = Column(Integer)
+    minute_utc = Column(Integer)
+    interval_minutes = Column(Integer)
+    updated_by = Column(String(256))  # admin's email, server-derived - never client-supplied
+
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_scheduler_settings_singleton"),
+        CheckConstraint("mode IN ('daily', 'interval')", name="ck_scheduler_settings_mode"),
+        CheckConstraint(
+            "hour_utc IS NULL OR (hour_utc >= 0 AND hour_utc <= 23)",
+            name="ck_scheduler_settings_hour",
+        ),
+        CheckConstraint(
+            "minute_utc IS NULL OR (minute_utc >= 0 AND minute_utc <= 59)",
+            name="ck_scheduler_settings_minute",
+        ),
+        CheckConstraint(
+            "interval_minutes IS NULL OR interval_minutes >= 15",
+            name="ck_scheduler_settings_interval",
         ),
     )
 

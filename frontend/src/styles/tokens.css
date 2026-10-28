@@ -1,0 +1,45 @@
+:root {
+  /* Surfaces */
+  --color-bg: #ffffff;
+  --color-surface: #f7f8fa;
+  --color-card: #ffffff;
+  --color-border: #e5e7eb;
+
+  /* Text */
+  --color-text: #0f172a;
+  --color-text-muted: #475569;
+  /* Muted-foreground that still passes WCAG AA (4.5:1) on white. */
+  --color-text-faint: #5b6878;
+
+  /* Accent */
+  --color-accent: #3b5bdb;
+  --color-accent-hover: #364fc7;
+
+  /* Status */
+  --color-success-text: #2f6f3e;
+  --color-success-bg: #ebfbee;
+  --color-warning-text: #9c4a00;
+  --color-warning-bg: #fff4e6;
+  --color-danger-text: #c92a2a;
+  --color-danger-bg: #fff5f5;
+
+  /* Spacing grid (8px) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+  --space-6: 48px;
+
+  /* Radius */
+  --radius: 8px;
+  --radius-sm: 6px;
+
+  /* Layout */
+  --sidebar-width: 240px;
+  --topbar-height: 56px;
+
+  /* Font */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+}

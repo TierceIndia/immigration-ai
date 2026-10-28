@@ -25,9 +25,9 @@ from db.models import Base, GovernmentSource, GovernmentDocument
 from db.repositories import (
     ApplicantRepo, CountryRepo, ProgramRepo,
 )
-from phase3.rule_repository import EnhancedRuleRepo
+from rules.rule_repository import EnhancedRuleRepo
 from services.assessment_service import AssessmentService, _build_profile_data
-from phase3c.applicant import ApplicantProfile, VisaSelection
+from assessment.applicant import ApplicantProfile, VisaSelection
 
 
 # ---------------------------------------------------------------------------

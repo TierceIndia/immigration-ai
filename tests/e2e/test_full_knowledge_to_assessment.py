@@ -25,18 +25,19 @@ from sqlalchemy import text
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from db.models import (
     ApiUser, ApplicantProfile, VisaSelection, Country, ImmigrationProgram,
-    GovernmentSource, Assessment, AssessmentRuleResult, Gap,
+    GovernmentSource, Assessment, AssessmentRuleResult, Gap, DocumentVersion,
 )
 from db.connection import get_session_factory
 from db.repositories import PipelineRunRepo
-from fetcher import FetchResult, FetchStatus
+from fetch.fetcher import FetchResult, FetchStatus
 from services.assessment_service import AssessmentService
 from orchestration.government_sync import sync_source
-from phase3.rule_repository import EnhancedRuleRepo
-from phase3.requirement_to_rule import compile_approved_requirements
+from rules.rule_repository import EnhancedRuleRepo
+from rules.requirement_to_rule import compile_approved_requirements
 
 pytestmark = [
     pytest.mark.postgres_e2e,
@@ -48,8 +49,21 @@ pytestmark = [
 
 E2E_URL = os.environ.get(
     "POSTGRES_E2E_URL",
-    "postgresql://immigration:immigration_dev@localhost:5432/immigration",
+    # Driver named explicitly - see test_db_driver_pinning.py: a bare
+    # postgresql:// re-inherits SQLAlchemy's version-dependent default
+    # dialect (psycopg v3 on 2.1+, not a project dependency).
+    # Dedicated e2e-only database - see tests/e2e/conftest.py's docstring:
+    # this test disables audit-immutability triggers and must never run
+    # against the shared main "immigration" database.
+    # The host port follows POSTGRES_HOST_PORT so the suite still finds
+    # docker-compose's database when 5432 is already taken on the host.
+    f"postgresql+psycopg2://immigration:immigration_dev@localhost:"
+    f"{os.environ.get('POSTGRES_HOST_PORT', '5432')}/immigration_e2e",
 )
+
+from conftest import refuse_if_main_database  # noqa: E402
+
+refuse_if_main_database(E2E_URL)
 
 PROGRAM_ID = "SKILLED_189"
 SOURCE_ID = "SRC-A2E-ASSESS-189"
@@ -112,17 +126,30 @@ def _cleanup():
                 "DELETE FROM visa_selections WHERE applicant_id IN (:a1,:a2,:a3)",
                 "DELETE FROM applicant_profiles WHERE applicant_id IN (:a1,:a2,:a3)",
                 "DELETE FROM api_users WHERE user_id = :uid",
+                # Scoped by THIS test's own document lineage (document_id LIKE
+                # 'DOC-A2E-%'), never by program_id + a generic id pattern:
+                # real extraction produces requirement_ids in the exact same
+                # REQ-{program_id}-{hash} shape this test's fixture does, so a
+                # program_id-only filter would also match (and delete) real,
+                # unrelated SKILLED_189 data already extracted from a real
+                # sync sharing this dev Postgres - confirmed live: 45 real
+                # rows matched the old filter, 0 of them belonging to this test.
                 "DELETE FROM requirement_evidence WHERE document_id LIKE 'DOC-A2E-%'",
                 "DELETE FROM ruleset_rules WHERE ruleset_id IN "
                     "(SELECT ruleset_id FROM rulesets WHERE program_id = :prog)",
                 "DELETE FROM rulesets WHERE program_id = :prog",
-                "DELETE FROM rule_versions WHERE rule_id LIKE 'RULE-REQ-%'",
-                "DELETE FROM rules WHERE program_id = :prog AND rule_id LIKE 'RULE-REQ-%'",
+                "DELETE FROM rule_versions WHERE rule_id IN "
+                    "(SELECT rule_id FROM rules WHERE requirement_id IN "
+                    "(SELECT requirement_id FROM requirements WHERE document_version_id IN "
+                    "(SELECT version_id FROM document_versions WHERE document_id LIKE 'DOC-A2E-%')))",
+                "DELETE FROM rules WHERE requirement_id IN "
+                    "(SELECT requirement_id FROM requirements WHERE document_version_id IN "
+                    "(SELECT version_id FROM document_versions WHERE document_id LIKE 'DOC-A2E-%'))",
                 "DELETE FROM requirement_versions WHERE requirement_id IN "
-                    "(SELECT requirement_id FROM requirements WHERE program_id = :prog "
-                    "AND country_id = 'AU' AND requirement_id LIKE 'REQ-%')",
-                "DELETE FROM requirements WHERE program_id = :prog AND country_id = 'AU' "
-                    "AND requirement_id LIKE 'REQ-%'",
+                    "(SELECT requirement_id FROM requirements WHERE document_version_id IN "
+                    "(SELECT version_id FROM document_versions WHERE document_id LIKE 'DOC-A2E-%'))",
+                "DELETE FROM requirements WHERE document_version_id IN "
+                    "(SELECT version_id FROM document_versions WHERE document_id LIKE 'DOC-A2E-%')",
                 "DELETE FROM extraction_runs WHERE document_id LIKE 'DOC-A2E-%'",
                 "DELETE FROM document_chunks WHERE document_id LIKE 'DOC-A2E-%'",
                 "DELETE FROM document_versions WHERE document_id LIKE 'DOC-A2E-%'",
@@ -157,7 +184,7 @@ def _ok_fetch(payload: bytes):
 
 def _seed_program(session):
     if session.get(Country, "AU") is None:
-        session.add(Country(country_id="AU", name="Australia", iso_code="AUS", status="ACTIVE"))
+        session.add(Country(country_id="AU", name="Australia", iso_code="AUS"))
     if session.get(ImmigrationProgram, PROGRAM_ID) is None:
         session.add(ImmigrationProgram(
             program_id=PROGRAM_ID, country_id="AU", visa_category="SKILLED",
@@ -211,17 +238,27 @@ class TestFullKnowledgeToAssessment:
         session.commit()
 
         # --- Step 1: Sync government source → extract → compile → activate rules ---
-        monkeypatch.setattr("fetcher.fetch", _ok_fetch(FIXTURE_AU_189))
+        monkeypatch.setattr("fetch.backend.fetch", _ok_fetch(FIXTURE_AU_189))
         result = sync_source(session, SOURCE_ID, trigger_type="ON_DEMAND")
         assert result.status == "changed"
         session.commit()
 
-        # Extractor produced requirements via MockLLMClient; approve those
+        # Extractor produced requirements via MockLLMClient; approve those.
+        # Scoped to THIS test's own document (DOC-A2E-ASSESS-189), never to
+        # "every requirement for program_id=SKILLED_189" - this dev Postgres
+        # is shared with real extraction output and demo data (see
+        # seed_review_demo.py), and a program-wide filter would blindly
+        # overwrite their status too, not just fail: confirmed live, this
+        # exact filter previously swept in 45 real requirements plus 2 demo
+        # CONFLICT rows and bulk-set them all to APPROVED.
         from db.models import Requirement, ExtractionRun
+        document_id = f"DOC-{SOURCE_ID.replace('SRC-', '')}"
         extracted = (
             session.query(Requirement)
+            .join(DocumentVersion, DocumentVersion.version_id == Requirement.document_version_id)
             .filter(Requirement.program_id == PROGRAM_ID,
-                    Requirement.country_id == "AU")
+                    Requirement.country_id == "AU",
+                    DocumentVersion.document_id == document_id)
             .all()
         )
         assert len(extracted) >= 1, "extraction must produce at least one requirement"

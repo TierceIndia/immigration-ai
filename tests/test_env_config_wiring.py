@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from source_discovery import _discovery_budget  # noqa: E402
 from source_discovery import _resolve_category  # noqa: E402
 from utils.fetch_document import _extraction_model  # noqa: E402
-from phase2.llm_client import OpenAILLMClient  # noqa: E402
+from extraction.llm_client import OpenAILLMClient  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -42,31 +42,31 @@ class TestExtractionModelEnv:
 
     def test_model_routes_to_openai_client(self, monkeypatch):
         """An OpenAI model name constructs an OpenAILLMClient (not MockLLMClient)."""
-        from phase2.llm_client import OpenAILLMClient, MockLLMClient
+        from extraction.llm_client import OpenAILLMClient, MockLLMClient
         client = OpenAILLMClient(api_key="dummy", model="gpt-4o-mini")
         assert isinstance(client, OpenAILLMClient)
         assert not isinstance(client, MockLLMClient)
 
     def test_default_is_openai_model(self):
-        from phase2.llm_client import DEFAULT_OPENAI_MODEL
+        from extraction.llm_client import DEFAULT_OPENAI_MODEL
         assert DEFAULT_OPENAI_MODEL == "gpt-4o-mini"
         assert OpenAILLMClient._is_openai_model(DEFAULT_OPENAI_MODEL)
 
     def test_mock_model_is_rejected(self):
-        from phase2.llm_client import OpenAILLMClient
+        from extraction.llm_client import OpenAILLMClient
         assert not OpenAILLMClient._is_openai_model("mock-llm-v1")
         with pytest.raises(ValueError, match="Unsupported extraction model"):
             OpenAILLMClient(api_key="dummy", model="mock-llm-v1")
 
     def test_non_openai_model_is_rejected(self):
-        from phase2.llm_client import OpenAILLMClient
+        from extraction.llm_client import OpenAILLMClient
         for bad in ("gemini-flash-lite-latest", "claude-sonnet-4-6"):
             assert not OpenAILLMClient._is_openai_model(bad)
             with pytest.raises(ValueError, match="Unsupported extraction model"):
                 OpenAILLMClient(api_key="dummy", model=bad)
 
     def test_missing_api_key_fails_fast(self):
-        from phase2.llm_client import OpenAILLMClient
+        from extraction.llm_client import OpenAILLMClient
         with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
             OpenAILLMClient(api_key=None, model="gpt-4o-mini")
 
@@ -74,7 +74,7 @@ class TestExtractionModelEnv:
         # create_llm_client is a separate module attribute aliased to the real
         # get_client function; the autouse unit-test fixture only swaps the
         # get_client attribute itself, so this reaches the real factory logic.
-        from phase2.llm_client import create_llm_client, GeminiLLMClient
+        from extraction.llm_client import create_llm_client, GeminiLLMClient
         monkeypatch.setenv("GEMINI_API_KEY", "dummy-gemini-key")
         client = create_llm_client("gemini-flash-lite-latest", visa_category="SKILLED")
         assert isinstance(client, GeminiLLMClient)
@@ -82,12 +82,12 @@ class TestExtractionModelEnv:
         assert client.governance is not None
 
     def test_factory_still_rejects_anthropic_model(self):
-        from phase2.llm_client import create_llm_client
+        from extraction.llm_client import create_llm_client
         with pytest.raises(ValueError, match="Unsupported extraction model"):
             create_llm_client("claude-sonnet-4-6")
 
     def test_gemini_missing_api_key_fails_fast(self, monkeypatch):
-        from phase2.llm_client import GeminiLLMClient
+        from extraction.llm_client import GeminiLLMClient
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):

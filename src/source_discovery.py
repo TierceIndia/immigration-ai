@@ -17,7 +17,7 @@ Hard constraints enforced here:
   - Polite rate limiting between same-domain requests.
   - No new fetch path: reuses fetcher.fetch().
   - No direct provider LLM calls: any classification LLM second-opinion goes through
-    the governance layer (src/llm_governance.py) + phase2.llm_client, and is skipped
+    the governance layer (src/llm_governance.py) + extraction.llm_client, and is skipped
     gracefully when no real LLM is configured.
   - Deduplicates against existing government_sources.url values (exact match).
   - Never invents classifications: an ambiguous page leaves
@@ -35,7 +35,12 @@ import dotenv
 from bs4 import BeautifulSoup
 
 from db.repositories import DiscoveredSourceRepo, SourceRepo
-from fetcher import FetchResult, fetch as _default_fetch
+# Discovery retrieves through the same single backend as the sync path
+# (Playwright), so it obeys the same User-Agent, politeness, robots and proxy
+# rules. Still injectable: tests pass their own fetch_fn.
+from fetch.backend import fetch as _default_fetch
+from fetch.fetcher import FetchResult
+from fetch.source_validation import SourceValidationError, validate_http_url
 
 # In TESTS, dotenv loading is suppressed so a developer's .env cannot leak
 # keys into the hermetic suite (conftest strips them at module load).
@@ -251,8 +256,15 @@ def discover_sources(
     report["robots_applied"] = False
     report["robots_blocked_seed"] = False
 
+    try:
+        seed_url = validate_http_url(seed_url)
+    except SourceValidationError as exc:
+        report["errors"].append(str(exc))
+        return [], report
+
     base_host = _host_of(seed_url)
     if not base_host:
+        report["errors"].append("seed URL has no host")
         return [], report
 
     # 1. robots.txt gate
@@ -285,6 +297,11 @@ def discover_sources(
                 continue
             if not _is_same_domain(url, base_host):
                 report["skipped"].append({"url": url, "reason": "different domain"})
+                continue
+            try:
+                url = validate_http_url(url)
+            except SourceValidationError as exc:
+                report["skipped"].append({"url": url, "reason": str(exc)})
                 continue
 
             report["crawled"].append(url)
@@ -350,7 +367,7 @@ def _apply_llm_second_opinion(candidates, suggested_category, report):
     third of the range). Degrades gracefully: if a real LLM client cannot be obtained
     or the governance gate blocks/would raise, the keyword result is kept unchanged."""
     try:
-        from phase2.llm_client import get_client
+        from extraction.llm_client import get_client
         from llm_governance import LLMGovernance
 
         # get_client is OpenAI-only and fails fast on missing key / bad model —

@@ -1,4 +1,4 @@
-"""Government sync orchestrator — end-to-end pipeline from source to ACTIVE rules.
+﻿"""Government sync orchestrator — end-to-end pipeline from source to ACTIVE rules.
 
 Pipeline:
     1. Real fetch every due source (no stored-hash short-circuit)
@@ -39,11 +39,16 @@ from db.models import (
     GovernmentSource, GovernmentDocument, DocumentVersion,
     DocumentChunk, Requirement, PipelineRun,
 )
-from change_detector import ChangeType, classify_change
+from change_detection.change_detector import ChangeType, classify_change
 from db.repositories import PipelineRunRepo
-from phase3.requirement_to_rule import compile_approved_requirements
-from phase3.rule_repository import EnhancedRuleRepo
+from rules.requirement_to_rule import compile_approved_requirements
+from rules.rule_engine import is_field_evaluable
+from rules.rule_repository import EnhancedRuleRepo
 from logging_config import get_logger
+from fetch.backend import new_session as new_fetch_session
+from fetch.politeness import host_of
+from fetch.timing import SourceTiming, format_timing_table
+from orchestration.host_cooldown import blocked_until
 from utils.fetch_document import fetch_document_and_store
 
 logger = get_logger(__name__)
@@ -60,12 +65,15 @@ _DEFAULT_CRAWL_INTERVAL = _CRAWL_INTERVALS["DAILY"]
 class SyncResult:
     """Result of syncing a single government source."""
     source_id: str
-    status: str  # "unchanged" | "changed" | "error" | "no_document"
+    status: str  # "unchanged" | "changed" | "error" | "no_document" | "cooldown"
     document_id: str | None = None
     document_version: int | None = None
     old_hash: str | None = None
     new_hash: str | None = None
+    # requirements_extracted counts attempts, not stored rows (item 6) - use
+    # stored_new for "how much new knowledge did this sync add".
     requirements_extracted: int = 0
+    stored_new: int = 0
     requirements_approved: int = 0
     rules_created: int = 0
     rules_validated: int = 0
@@ -73,6 +81,7 @@ class SyncResult:
     rules_activated: int = 0
     rules_drafted: int = 0
     errors: list[str] = field(default_factory=list)
+    timing: SourceTiming | None = None
 
 
 def detect_change(session: Session, source_id: str) -> tuple[bool, str | None, str | None]:
@@ -116,6 +125,32 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     if dt is not None and dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+_EMPTY_CONTENT_WARNINGS = {
+    "SCANNED_PDF": (
+        "Fetch succeeded and the PDF changed, but it has no text layer - it is "
+        "a scanned/image-only document. OCR is out of scope, so nothing could "
+        "be extracted; the document version and its raw snapshot are stored as "
+        "evidence. A human has to read this one."
+    ),
+    "NO_STATIC_CONTENT": (
+        "Fetch succeeded and content changed, but extraction produced zero "
+        "document chunks (e.g. a page that renders no structural content) - no "
+        "extraction was attempted. Content review recommended."
+    ),
+}
+
+
+def _empty_content_warning(reason: str | None) -> str:
+    """Say which kind of "nothing to extract" this was; they need different
+    human actions, so the warning must not collapse them."""
+    return _EMPTY_CONTENT_WARNINGS.get(
+        reason or "",
+        "Fetch succeeded and content changed, but extraction produced zero "
+        "document chunks - no extraction was attempted. Content review "
+        "recommended.",
+    )
 
 
 def _record_run_failure(session: Session, run: PipelineRun, error: str) -> PipelineRun:
@@ -371,8 +406,14 @@ def compute_change_detection(
 
 
 def sync_source(session: Session, source_id: str,
-                dry_run: bool = False, trigger_type: str = "ON_DEMAND") -> SyncResult:
+                dry_run: bool = False, trigger_type: str = "ON_DEMAND",
+                browser_session=None) -> SyncResult:
     """Run the full sync pipeline for one government source.
+
+    ``browser_session``: an optional shared retrieval session,
+    passed through to ``fetch_document_and_store`` so a batch of sources in
+    one sync run can reuse a single already-running browser. The standalone/
+    single-source path (no session passed) is unaffected.
 
     Creates a PipelineRun to track execution. Non-dry-run:
         1. Capture previous_hash = source.last_hash (BEFORE the fetch)
@@ -387,7 +428,34 @@ def sync_source(session: Session, source_id: str,
 
     Failure-safe: if any step fails, old ACTIVE rules remain untouched.
     PipelineRun is marked FAILED or PARTIAL with error details.
+
+    Refuses to run while the source's host is in a refusal cooldown: the run is
+    rejected *before* a PipelineRun is opened, because no request was made and
+    none should be. sync_all_sources() skips these sources up front; this guard
+    covers the single-source path and anything racing in between.
     """
+    if not dry_run:
+        # Look up first rather than raising here: a missing source must keep
+        # reporting through the existing "not found" error path below.
+        _pending = session.get(GovernmentSource, source_id)
+        if _pending is not None:
+            until = blocked_until(session, _pending.url)
+            if until is not None:
+                message = (
+                    f"Host {host_of(_pending.url)} refused our last request; "
+                    f"not trying again before {until.isoformat()}"
+                )
+                logger.warning(
+                    "Source sync refused — host is in a refusal cooldown",
+                    extra={
+                        "source_id": source_id,
+                        "host": host_of(_pending.url),
+                        "cooldown_until": until.isoformat(),
+                    },
+                )
+                return SyncResult(source_id=source_id, status="cooldown",
+                                  errors=[message])
+
     run_repo = PipelineRunRepo(session)
     rule_repo = EnhancedRuleRepo(session)
     run = run_repo.create(source_id=source_id, trigger_type=trigger_type)
@@ -422,11 +490,12 @@ def sync_source(session: Session, source_id: str,
         previous_hash = source.last_hash
         result.old_hash = previous_hash
 
-        outcome = fetch_document_and_store(session, source)
+        outcome = fetch_document_and_store(session, source, browser_session=browser_session)
         fresh_hash = outcome.content_hash
         run.old_hash = previous_hash
         run.new_hash = fresh_hash
         result.new_hash = fresh_hash
+        result.timing = outcome.timing
 
         if outcome.document_id is None:
             # Fetch failed; diagnostics/demotion already handled by the fetcher.
@@ -462,16 +531,16 @@ def sync_source(session: Session, source_id: str,
 
         result.status = "changed"
         result.requirements_extracted = outcome.requirements_extracted
+        result.stored_new = outcome.stored_new
         empty_content_warning = (
-            "Fetch succeeded and content changed, but extraction produced zero "
-            "document chunks (e.g. a JS-rendered page with no static content) — "
-            "no extraction was attempted. Content review recommended."
+            _empty_content_warning(outcome.empty_content_reason)
             if outcome.empty_content else None
         )
         return _finalize_change(
             session, run_repo, rule_repo, run, result,
             source_id, previous_hash, fresh_hash,
             dry_run=False, requirements_extracted=outcome.requirements_extracted,
+            stored_new=outcome.stored_new,
             empty_content_warning=empty_content_warning,
         )
 
@@ -501,6 +570,7 @@ def _finalize_change(
     new_hash: str | None,
     dry_run: bool,
     requirements_extracted: int = 0,
+    stored_new: int = 0,
     empty_content_warning: str | None = None,
 ) -> SyncResult:
     """Run the shared changed-path body: change detection → compile → run record.
@@ -508,13 +578,15 @@ def _finalize_change(
     Used by both the dry-run preview and the real always-fetch path. The real
     path passes the number of requirements extracted by the fetch step so the
     PipelineRun audit metrics reflect bootstrap/extraction (as the legacy
-    zero-document path did).
+    zero-document path did). ``requirements_extracted`` counts attempts, not
+    stored rows (item 6) - ``stored_new`` is the real "new knowledge" figure.
 
     ``empty_content_warning`` (real path only): the fetch succeeded and content
     genuinely changed, but extraction found zero document chunks. Seeded into
     the run's errors so it lands as a visible PARTIAL, never a silent COMPLETED.
     """
     result.requirements_extracted = requirements_extracted
+    result.stored_new = stored_new
 
     doc = _latest_document(session, source_id)
     if not doc:
@@ -590,6 +662,7 @@ def _finalize_change(
     #    fetch_document_and_store after the fresh fetch (real path only).
     run_kwargs = dict(
         requirements_extracted=result.requirements_extracted,
+        stored_new=result.stored_new,
         requirements_approved=result.requirements_approved,
         rules_created=result.rules_created,
         rules_validated=result.rules_validated,
@@ -631,6 +704,11 @@ def sync_all_sources(session: Session, dry_run: bool = False,
     Scheduled syncs (trigger_type="SCHEDULED", non-dry-run) skip ACTIVE sources
     that were checked more recently than their ``crawl_frequency``. Manual and
     on-demand syncs always re-fetch, so an admin can force a refresh.
+
+    Every source in this run shares ONE browser (fetch.backend.new_session()),
+    with a fresh context per source so cookies and storage never leak between
+    sources. It is lazy - nothing launches until the first actual fetch - and
+    always closed at the end of the run, success or failure.
     """
     now = datetime.now(timezone.utc)
     sources = (
@@ -639,7 +717,43 @@ def sync_all_sources(session: Session, dry_run: bool = False,
         .all()
     )
     results = []
+    browser_session = new_fetch_session() if not dry_run else None
+    try:
+        results = _sync_sources(session, sources, dry_run, trigger_type, now, browser_session)
+    finally:
+        if browser_session is not None:
+            browser_session.close()
+
+    timings = [r.timing for r in results if r.timing is not None]
+    if timings:
+        logger.info(
+            "Sync timing summary\n%s", format_timing_table(timings),
+            extra={"sources_timed": len(timings)},
+        )
+    return results
+
+
+def _sync_sources(
+    session: Session, sources: list[GovernmentSource], dry_run: bool,
+    trigger_type: str, now: datetime, browser_session,
+) -> list[SyncResult]:
+    results = []
     for src in sources:
+        if not dry_run:
+            # A host that refused us is paused. Every source on it is skipped
+            # for the rest of the run — the refusal is about the host, not the
+            # one URL we happened to ask for.
+            until = blocked_until(session, src.url, now)
+            if until is not None:
+                logger.info(
+                    "Source skipped — host is in a refusal cooldown",
+                    extra={
+                        "source_id": src.source_id,
+                        "host": host_of(src.url),
+                        "cooldown_until": until.isoformat(),
+                    },
+                )
+                continue
         if (
             trigger_type == "SCHEDULED"
             and not dry_run
@@ -652,7 +766,7 @@ def sync_all_sources(session: Session, dry_run: bool = False,
             continue
         try:
             result = sync_source(session, src.source_id, dry_run=dry_run,
-                                 trigger_type=trigger_type)
+                                 trigger_type=trigger_type, browser_session=browser_session)
         except Exception as e:  # very last line of defence — never poison the batch
             # A failed source must not terminate the sync: roll back its partial
             # writes, record a FAILED PipelineRun on the fresh transaction, and
@@ -691,22 +805,26 @@ def get_review_queue(session: Session, program_id: str | None = None) -> dict[st
         "drafts": [
             {"rule_id": r.rule_id, "program_id": r.program_id,
              "field": r.field, "category": r.category,
+             "evaluable": is_field_evaluable(r.field),
              "created_at": r.created_at.isoformat() if r.created_at else None}
             for r in drafts
         ],
         "validated": [
             {"rule_id": r.rule_id, "program_id": r.program_id,
-             "field": r.field, "category": r.category}
+             "field": r.field, "category": r.category,
+             "evaluable": is_field_evaluable(r.field)}
             for r in validated
         ],
         "approved_pending": [
             {"rule_id": r.rule_id, "program_id": r.program_id,
-             "field": r.field, "category": r.category}
+             "field": r.field, "category": r.category,
+             "evaluable": is_field_evaluable(r.field)}
             for r in approved
         ],
         "active": [
             {"rule_id": r.rule_id, "program_id": r.program_id,
              "field": r.field, "category": r.category,
+             "evaluable": is_field_evaluable(r.field),
              "version": r.current_version}
             for r in active
         ],

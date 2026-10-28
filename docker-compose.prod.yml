@@ -1,0 +1,177 @@
+name: immigration-knowledge-prod
+
+# Production topology. Every required value has no fallback: compose refuses to
+# start rather than silently deploying a placeholder. Supply the file with
+#   docker compose --env-file <outside-repo.env> -f docker-compose.prod.yml ...
+# The API itself repeats these checks at startup (src/production_config.py).
+#
+# This file has NOT been executed against a real target. TLS certificate
+# issuance, DNS, firewall, backup and restore must be verified in the target
+# environment before calling the deployment production-ready.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    shm_size: 256mb
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-immigration}
+      POSTGRES_USER: ${POSTGRES_USER:-immigration}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the env file}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - db
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    shm_size: 1gb
+    stop_grace_period: 30s
+    volumes:
+      - raw_snapshots:/app/raw
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in the env file}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in the env file}
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRATION_MINUTES: ${JWT_EXPIRATION_MINUTES:-1440}
+      PASSWORD_MIN_LENGTH: "8"
+      ALLOW_PUBLIC_REGISTRATION: "false"
+      CORS_ORIGINS: "https://${DOMAIN:?set DOMAIN in the env file}"
+      # Only nginx on the private app network can reach the API. Trusting its
+      # forwarding headers recovers the real client address for login throttling.
+      FORWARDED_ALLOW_IPS: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?set ADMIN_EMAIL in the env file}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in the env file}
+      ADMIN_FULL_NAME: ${ADMIN_FULL_NAME:-System Administrator}
+      ENABLE_SCHEDULER: ${ENABLE_SCHEDULER:-true}
+      GOVERNMENT_SYNC_HOUR_UTC: ${GOVERNMENT_SYNC_HOUR_UTC:-3}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      EXTRACTION_MODEL: ${EXTRACTION_MODEL:-gpt-4o-mini}
+      SOURCE_ALLOWED_HOST_SUFFIXES: ${SOURCE_ALLOWED_HOST_SUFFIXES:-.gov.au}
+      FETCH_ALLOWED_DOMAINS: ${FETCH_ALLOWED_DOMAINS:-${SOURCE_ALLOWED_HOST_SUFFIXES:-.gov.au}}
+      FETCH_ALLOW_PRIVATE_HOSTS: "false"
+      FETCH_VALIDATE_DESTINATION_DNS: "true"
+      FETCH_PROXY_URL: ${FETCH_PROXY_URL:-}
+      FETCH_USER_AGENT: ${FETCH_USER_AGENT:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app
+      - db
+      - egress
+    command: >
+      sh -c "alembic upgrade head && python src/seed_registry.py &&
+      uvicorn src.api.main:create_app --factory --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips 172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - app
+      - edge
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in the env file}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_healthy
+    networks:
+      - edge
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  edge:
+  app:
+    internal: true
+  db:
+    internal: true
+  egress:
+
+volumes:
+  pgdata:
+  raw_snapshots:
+  caddy_data:
+  caddy_config:

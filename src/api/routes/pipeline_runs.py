@@ -1,7 +1,9 @@
 """Pipeline run routes — query sync execution history.
 
-All endpoints require admin role. Provides audit trail for government
-source sync operations.
+Admin role required. Provides audit trail for government source sync
+operations. Only GET /{run_id} is exposed (status polling for Run
+now/Run all) - the frontend has no pipeline-runs list/summary/per-source
+history page, so those routes were removed (see DESIGN.md).
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 
 from api.helpers import parse_uuid_or_404
-from api.routes.auth import get_current_user
+from api.routes.auth import require_admin
 from db.connection import get_session, get_db_engine
 from db.models import Rule
 from db.repositories import PipelineRunRepo
@@ -19,11 +21,6 @@ from logging_config import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
-
-
-def _require_admin(user: dict) -> None:
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
 
 
 def _compute_rule_counts(session, source_id: str) -> dict[str, int]:
@@ -53,7 +50,11 @@ def _run_to_dict(run, session=None) -> dict[str, Any]:
         "duration_ms": run.duration_ms,
         "old_hash": run.old_hash,
         "new_hash": run.new_hash,
+        # requirements_extracted counts attempts, not stored rows (item 6) -
+        # stored_new is the real "new knowledge" figure; the UI should show
+        # that, not requirements_extracted, as the headline count.
         "requirements_extracted": run.requirements_extracted,
+        "stored_new": run.stored_new,
         "requirements_approved": run.requirements_approved,
         "rules_created": run.rules_created,
         "errors": run.errors or [],
@@ -70,52 +71,26 @@ def _run_to_dict(run, session=None) -> dict[str, Any]:
     return base
 
 
-from sqlalchemy import select as _select  # noqa: E402
-
-
-@router.get("")
-def list_runs(
-    request: Request,
-    limit: int = 50,
-    offset: int = 0,
-    current_user: dict = Depends(get_current_user),
-):
-    """List all pipeline runs, newest first."""
-    _require_admin(current_user)
-    engine = get_db_engine(request)
-    with get_session(engine) as session:
-        repo = PipelineRunRepo(session)
-        runs = repo.list_all(limit=limit, offset=offset)
-        return {
-            "runs": [_run_to_dict(r, session) for r in runs],
-            "total": len(runs),
-            "limit": limit,
-            "offset": offset,
-        }
-
-
-@router.get("/summary")
-def run_summary(
-    request: Request,
-    current_user: dict = Depends(get_current_user),
-):
-    """Get aggregate counts by status."""
-    _require_admin(current_user)
-    engine = get_db_engine(request)
-    with get_session(engine) as session:
-        repo = PipelineRunRepo(session)
-        return {"counts": repo.count_by_status()}
-
-
 @router.get("/{run_id}")
 def get_run(
     run_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
 ):
-    """Get a single pipeline run by ID."""
-    _require_admin(current_user)
+    """Get a single pipeline run by ID, or a background sync job's progress.
+
+    A background sync started via POST /api/v1/admin/sync has its own run_id
+    distinct from any per-source PipelineRun (sync_all_sources creates one
+    PipelineRun per source, not one for the whole batch) — checked first here
+    since it's a cheap in-memory lookup, falling back to the PipelineRun table.
+    """
     parse_uuid_or_404(run_id)
+
+    from scheduler import get_sync_job
+    job = get_sync_job(run_id)
+    if job is not None:
+        return job
+
     engine = get_db_engine(request)
     with get_session(engine) as session:
         repo = PipelineRunRepo(session)
@@ -123,23 +98,3 @@ def get_run(
         if not run:
             raise HTTPException(status_code=404, detail="Pipeline run not found")
         return _run_to_dict(run, session)
-
-
-@router.get("/source/{source_id}")
-def runs_for_source(
-    source_id: str,
-    request: Request,
-    limit: int = 20,
-    current_user: dict = Depends(get_current_user),
-):
-    """List pipeline runs for a specific source."""
-    _require_admin(current_user)
-    engine = get_db_engine(request)
-    with get_session(engine) as session:
-        repo = PipelineRunRepo(session)
-        runs = repo.list_for_source(source_id, limit=limit)
-        return {
-            "source_id": source_id,
-            "runs": [_run_to_dict(r, session) for r in runs],
-            "total": len(runs),
-        }

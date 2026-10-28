@@ -19,7 +19,7 @@ from source_discovery import (  # noqa: E402
     discover_sources, match_keywords, _resolve_category,
     DEFAULT_MAX_DEPTH, MIN_SCORE,
 )
-from fetcher import FetchResult, FetchStatus  # noqa: E402
+from fetch.fetcher import FetchResult, FetchStatus  # noqa: E402
 
 
 def _ok(url, html: str) -> FetchResult:

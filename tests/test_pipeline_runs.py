@@ -338,33 +338,6 @@ class TestPipelineRunRepo:
 # ---------------------------------------------------------------------------
 
 class TestPipelineRunAPI:
-    def test_list_runs(self, client, db_engine):
-        headers = _auth_headers(client, db_engine)
-        resp = client.get("/api/v1/admin/runs", headers=headers)
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "runs" in data
-        assert "total" in data
-
-    def test_list_runs_requires_admin(self, client, db_engine):
-        # Non-admin user
-        client.post(
-            "/api/v1/auth/register",
-            json={"email": "user@example.com", "password": "pass123", "full_name": "User"},
-        )
-        resp = client.post(
-            "/api/v1/auth/login",
-            json={"email": "user@example.com", "password": "pass123"},
-        )
-        token = resp.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
-        resp = client.get("/api/v1/admin/runs", headers=headers)
-        assert resp.status_code == 403
-
-    def test_list_runs_unauthenticated(self, client):
-        resp = client.get("/api/v1/admin/runs")
-        assert resp.status_code in (401, 403)
-
     def test_get_run(self, client, db_engine, session):
         headers = _auth_headers(client, db_engine)
         _seed_source(session)
@@ -383,51 +356,6 @@ class TestPipelineRunAPI:
         headers = _auth_headers(client, db_engine)
         resp = client.get("/api/v1/admin/runs/nonexistent", headers=headers)
         assert resp.status_code == 404
-
-    def test_runs_for_source(self, client, db_engine, session):
-        headers = _auth_headers(client, db_engine)
-        _seed_source(session)
-        repo = PipelineRunRepo(session)
-        repo.create(source_id="src-001", trigger_type="MANUAL")
-        repo.create(source_id="src-001", trigger_type="SCHEDULED")
-        session.commit()
-        resp = client.get("/api/v1/admin/runs/source/src-001", headers=headers)
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["source_id"] == "src-001"
-        assert data["total"] == 2
-
-    def test_runs_for_source_empty(self, client, db_engine):
-        headers = _auth_headers(client, db_engine)
-        resp = client.get("/api/v1/admin/runs/source/nonexistent", headers=headers)
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total"] == 0
-
-    def test_run_summary(self, client, db_engine, session):
-        headers = _auth_headers(client, db_engine)
-        _seed_source(session)
-        repo = PipelineRunRepo(session)
-        r1 = repo.create(source_id="src-001", trigger_type="MANUAL")
-        repo.complete(r1.run_id)
-        session.commit()
-        resp = client.get("/api/v1/admin/runs/summary", headers=headers)
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "counts" in data
-        assert data["counts"]["COMPLETED"] == 1
-
-    def test_list_runs_with_pagination(self, client, db_engine, session):
-        headers = _auth_headers(client, db_engine)
-        _seed_source(session)
-        repo = PipelineRunRepo(session)
-        for _ in range(5):
-            repo.create(source_id="src-001", trigger_type="MANUAL")
-        session.commit()
-        resp = client.get("/api/v1/admin/runs?limit=2&offset=0", headers=headers)
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["runs"]) == 2
 
     def test_completed_run_in_api(self, client, db_engine, session):
         headers = _auth_headers(client, db_engine)

@@ -1,12 +1,19 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector's build of PostgreSQL 16. Same engine, same on-disk format as
+    # the stock image - the volume below carries over unchanged - plus the
+    # `vector` extension the chunk embeddings column needs.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: immigration
       POSTGRES_USER: immigration
       POSTGRES_PASSWORD: immigration_dev
     ports:
-      - "5432:5432"
+      # Host port is configurable so the stack can move out of the way of
+      # something else already listening on 5432 (a native PostgreSQL
+      # install, for example). The port INSIDE the container is always 5432
+      # and never changes - only the host side moves.
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -23,9 +30,20 @@ services:
     # (well-documented Chromium-in-Docker requirement). We bump it here rather
     # than passing --disable-dev-shm-usage at runtime; see Docker docs on /dev/shm.
     shm_size: '1gb'
+    volumes:
+      # Raw government snapshots (utils/fetch_document.py:persist_raw_snapshot)
+      # write to /app/raw inside the container. Without a named volume here,
+      # that directory is part of the container's writable layer: every
+      # container recreation (a rebuild, an `--rm` one-off run, a crash
+      # restart) silently loses every previously fetched raw snapshot, while
+      # government_documents.raw_path in Postgres keeps pointing at paths that
+      # no longer exist on disk. Found by checking a raw_path from the DB
+      # against the actual file on disk and discovering only files written by
+      # the single still-running container since its last start survived.
+      - raw_snapshots:/app/raw
     environment:
-      DATABASE_URL: postgresql://immigration:immigration_dev@postgres:5432/immigration
-      JWT_SECRET_KEY: change-me-in-production
+      DATABASE_URL: postgresql+psycopg2://immigration:immigration_dev@postgres:5432/immigration
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
       JWT_ALGORITHM: HS256
       JWT_EXPIRATION_MINUTES: "1440"
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
@@ -37,15 +55,15 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-gpt-4o-mini}
+      # Off unless the operator explicitly opts in, matching the code default.
+      ALLOW_PUBLIC_REGISTRATION: ${ALLOW_PUBLIC_REGISTRATION:-false}
     depends_on:
       postgres:
         condition: service_healthy
-    # Dockerfile's ENTRYPOINT (docker-entrypoint.sh) starts Xvfb and sets DISPLAY
-    # before running this command, so browser_fetcher.py's headless=False
-    # Chromium has a real X display available.
     command: >
       sh -c "alembic upgrade head && python src/seed_registry.py &&
       uvicorn src.api.main:create_app --factory --host 0.0.0.0 --port 8000"
 
 volumes:
   pgdata:
+  raw_snapshots:

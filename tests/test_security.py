@@ -84,11 +84,11 @@ class TestJWTSecretManagement:
     def test_explicit_secret_used(self):
         """When JWT_SECRET_KEY is set, it's used regardless of environment."""
         with patch.dict(os.environ, {
-            "JWT_SECRET_KEY": "my-strong-secret-key-12345",
+            "JWT_SECRET_KEY": "my-strong-secret-key-12345-abcdef",
             "ENVIRONMENT": "production",
         }):
             secret = _get_jwt_secret()
-            assert secret == "my-strong-secret-key-12345"
+            assert secret == "my-strong-secret-key-12345-abcdef"
 
     def test_token_created_with_explicit_secret(self):
         """Tokens signed with a custom secret can be decoded with the same secret."""
@@ -520,7 +520,7 @@ class TestAuthorization:
         token = self._register_and_get_token(client, "regular2@example.com")
         resp = client.post(
             "/api/v1/admin/rules/RULE-TEST/activate",
-            json={"actor": "user-123"},
+            json={},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 403

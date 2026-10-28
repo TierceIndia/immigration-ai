@@ -23,14 +23,17 @@ CREATE TABLE IF NOT EXISTS extraction_runs (
     chunks_seen            INTEGER NOT NULL DEFAULT 0,
     candidate_chunks       INTEGER NOT NULL DEFAULT 0,
     llm_calls              INTEGER NOT NULL DEFAULT 0,
-    requirements_extracted INTEGER NOT NULL DEFAULT 0,
+    requirements_extracted INTEGER NOT NULL DEFAULT 0,  -- attempts, not stored rows - see stored_new
+    stored_new              INTEGER NOT NULL DEFAULT 0,
+    merged_into_existing     INTEGER NOT NULL DEFAULT 0,
     validated               INTEGER NOT NULL DEFAULT 0,
     needs_review            INTEGER NOT NULL DEFAULT 0,
     rejected                INTEGER NOT NULL DEFAULT 0,
     evidence_failures        INTEGER NOT NULL DEFAULT 0,
     schema_failures          INTEGER NOT NULL DEFAULT 0,
+    deferred_chunks          INTEGER NOT NULL DEFAULT 0,  -- chunks skipped on persistent provider quota exhaustion; retry on a later sync
     status                  TEXT NOT NULL DEFAULT 'RUNNING' CHECK (status IN
-                     ('RUNNING','COMPLETED','FAILED','DRY_RUN')),
+                     ('RUNNING','COMPLETED','FAILED','DRY_RUN','PARTIAL')),
     dry_run                 INTEGER NOT NULL DEFAULT 0 CHECK (dry_run IN (0,1)),
     error                    TEXT
 );
@@ -49,6 +52,7 @@ CREATE TABLE IF NOT EXISTS requirements (
     name                  TEXT NOT NULL,
     description            TEXT,
     field                 TEXT,                       -- e.g. 'applicant.age'  (nullable: informational content has no field)
+    concept               TEXT,                       -- free-text label for the real concept when field='NOT_MODELED'
     operator               TEXT NOT NULL DEFAULT 'UNKNOWN' CHECK (operator IN
                      ('EQ','NEQ','LT','LTE','GT','GTE','IN','NOT_IN','BETWEEN',
                       'REQUIRED','NOT_REQUIRED','UNKNOWN')),

@@ -25,8 +25,8 @@ from db.models import (
     DocumentVersion, RequirementEvidence, ExtractionRun,
 )
 from db.connection import get_session_factory
-from fetcher import FetchResult, FetchStatus
-from hashing import sha256_bytes
+from fetch.fetcher import FetchResult, FetchStatus
+from change_detection.hashing import sha256_bytes
 from utils.fetch_document import fetch_document_and_store, _load_chunk_dicts
 
 FIXTURE_V1 = (
@@ -162,13 +162,13 @@ class TestVersionScopedExtraction:
         _seed(session)
         source = session.get(GovernmentSource, SOURCE_ID)
 
-        monkeypatch.setattr("fetcher.fetch", _ok_fetch(FIXTURE_V1))
+        monkeypatch.setattr("fetch.backend.fetch", _ok_fetch(FIXTURE_V1))
         out_v1 = fetch_document_and_store(session, source)
         assert out_v1.document_version == 1
         assert _evidence_consistent(session) == []
 
         # Change the content → version 2 → re-extraction over v2 chunks only.
-        monkeypatch.setattr("fetcher.fetch", _ok_fetch(FIXTURE_V2))
+        monkeypatch.setattr("fetch.backend.fetch", _ok_fetch(FIXTURE_V2))
         out_v2 = fetch_document_and_store(session, source)
         assert out_v2.document_version == 2
 

@@ -12,8 +12,9 @@ _SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from logging_config import get_logger, set_request_context, setup_logging
 import config as _config
@@ -24,6 +25,14 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging(level="INFO", json_output=True)
+
+    # Production must fail closed before opening a database connection or
+    # serving a single request. Tests deliberately skip this: the suite owns
+    # its own hermetic environment and exercises the validator directly.
+    if os.getenv("TESTING") != "true":
+        from production_config import validate_runtime_config
+
+        validate_runtime_config()
 
     # In TESTING mode, never touch db_engine — tests set it themselves
     if os.getenv("TESTING") == "true":
@@ -66,13 +75,40 @@ async def lifespan(app: FastAPI):
                 logger.warning("Admin bootstrap skipped",
                                extra={"error": str(e)})
 
-    # Start scheduler if ENABLE_SCHEDULER=true (skip in TESTING mode)
+    # Start scheduler if ENABLE_SCHEDULER=true (skip in TESTING mode). A
+    # persisted SchedulerSettings row (set via PUT /admin/scheduler) overrides
+    # the GOVERNMENT_SYNC_*_UTC / GOVERNMENT_SYNC_INTERVAL_MINUTES env defaults.
     if os.getenv("TESTING") != "true":
         if os.getenv("ENABLE_SCHEDULER", "false").lower() == "true":
             if getattr(app.state, "db_engine", None):
-                from scheduler import start_scheduler
-                start_scheduler(app.state.db_engine)
-                logger.info("Scheduler started")
+                from scheduler import start_scheduler, get_scheduler
+                from db.connection import get_session
+                from db.repositories import SchedulerSettingsRepo
+
+                interval_minutes = hour_utc = minute_utc = None
+                enabled = True
+                try:
+                    with get_session(app.state.db_engine) as session:
+                        settings = SchedulerSettingsRepo(session).get()
+                        enabled = settings.enabled
+                        if settings.mode == "daily":
+                            hour_utc, minute_utc = settings.hour_utc, settings.minute_utc
+                        else:
+                            interval_minutes = settings.interval_minutes
+                        session.commit()
+                except Exception as e:
+                    logger.warning("Could not load persisted scheduler settings — "
+                                   "using env defaults", extra={"error": str(e)})
+
+                start_scheduler(
+                    app.state.db_engine, interval_minutes=interval_minutes,
+                    hour_utc=hour_utc, minute_utc=minute_utc,
+                )
+                if not enabled:
+                    sched = get_scheduler()
+                    if sched is not None:
+                        sched.pause_job("government_source_sync")
+                logger.info("Scheduler started", extra={"enabled": enabled})
             else:
                 logger.warning("Scheduler disabled — no database connection")
 
@@ -127,7 +163,6 @@ app.openapi = _openapi_with_bearer
 @app.exception_handler(RuntimeError)
 async def runtime_error_handler(request: Request, exc: RuntimeError):
     if "Database not available" in str(exc):
-        from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=503,
             content={"detail": "Database not available. Check DATABASE_URL configuration."},
@@ -161,31 +196,61 @@ async def request_id_middleware(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
+# Production-only: disable API docs and OpenAPI schema when ENVIRONMENT=production
+# ---------------------------------------------------------------------------
+if os.getenv("ENVIRONMENT", "development").strip().lower() == "production":
+
+    @app.middleware("http")
+    async def _prod_docs_disabler(request: Request, call_next):
+        path = request.url.path
+        if path in ("/docs", "/redoc", "/openapi.json"):
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Not found"},
+            )
+        response = await call_next(request)
+        return response
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs, admin_sources, admin_requirements, admin_documents, admin_knowledge, admin_schema  # noqa: E402
+from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs, admin_sources, admin_requirements, admin_documents, admin_scheduler, admin_applicants, search  # noqa: E402
 from api.routes.auth import require_admin  # noqa: E402
 
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(applicants.router, prefix="/api/v1/applicants", tags=["applicants"])
 app.include_router(assessments.router, prefix="/api/v1/assessments", tags=["assessments"])
+app.include_router(search.router, prefix="/api/v1/search", tags=["search"])
 app.include_router(admin_rules.router, prefix="/api/v1/admin/rules", tags=["admin-rules"])
 app.include_router(admin_sources.router, prefix="/api/v1/admin/sources", tags=["admin-sources"])
 app.include_router(pipeline_runs.router, prefix="/api/v1/admin/runs", tags=["pipeline-runs"])
 app.include_router(admin_requirements.router, prefix="/api/v1/admin/requirements", tags=["admin-requirements"])
 app.include_router(admin_documents.router, prefix="/api/v1/admin/documents", tags=["admin-documents"])
-app.include_router(admin_knowledge.router, prefix="/api/v1/admin/knowledge-state", tags=["admin-knowledge-state"])
-app.include_router(admin_schema.router, prefix="/api/v1/admin/schema", tags=["admin-schema"])
+app.include_router(admin_scheduler.router, prefix="/api/v1/admin/scheduler", tags=["admin-scheduler"])
+app.include_router(admin_applicants.router, prefix="/api/v1/admin/applicants", tags=["admin-applicants"])
 
 
-@app.post("/api/v1/admin/sync", tags=["admin-sync"])
+@app.post("/api/v1/admin/sync", tags=["admin-sync"], status_code=202)
 def trigger_sync(request: Request, current_user: dict = Depends(require_admin)):
-    """Manually trigger government source sync (admin only)."""
+    """Start a government source sync in the background (admin only).
+
+    Returns immediately with {"run_id", "status": "STARTED"} — the sync itself
+    runs on a background thread so a long-running sync never blocks or times out
+    the HTTP request. Returns 409 if a sync (scheduled or manual) is already
+    running — only one ever runs at a time. Poll progress via
+    GET /api/v1/admin/runs/{run_id}.
+    """
     from db.connection import get_db_engine
-    from scheduler import trigger_sync_now
+    from scheduler import start_sync_background
     engine = get_db_engine(request)
-    return trigger_sync_now(engine)
+    result = start_sync_background(engine, trigger_type="MANUAL")
+    if result.get("status") == "busy":
+        raise HTTPException(
+            status_code=409, detail=result.get("detail", "A sync is already in progress")
+        )
+    return result
 
 
 def create_app() -> FastAPI:

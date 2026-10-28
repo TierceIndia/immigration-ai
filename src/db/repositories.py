@@ -39,6 +39,7 @@ from db.models import (
     Ruleset,
     RulesetRule,
     RuleVersion,
+    SchedulerSettings,
     VisaSelection as VisaSelectionModel,
     RequirementVersion,
 )
@@ -594,6 +595,36 @@ class LlmUsageRepo:
         if provider:
             stmt = stmt.where(LlmUsage.provider == provider)
         return float(self._s.execute(stmt).scalar())
+
+
+class SchedulerSettingsRepo:
+    """Single-row (id=1) scheduler config, overriding env-var defaults when present.
+
+    get() never returns None for a missing row's FIELDS to the caller - it
+    creates and persists the singleton row with the project's documented
+    defaults (daily cron at 03:00 UTC, enabled) on first access, so callers
+    never have to special-case "no settings saved yet".
+    """
+    def __init__(self, session: Session):
+        self._s = session
+
+    def get(self) -> SchedulerSettings:
+        obj = self._s.get(SchedulerSettings, 1)
+        if obj is None:
+            obj = SchedulerSettings(
+                id=1, enabled=True, mode="daily", hour_utc=3, minute_utc=0,
+                interval_minutes=None,
+            )
+            self._s.add(obj)
+            self._s.flush()
+        return obj
+
+    def update(self, **fields) -> SchedulerSettings:
+        obj = self.get()
+        for k, v in fields.items():
+            setattr(obj, k, v)
+        self._s.flush()
+        return obj
 
 
 class PipelineRunRepo:

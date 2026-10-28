@@ -13,6 +13,7 @@ Covers every operational invariant:
 """
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from unittest.mock import patch
@@ -408,3 +409,225 @@ class TestOverlapProtection:
         assert _acquired_sync_lock()
         _release_sync_lock()
         shutdown_scheduler()
+
+
+def _wait_for_lock_free(timeout: float = 5.0) -> None:
+    """Block until the background sync thread has released _sync_lock."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _sync_lock.locked():
+            return
+        time.sleep(0.01)
+    raise AssertionError("background sync did not release _sync_lock in time")
+
+
+# ---------------------------------------------------------------------------
+# 10. Background sync jobs (POST /api/v1/admin/sync)
+#
+# Regression guards for the lock/terminal-state race. sync_all_sources() creates
+# one PipelineRun per SOURCE, so a batch-level handle lives in the in-memory
+# _sync_jobs registry keyed by its own uuid run_id.
+# ---------------------------------------------------------------------------
+class TestBackgroundSyncJob:
+    @staticmethod
+    def _stub_sync(monkeypatch, results=None, raises=None, gate=None):
+        """Replace sync_all_sources so no DB/network work happens.
+
+        `gate` holds the fake open until set, so a test can observe a
+        genuinely in-flight sync instead of racing the background thread.
+        """
+        import types
+
+        class _R:
+            def __init__(self, source_id, status):
+                self.source_id = source_id
+                self.status = status
+
+        def _fake(session, dry_run=False, trigger_type=None):
+            if gate is not None:
+                assert gate.wait(timeout=10), "gate never released"
+            if raises is not None:
+                raise raises
+            if results is not None:
+                return results
+            return [_R("S1", "changed"), _R("S2", "unchanged")]
+
+        mod = types.ModuleType("orchestration.government_sync")
+        mod.sync_all_sources = _fake
+        monkeypatch.setitem(sys.modules, "orchestration.government_sync", mod)
+
+    def test_returns_immediately_with_run_id_and_started_status(self, db_engine, monkeypatch):
+        self._stub_sync(monkeypatch)
+        from scheduler import start_sync_background
+
+        out = start_sync_background(db_engine, trigger_type="MANUAL")
+
+        assert out["status"] == "STARTED"
+        assert out["run_id"]
+        _wait_for_lock_free()
+        assert not _sync_lock.locked()
+
+    def test_rejects_concurrent_run_same_as_trigger_sync_now(self, db_engine, monkeypatch):
+        """A background sync in flight must reject a second request, exactly as
+        trigger_sync_now does - 409 rather than a queued second sync."""
+        gate = threading.Event()
+        self._stub_sync(monkeypatch, raises=RuntimeError("slow"), gate=gate)
+        from scheduler import start_sync_background, trigger_sync_now
+
+        first = start_sync_background(db_engine, trigger_type="MANUAL")
+        assert first["status"] == "STARTED"
+
+        # The first sync is genuinely in flight (blocked inside the stub).
+        second = start_sync_background(db_engine, trigger_type="MANUAL")
+        assert second["status"] == "busy"
+
+        sync_now_result = trigger_sync_now(db_engine)
+        assert sync_now_result["status"] == "busy"
+
+        gate.set()
+        _wait_for_lock_free()
+
+    def test_progress_readable_via_get_sync_job(self, db_engine, monkeypatch):
+        self._stub_sync(monkeypatch)
+        from scheduler import start_sync_background, get_sync_job
+
+        run_id = start_sync_background(db_engine, trigger_type="MANUAL")["run_id"]
+        _wait_for_lock_free()
+
+        job = get_sync_job(run_id)
+        assert job is not None
+        assert job["run_id"] == run_id
+        assert job["status"] == "COMPLETED"
+        assert job["result"]["total_sources"] == 2
+        assert job["result"]["changed"] == 1
+        assert job["result"]["unchanged"] == 1
+
+    def test_unknown_run_id_returns_none(self, db_engine):
+        from scheduler import get_sync_job
+
+        assert get_sync_job("not-a-real-run-id") is None
+
+    def test_lock_is_released_once_background_job_completes(self, db_engine, monkeypatch):
+        """A second release would raise "release unlocked lock" and leave the
+        job unfinalised; the run must complete cleanly with the lock free."""
+        self._stub_sync(monkeypatch)
+        from scheduler import start_sync_background, get_sync_job
+
+        run_id = start_sync_background(db_engine, trigger_type="MANUAL")["run_id"]
+        _wait_for_lock_free()
+
+        assert not _sync_lock.locked()
+        assert get_sync_job(run_id)["status"] == "COMPLETED"
+
+    def test_lock_released_even_if_sync_raises(self, db_engine, monkeypatch):
+        """The finally-based release must run even when sync_all_sources throws."""
+        self._stub_sync(monkeypatch, raises=RuntimeError("injected sync failure"))
+        from scheduler import start_sync_background, get_sync_job
+
+        run_id = start_sync_background(db_engine, trigger_type="MANUAL")["run_id"]
+        _wait_for_lock_free()
+
+        assert not _sync_lock.locked()
+        job = get_sync_job(run_id)
+        assert job["status"] == "FAILED"
+        assert "injected sync failure" in job["error"]
+
+
+# ---------------------------------------------------------------------------
+# 11. Terminal status is never observable before the lock is released
+# ---------------------------------------------------------------------------
+class TestSyncLockTerminalStateOrdering:
+    """Invariant: observing COMPLETED/FAILED implies the lock is already free.
+
+    Otherwise a client that polls until it sees a terminal status and then
+    immediately POSTs a new sync gets a spurious 409 for a run that has
+    externally already finished.
+    """
+
+    @staticmethod
+    def _stub(monkeypatch, error=None):
+        import types
+
+        class _R:
+            source_id, status = "S1", "unchanged"
+
+        def _fake(session, dry_run=False, trigger_type=None):
+            if error is not None:
+                raise error
+            return [_R()]
+
+        mod = types.ModuleType("orchestration.government_sync")
+        mod.sync_all_sources = _fake
+        monkeypatch.setitem(sys.modules, "orchestration.government_sync", mod)
+
+    def _run_and_capture_order(self, db_engine, monkeypatch, error=None):
+        """Drive _run_sync_job in-thread, recording lock state at the moment the
+        terminal status is published."""
+        from scheduler import _run_sync_job, _set_job
+
+        seen = {}
+
+        def _recording_set_job(run_id, **fields):
+            if fields.get("status") in ("COMPLETED", "FAILED"):
+                seen["lock_held_at_terminal"] = _sync_lock.locked()
+                seen["terminal_status"] = fields["status"]
+            _set_job(run_id, **fields)
+
+        self._stub(monkeypatch, error=error)
+        monkeypatch.setattr("scheduler._set_job", _recording_set_job)
+
+        _run_sync_job("RUN-ORDER", db_engine, "MANUAL")
+        return seen
+
+    def test_completed_is_not_visible_before_lock_is_released(self, db_engine, monkeypatch):
+        assert _acquired_sync_lock()
+        seen = self._run_and_capture_order(db_engine, monkeypatch)
+        assert seen["terminal_status"] == "COMPLETED"
+        assert seen["lock_held_at_terminal"] is False
+        assert not _sync_lock.locked()
+
+    def test_failed_is_not_visible_before_lock_is_released(self, db_engine, monkeypatch):
+        assert _acquired_sync_lock()
+        seen = self._run_and_capture_order(db_engine, monkeypatch, error=RuntimeError("boom"))
+        assert seen["terminal_status"] == "FAILED"
+        assert seen["lock_held_at_terminal"] is False
+        assert not _sync_lock.locked()
+
+    def test_lock_released_exactly_once_when_result_recording_fails(self, db_engine, monkeypatch):
+        """The release lives only in `finally`. If publishing the terminal state
+        raises, that failure must NOT fall through into a second release."""
+        from scheduler import _run_sync_job
+
+        self._stub(monkeypatch)
+
+        def _boom_set_job(run_id, **fields):
+            # Only the terminal publish is broken; the initial RUNNING marker
+            # must still succeed so the run reaches the interesting path.
+            if fields.get("status") in ("COMPLETED", "FAILED"):
+                raise RuntimeError("injected terminal-state recording failure")
+
+        monkeypatch.setattr("scheduler._set_job", _boom_set_job)
+
+        assert _acquired_sync_lock()
+        # Must not raise: a double release of a free lock would raise
+        # "release unlocked lock" out of _run_sync_job.
+        _run_sync_job("RUN-ORDER-2", db_engine, "MANUAL")
+
+        assert not _sync_lock.locked()
+
+    def test_next_sync_is_not_blocked_once_terminal_status_is_observable(
+        self, db_engine, monkeypatch
+    ):
+        """End-to-end version of the invariant: once a poller can see the
+        terminal status, a follow-up sync must be accepted (not 409)."""
+        from scheduler import start_sync_background, get_sync_job
+
+        self._stub(monkeypatch)
+
+        run_id = start_sync_background(db_engine, trigger_type="MANUAL")["run_id"]
+        _wait_for_lock_free()
+
+        assert get_sync_job(run_id)["status"] == "COMPLETED"
+        # The observable terminal status must imply an acquirable lock.
+        assert _acquired_sync_lock()
+        _release_sync_lock()
