@@ -63,7 +63,7 @@ def _get_jwt_expiration() -> int:
 def create_access_token(user_id: str, role: str = "applicant") -> dict:
     """Create JWT access token. Returns dict with token + metadata."""
     secret = _get_jwt_secret()
-    algorithm = _get_jwt_algorithm()
+    algorithm = "HS256"  # Hard-coded, never from env
     exp_minutes = _get_jwt_expiration()
 
     now = datetime.now(timezone.utc)
@@ -87,9 +87,13 @@ def create_access_token(user_id: str, role: str = "applicant") -> dict:
 def decode_access_token(token: str) -> dict | None:
     """Decode and validate JWT. Returns payload or None if invalid."""
     secret = _get_jwt_secret()
-    algorithm = _get_jwt_algorithm()
     try:
-        payload = jwt.decode(token, secret, algorithms=[algorithm])
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
+        # Validate required claims
+        if not isinstance(payload.get("sub"), str):
+            return None
+        if "exp" not in payload:
+            return None
         return payload
     except JWTError as e:
         logger.warning("Invalid JWT token", extra={"error": str(e)})
