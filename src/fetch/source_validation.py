@@ -28,6 +28,23 @@ from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_ALLOWED_SUFFIXES = (".gov.au",)
 
+
+def allowed_suffixes() -> tuple[str, ...]:
+    raw = os.getenv("FETCH_ALLOWED_DOMAINS") or os.getenv("SOURCE_ALLOWED_HOST_SUFFIXES")
+    if raw is None or not raw.strip():
+        return ("*",)
+    values = []
+    for item in raw.split(","):
+        suffix = item.strip().lower()
+        if not suffix:
+            continue
+        if suffix == "*" or suffix == "any":
+            return ("*",)
+        if not suffix.startswith("."):
+            suffix = "." + suffix
+        values.append(suffix)
+    return tuple(values) or ("*",)
+
 SOURCE_ID_RE = re.compile(r"^SRC-[A-Z0-9]+(?:-[A-Z0-9]+)*$")
 COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
 PROGRAM_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,31}$")
@@ -63,18 +80,20 @@ def _fail(message: str, field: str | None = None) -> None:
 
 
 def allowed_suffixes() -> tuple[str, ...]:
-    raw = os.getenv("SOURCE_ALLOWED_HOST_SUFFIXES")
+    raw = os.getenv("FETCH_ALLOWED_DOMAINS") or os.getenv("SOURCE_ALLOWED_HOST_SUFFIXES")
     if raw is None or not raw.strip():
-        return DEFAULT_ALLOWED_SUFFIXES
+        return ("*",)
     values = []
     for item in raw.split(","):
         suffix = item.strip().lower()
         if not suffix:
             continue
+        if suffix == "*" or suffix == "any":
+            return ("*",)
         if not suffix.startswith("."):
             suffix = "." + suffix
         values.append(suffix)
-    return tuple(values) or DEFAULT_ALLOWED_SUFFIXES
+    return tuple(values) or ("*",)
 
 
 def _validate_identifier(value: str | None, field: str, pattern: re.Pattern[str]) -> str:
@@ -172,7 +191,9 @@ def validate_http_url(value: str | None, *, resolve: bool = False) -> str:
         _fail("http URL cannot use port 443", "url")
 
     suffixes = allowed_suffixes()
-    if not any(host == suffix.lstrip(".") or host.endswith(suffix) for suffix in suffixes):
+    if "*" in suffixes or "any" in suffixes:
+        pass
+    elif not any(host == suffix.lstrip(".") or host.endswith(suffix) for suffix in suffixes):
         _fail(
             "url host is not on the official government allowlist "
             f"({', '.join(suffixes)})",

@@ -103,8 +103,15 @@ def register(body: UserCreate, request: Request):
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest, request: Request):
     client_host = request.client.host if request.client else "unknown"
-    throttle_key = f"{body.email}|{client_host}"
-    wait = login_throttle.retry_after_seconds(throttle_key)
+    # Lock on (IP, email) pair
+    throttle_key_ip_email = f"{client_host}|{body.email}"
+    # Per-email limit that cannot lock out admin from another IP
+    throttle_key_email = f"EMAIL|{body.email}"
+    
+    # Check both keys
+    wait_ip_email = login_throttle.retry_after_seconds(throttle_key_ip_email)
+    wait_email = login_throttle.retry_after_seconds(throttle_key_email)
+    wait = max(wait_ip_email, wait_email)
     if wait:
         raise HTTPException(
             status_code=429,
@@ -117,7 +124,9 @@ def login(body: LoginRequest, request: Request):
         svc = AuthService(session)
         result = svc.login(body.email, body.password)
         if not result:
-            locked_for = login_throttle.record_failure(throttle_key)
+            locked_for_ip_email = login_throttle.record_failure(throttle_key_ip_email)
+            locked_for_email = login_throttle.record_failure(throttle_key_email)
+            locked_for = max(locked_for_ip_email, locked_for_email)
             if locked_for:
                 raise HTTPException(
                     status_code=429,
@@ -125,7 +134,8 @@ def login(body: LoginRequest, request: Request):
                     headers={"Retry-After": str(locked_for)},
                 )
             raise HTTPException(status_code=401, detail="Invalid email or password")
-        login_throttle.reset(throttle_key)
+        login_throttle.reset(throttle_key_ip_email)
+        login_throttle.reset(throttle_key_email)
         return TokenResponse(
             access_token=result["access_token"],
             token_type=result["token_type"],

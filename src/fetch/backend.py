@@ -37,8 +37,19 @@ _LEGACY_ESCALATION_STATUSES = {FetchStatus.REQUIRES_BROWSER}
 
 
 def active_backend() -> str:
-    """``"playwright"`` unless the operator explicitly asked for ``legacy``."""
+    """``"playwright"`` unless the operator explicitly asked for ``legacy``.
+
+    The legacy backend is not permitted in production: it relies on the
+    deprecated patchright/requests path and does not benefit from the
+    Playwright-only hardening (no-sandbox, unprivileged user, seccomp).
+    """
     raw = (os.getenv("FETCH_BACKEND") or "").strip().lower()
+    if raw == LEGACY and os.getenv("ENVIRONMENT", "development").strip().lower() == "production":
+        logger.critical(
+            "FETCH_BACKEND=legacy is not allowed in production environment; "
+            "set ENVIRONMENT=development or use the Playwright backend"
+        )
+        raise SystemExit(1)
     return LEGACY if raw == LEGACY else PLAYWRIGHT
 
 

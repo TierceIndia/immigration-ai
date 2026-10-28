@@ -101,6 +101,16 @@ class TestProductionCompose:
         assert env["FETCH_VALIDATE_DESTINATION_DNS"] == "true"
         assert env["CORS_ORIGINS"].startswith("https://")
 
+    def test_refuses_default_database_password(self):
+        # production_config.validate_database_url rejects well-known dev passwords
+        from production_config import validate_database_url
+        problems = validate_database_url("postgresql+psycopg2://user:immigration_dev@host/db")
+        assert any("well-known development database password" in p for p in problems)
+        problems = validate_database_url("postgresql+psycopg2://user:postgres@host/db")
+        assert any("well-known development database password" in p for p in problems)
+        problems = validate_database_url("postgresql+psycopg2://user:password@host/db")
+        assert any("well-known development database password" in p for p in problems)
+
     def test_containers_drop_privilege_escalation(self):
         services = _compose()["services"]
         for name in ("postgres", "api", "frontend", "caddy"):

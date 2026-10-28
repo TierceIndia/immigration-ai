@@ -37,6 +37,9 @@ jobs:
       - name: Byte-compile the package
         run: python -m compileall -q src
 
+      - name: Lint with ruff
+        run: python -m ruff check . --select=ANN001,ANN003,COM812,EM101,PT001,S101 2>&1 | tail -20 || true
+
       # The default suite makes no network calls, starts no browser and needs
       # no database: every external boundary is faked. Live checks are opt-in
       # markers (PYTEST_LLM_LIVE, BROWSER_LIVE, POSTGRES_E2E).

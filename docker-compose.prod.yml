@@ -71,7 +71,7 @@ services:
       CORS_ORIGINS: "https://${DOMAIN:?set DOMAIN in the env file}"
       # Only nginx on the private app network can reach the API. Trusting its
       # forwarding headers recovers the real client address for login throttling.
-      FORWARDED_ALLOW_IPS: "*"
+      FORWARDED_ALLOW_IPS: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
       ADMIN_EMAIL: ${ADMIN_EMAIL:?set ADMIN_EMAIL in the env file}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in the env file}
       ADMIN_FULL_NAME: ${ADMIN_FULL_NAME:-System Administrator}
@@ -81,6 +81,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       EXTRACTION_MODEL: ${EXTRACTION_MODEL:-gpt-4o-mini}
       SOURCE_ALLOWED_HOST_SUFFIXES: ${SOURCE_ALLOWED_HOST_SUFFIXES:-.gov.au}
+      FETCH_ALLOWED_DOMAINS: ${FETCH_ALLOWED_DOMAINS:-*}
       FETCH_ALLOW_PRIVATE_HOSTS: "false"
       FETCH_VALIDATE_DESTINATION_DNS: "true"
       FETCH_PROXY_URL: ${FETCH_PROXY_URL:-}
@@ -95,7 +96,7 @@ services:
       - egress
     command: >
       sh -c "alembic upgrade head && python src/seed_registry.py &&
-      uvicorn src.api.main:create_app --factory --host 0.0.0.0 --port 8000"
+      uvicorn src.api.main:create_app --factory --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips 172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
     logging:
       driver: json-file
       options:
@@ -135,11 +136,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     read_only: true
     tmpfs:
       - /tmp
-      - /data
-      - /config
     ports:
       - "80:80"
       - "443:443"

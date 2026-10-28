@@ -196,6 +196,23 @@ async def request_id_middleware(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
+# Production-only: disable API docs and OpenAPI schema when ENVIRONMENT=production
+# ---------------------------------------------------------------------------
+if os.getenv("ENVIRONMENT", "development").strip().lower() == "production":
+
+    @app.middleware("http")
+    async def _prod_docs_disabler(request: Request, call_next):
+        path = request.url.path
+        if path in ("/docs", "/redoc", "/openapi.json"):
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Not found"},
+            )
+        response = await call_next(request)
+        return response
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 from api.routes import applicants, assessments, auth, health, admin_rules, pipeline_runs, admin_sources, admin_requirements, admin_documents, admin_scheduler, admin_applicants, search  # noqa: E402
