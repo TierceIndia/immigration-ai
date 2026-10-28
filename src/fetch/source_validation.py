@@ -82,7 +82,7 @@ def _fail(message: str, field: str | None = None) -> None:
 def allowed_suffixes() -> tuple[str, ...]:
     raw = os.getenv("FETCH_ALLOWED_DOMAINS") or os.getenv("SOURCE_ALLOWED_HOST_SUFFIXES")
     if raw is None or not raw.strip():
-        return ("*",)
+        return DEFAULT_ALLOWED_SUFFIXES
     values = []
     for item in raw.split(","):
         suffix = item.strip().lower()
@@ -93,7 +93,7 @@ def allowed_suffixes() -> tuple[str, ...]:
         if not suffix.startswith("."):
             suffix = "." + suffix
         values.append(suffix)
-    return tuple(values) or ("*",)
+    return tuple(values) or DEFAULT_ALLOWED_SUFFIXES
 
 
 def _validate_identifier(value: str | None, field: str, pattern: re.Pattern[str]) -> str:
