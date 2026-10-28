@@ -19,3 +19,7 @@ extracted/
 raw/
 validation/
 *.md
+ruff_output.txt
+*.ruff
+ruff-*.txt
+ruff*.log

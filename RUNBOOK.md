@@ -6,18 +6,16 @@
 
 **Backup command:**
 ```powershell
-docker compose -f docker-compose.prod.yml -f <env-file> exec -T postgres pg_dump -U immigration -d immigration -Fc > immigration.dump
+docker compose --env-file <path-to-external-env> -f docker-compose.prod.yml exec -T postgres pg_dump -U immigration -d immigration -Fc > immigration.dump
 ```
 
 **Restore command:**
 ```powershell
-# Create a new, empty database first
-docker compose -f docker-compose.prod.yml -f <env-file> exec -T postgres psql -U immigration -d immigration -c "DROP DATABASE IF EXISTS immigration_new";
-docker compose -f docker-compose.prod.yml -f <env-file> exec -T postgres pg_dump -U immigration -d immigration -Fc > immigration.dump
-docker compose -f docker-compose.prod.yml -f <env-file> exec -T postgres psql -U immigration -c "CREATE DATABASE immigration_new"
-docker compose -f docker-compose.prod.yml -f <env-file> exec -T postgres pg_restore -U immigration -d immigration_new immigration.dump
-
-# Verify hashes match before switching over
+# Create a new, empty database first (never restore over live DB)
+docker compose --env-file <path-to-external-env> -f docker-compose.prod.yml exec -T postgres psql -U immigration -d postgres -c "CREATE DATABASE immigration_restore;"
+# Pass host dump to container via stdin
+docker compose --env-file <path-to-external-env> -f docker-compose.prod.yml exec -T postgres pg_restore -U immigration -d immigration_restore --no-owner --no-privileges < immigration.dump
+# Verify row counts, schema/migration version, document hashes, rule versions and audit integrity before switching
 ```
 
 **Never restore over the live database or append-only audit tables in place.**
@@ -38,15 +36,15 @@ docker run --rm -v immigration-knowledge-prod_raw_snapshots:/raw -v <pwd>:/backu
 
 ## Secret Rotation
 
-1. **JWT_SECRET_KEY**: Generate a new 32+ character secret. Update `deploy/prod.env.example` and re-run `docker compose -f docker-compose.prod.yml up -d --break-recreate`. The API will refuse to start with an invalid secret at startup (fail-closed).
+1. **JWT_SECRET_KEY**: Generate a new 32+ character secret. Update your external environment file (e.g., `/etc/immigration/prod.env` outside the repo) and re-run `docker compose --env-file <path-to-external-env> -f docker-compose.prod.yml up -d --break-recreate`. The API will refuse to start with an invalid secret at startup (fail-closed). Never edit tracked `deploy/prod.env.example` for production secrets.
 
-2. **POSTGRES_PASSWORD**: Update in `deploy/prod.env.example`. The production config validates the database URL password against known weak values.
+2. **POSTGRES_PASSWORD**: Update in your external environment file. The production config validates the database URL password against known weak values.
 
-3. **ADMIN_PASSWORD**: Update in `deploy/prod.env.example`. Re-run API startup to bootstrap with new password.
+3. **ADMIN_PASSWORD**: Update in your external environment file. Re-run API startup to bootstrap with new password.
 
-4. **OPENAI_API_KEY / GEMINI_API_KEY**: Rotate in `deploy/prod.env.example`. Update `EXTRACTION_MODEL` if needed.
+4. **OPENAI_API_KEY / GEMINI_API_KEY**: Rotate in your external environment file. Update `EXTRACTION_MODEL` if needed.
 
-5. **CORS_ORIGINS**: Update `https://${DOMAIN}` if the domain changes.
+5. **CORS_ORIGINS**: Update `https://${DOMAIN}` if the domain changes in your external environment file.
 
 ## Cooldown Management
 

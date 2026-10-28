@@ -13,4 +13,4 @@ The fetcher validates destination addresses at request time and caches DNS resul
 Run the fetcher on a network without access to postgres or other internal services. Use a network segment isolated from the database and other internal services to reduce blast radius if DNS rebinding occurs. Consider using a proxy with its own egress controls.
 
 ## Fetch Allowlist
-By default, `FETCH_ALLOWED_DOMAINS` accepts any public host (`*`). For Australian immigration content, `.gov.au` is the recommended allowlist. Set `FETCH_ALLOWED_DOMAINS=.gov.au` in production for stricter control.
+In production, Australian government domains (`.gov.au`) are the default allowlist. Wildcards (`*`) are not permitted in production configuration. `FETCH_ALLOWED_DOMAINS` and `SOURCE_ALLOWED_HOST_SUFFIXES` can be used to override (e.g., `.gov.au,.abc.net.au`), but must be explicitly set and cannot be `*` in production. For development/testing, wildcards may be used with appropriate safeguards. Both the URL allowlist and outbound private-address/SSRF checks are enforced separately.

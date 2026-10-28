@@ -14,6 +14,7 @@ if _SRC_DIR not in sys.path:
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from logging_config import get_logger, set_request_context, setup_logging
 import config as _config
@@ -162,7 +163,6 @@ app.openapi = _openapi_with_bearer
 @app.exception_handler(RuntimeError)
 async def runtime_error_handler(request: Request, exc: RuntimeError):
     if "Database not available" in str(exc):
-        from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=503,
             content={"detail": "Database not available. Check DATABASE_URL configuration."},

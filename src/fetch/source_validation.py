@@ -32,18 +32,21 @@ DEFAULT_ALLOWED_SUFFIXES = (".gov.au",)
 def allowed_suffixes() -> tuple[str, ...]:
     raw = os.getenv("FETCH_ALLOWED_DOMAINS") or os.getenv("SOURCE_ALLOWED_HOST_SUFFIXES")
     if raw is None or not raw.strip():
-        return ("*",)
+        return DEFAULT_ALLOWED_SUFFIXES
     values = []
     for item in raw.split(","):
         suffix = item.strip().lower()
         if not suffix:
             continue
         if suffix == "*" or suffix == "any":
+            env = os.getenv("ENVIRONMENT", "development").strip().lower()
+            if env == "production":
+                raise ValueError("Wildcard '*' is not permitted in production")
             return ("*",)
         if not suffix.startswith("."):
             suffix = "." + suffix
         values.append(suffix)
-    return tuple(values) or ("*",)
+    return tuple(values) or DEFAULT_ALLOWED_SUFFIXES
 
 SOURCE_ID_RE = re.compile(r"^SRC-[A-Z0-9]+(?:-[A-Z0-9]+)*$")
 COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
@@ -79,21 +82,7 @@ def _fail(message: str, field: str | None = None) -> None:
     raise SourceValidationError(message, field=field)
 
 
-def allowed_suffixes() -> tuple[str, ...]:
-    raw = os.getenv("FETCH_ALLOWED_DOMAINS") or os.getenv("SOURCE_ALLOWED_HOST_SUFFIXES")
-    if raw is None or not raw.strip():
-        return DEFAULT_ALLOWED_SUFFIXES
-    values = []
-    for item in raw.split(","):
-        suffix = item.strip().lower()
-        if not suffix:
-            continue
-        if suffix == "*" or suffix == "any":
-            return ("*",)
-        if not suffix.startswith("."):
-            suffix = "." + suffix
-        values.append(suffix)
-    return tuple(values) or DEFAULT_ALLOWED_SUFFIXES
+# Duplicate removed - using the first definition above
 
 
 def _validate_identifier(value: str | None, field: str, pattern: re.Pattern[str]) -> str:

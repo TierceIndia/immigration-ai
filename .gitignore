@@ -63,3 +63,9 @@ backups/
 
 # Production environment files - only the example is committed
 deploy/*.env
+
+# Generated tool output
+ruff_output.txt
+*.ruff
+ruff-*.txt
+ruff*.log
