@@ -1,4 +1,4 @@
-FROM python:3.12-slim AS base
+FROM python:3.15-slim AS base
 
 
 # Browsers go to a fixed, readable location rather than a user's HOME, so the
